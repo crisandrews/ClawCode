@@ -14,11 +14,14 @@ import { QmdManager } from "./lib/qmd-manager.ts";
 import type { SearchResult } from "./lib/types.ts";
 
 // ---------------------------------------------------------------------------
-// Paths — the plugin root IS the agent workspace (flat structure)
+// Paths
+// PLUGIN_ROOT = where the plugin code lives (templates, lib, etc.)
+// WORKSPACE   = where the agent's personality files live (user's project dir)
 // ---------------------------------------------------------------------------
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || process.cwd();
-const MEMORY_DIR = path.join(PLUGIN_ROOT, "memory");
+const WORKSPACE = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const MEMORY_DIR = path.join(WORKSPACE, "memory");
 const DREAMS_DIR = path.join(MEMORY_DIR, ".dreams");
 
 // ---------------------------------------------------------------------------
@@ -27,7 +30,7 @@ const DREAMS_DIR = path.join(MEMORY_DIR, ".dreams");
 
 let config: ReturnType<typeof loadConfig>;
 try {
-  config = loadConfig(PLUGIN_ROOT);
+  config = loadConfig(WORKSPACE);
 } catch {
   config = { memory: { backend: "builtin", citations: "auto", builtin: { temporalDecay: true, halfLifeDays: 30, mmr: true, mmrLambda: 0.7 } } };
 }
@@ -35,7 +38,7 @@ try {
 // Always initialize builtin DB (used as fallback even when QMD is primary)
 let memoryDB: MemoryDB;
 try {
-  memoryDB = new MemoryDB(PLUGIN_ROOT);
+  memoryDB = new MemoryDB(WORKSPACE);
 } catch {
   // SQLite init failed (e.g., better-sqlite3 not compiled) — create a stub
   memoryDB = {
@@ -49,7 +52,7 @@ try {
 }
 
 // Dream engine (always available — uses recall data from .dreams/)
-const dreamEngine = new DreamEngine(PLUGIN_ROOT);
+const dreamEngine = new DreamEngine(WORKSPACE);
 
 // Initialize QMD if configured (non-blocking, with full error isolation)
 let qmdManager: QmdManager | null = null;
@@ -57,7 +60,7 @@ if (config.memory.backend === "qmd") {
   try {
     const qmdCommand = config.memory.qmd?.command ?? "qmd";
     if (QmdManager.isAvailable(qmdCommand)) {
-      qmdManager = new QmdManager(PLUGIN_ROOT, config);
+      qmdManager = new QmdManager(WORKSPACE, config);
       qmdManager.initialize();
     }
   } catch {
@@ -113,7 +116,7 @@ const MAX_TOTAL = 100_000;
 
 function isFirstRun(): boolean {
   try {
-    return fs.existsSync(path.join(PLUGIN_ROOT, "BOOTSTRAP.md"));
+    return fs.existsSync(path.join(WORKSPACE, "BOOTSTRAP.md"));
   } catch {
     return false;
   }
@@ -136,7 +139,7 @@ function _loadBootstrapFilesInner(): string {
   if (isFirstRun()) {
     try {
       const bootstrap = fs.readFileSync(
-        path.join(PLUGIN_ROOT, "BOOTSTRAP.md"),
+        path.join(WORKSPACE, "BOOTSTRAP.md"),
         "utf-8"
       );
       sections.push("# FIRST RUN — Bootstrap Ritual\n");
@@ -149,7 +152,7 @@ function _loadBootstrapFilesInner(): string {
       sections.push(`## BOOTSTRAP.md\n\n${bootstrap}\n`);
 
       for (const file of ["SOUL.md", "IDENTITY.md", "USER.md"]) {
-        const filePath = path.join(PLUGIN_ROOT, file);
+        const filePath = path.join(WORKSPACE, file);
         try {
           const content = fs.readFileSync(filePath, "utf-8").trim();
           if (content)
@@ -254,7 +257,7 @@ function _loadBootstrapFilesInner(): string {
 
   // -- Load each bootstrap file from plugin root
   for (const file of BOOTSTRAP_FILES) {
-    const filePath = path.join(PLUGIN_ROOT, file);
+    const filePath = path.join(WORKSPACE, file);
     try {
       let content = fs.readFileSync(filePath, "utf-8").trim();
       if (!content) continue;
@@ -635,7 +638,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const action = String(params.action || "get");
 
     if (action === "get") {
-      const current = loadConfig(PLUGIN_ROOT);
+      const current = loadConfig(WORKSPACE);
       return {
         content: [
           {
@@ -658,7 +661,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       try {
-        const current = loadConfig(PLUGIN_ROOT);
+        const current = loadConfig(WORKSPACE);
 
         // Navigate the nested config object by dot-separated key
         const parts = key.split(".");
@@ -680,7 +683,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         target[lastKey] = parsedValue;
-        saveConfig(PLUGIN_ROOT, current);
+        saveConfig(WORKSPACE, current);
 
         return {
           content: [
@@ -708,7 +711,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     let identity = "(no IDENTITY.md)";
     try {
       identity = fs
-        .readFileSync(path.join(PLUGIN_ROOT, "IDENTITY.md"), "utf-8")
+        .readFileSync(path.join(WORKSPACE, "IDENTITY.md"), "utf-8")
         .trim();
     } catch {}
 
@@ -730,7 +733,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         {
           type: "text",
           text: [
-            `Workspace: ${PLUGIN_ROOT}`,
+            `Workspace: ${WORKSPACE}`,
             "",
             identity,
             "",
