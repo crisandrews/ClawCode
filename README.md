@@ -97,23 +97,55 @@ Each agent is a self-contained folder:
 
 | Tool | Description |
 |---|---|
-| `memory_search` | Search memory files by keyword query — returns snippets with citations |
+| `memory_search` | Search memory files (FTS5+BM25 or QMD) — returns snippets with citations |
 | `memory_get` | Read specific lines from a memory file |
-| `agent_status` | Show agent identity, memory files, and dream stats |
+| `dream` | Run dreaming: `status`, `run` (full sweep), `dry-run` (preview) |
+| `agent_status` | Show agent identity, memory stats, and dream tracking |
 
 ## Memory System
 
-The memory system mirrors OpenClaw's architecture:
+Two backends available:
+
+### Builtin (default — no setup needed)
+- **SQLite + FTS5** with BM25 ranking
+- **Temporal decay** — dated files (memory/YYYY-MM-DD.md) lose relevance over time (half-life 30 days)
+- **MMR** — diversity re-ranking to avoid redundant results
+- **Markdown chunking** — 400 tokens with 80 token overlap
+- Works out of the box, no external tools needed
+
+### QMD (optional — enhanced search)
+- **Local embeddings** via node-llama-cpp (no API keys needed)
+- **Vector search** with semantic understanding (finds related concepts, not just keywords)
+- **Reranking** for better result quality
+- Requires [QMD](https://github.com/tobi/qmd) binary installed
+- Enable via `/agent:settings` or during bootstrap
+
+To install QMD:
+```bash
+bun install -g qmd
+```
+
+Then enable:
+```
+/agent:settings
+```
+
+### Memory lifecycle
 
 **Daily logs** — Agent writes to `memory/YYYY-MM-DD.md` during sessions (append-only).
 
-**Pre-compaction flush** — `PreCompact` hook reminds the agent to save important info before context compression.
+**Pre-compaction flush** — `PreCompact` hook saves important info before context compression.
 
-**Memory search** — `memory_search` tool searches across all memory files using keyword matching. Returns snippets with citations (`path#L10-L15`).
+**Session summary** — `Stop` hook reminds the agent to write a conversation summary before closing.
 
-**Dream tracking** — Every `memory_search` call is recorded in `memory/.dreams/events.jsonl`. Frequently recalled memories are tracked in `short-term-recall.json` with concept tags and scores.
+**Heartbeat consolidation** — Every 30 min, reviews daily files and consolidates into `MEMORY.md`.
 
-**Heartbeat consolidation** — `/agent:heartbeat` reviews recent daily files and consolidates important items into `MEMORY.md`.
+**Dream tracking** — Every `memory_search` is recorded in `memory/.dreams/`. Frequently recalled memories are tracked with concept tags and scores.
+
+**Dreaming** — Nightly 3-phase consolidation:
+1. **Light** — ingest signals, record reinforcements
+2. **REM** — extract themes and patterns, write reflections
+3. **Deep** — rank with 6 weighted signals (frequency, relevance, query diversity, recency, consolidation, conceptual richness), promote winners to `MEMORY.md`, write diary to `DREAMS.md`
 
 ## How instructions are injected
 
@@ -130,14 +162,16 @@ Each agent is its own folder. To switch: `cd ~/other-agent && claude`.
 
 ## Differences from OpenClaw
 
-| Feature | OpenClaw | This Plugin |
+| Feature | OpenClaw | ClawCode |
 |---|---|---|
 | Persistent daemon | 24/7 gateway server | Per-session (Claude Code) |
 | Multi-channel | Native WhatsApp/Telegram/etc. | Via separate MCP plugins |
 | Sub-agents | Persistent with own identity | Ephemeral (Claude Code Agent tool) |
-| Heartbeats | Automatic every 30min | Manual or via local crons |
+| Heartbeats | Automatic every 30min | Local cron every 30min (auto-created) |
 | Crons | Native with sub-second intervals | Local crons (CronCreate, durable) |
-| Memory search | SQLite + embeddings + FTS5 | Keyword-based (embeddings planned) |
+| Memory search | SQLite + FTS5 + embeddings | SQLite + FTS5 (+ QMD optional for embeddings) |
+| Dreaming | 3-phase (Light/REM/Deep) | 3-phase (Light/REM/Deep) |
+| QMD support | Built-in backend option | Optional backend via `/agent:settings` |
 | Voice/TTS | Built-in | Requires external tool |
 
 ## License
