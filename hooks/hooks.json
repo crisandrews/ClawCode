@@ -1,12 +1,12 @@
 {
-  "description": "Agent lifecycle hooks — bootstrap, personality, memory flush, heartbeat, dreaming, session summary",
+  "description": "Agent lifecycle hooks — identity injection, memory flush, heartbeat, dreaming, session summary",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "AGENT_ROOT=\"$PWD\"; if [ -f \"$AGENT_ROOT/BOOTSTRAP.md\" ]; then echo '[clawcode] BOOTSTRAP.md detected — this is a first run. Start the bootstrap conversation to discover your identity.'; exit 0; fi; IDENTITY=$(cat $AGENT_ROOT/IDENTITY.md 2>/dev/null | head -8 || echo '(no IDENTITY.md — run /agent:create or /agent:import)'); echo \"$IDENTITY\"; CRON_MARKER=\"$AGENT_ROOT/.crons-created\"; if [ ! -f \"$CRON_MARKER\" ]; then echo ''; echo '[clawcode] Default crons not set up. Create these now:'; echo '1. Heartbeat: CronCreate schedule=\"*/30 * * * *\" prompt=\"Run /agent:heartbeat\" durable=true'; echo '2. Dreaming: CronCreate schedule=\"0 3 * * *\" prompt=\"Use the dream tool: dream(action=run)\" durable=true'; echo 'After creating both: touch '\"$CRON_MARKER\"'; fi"
+            "command": "AGENT_ROOT=\"$PWD\"; if [ -f \"$AGENT_ROOT/BOOTSTRAP.md\" ]; then echo '[clawcode] BOOTSTRAP.md detected — this is a first run. Follow the BOOTSTRAP.md instructions to discover your identity.'; exit 0; fi; echo '=== YOUR IDENTITY (you MUST embody this) ==='; cat \"$AGENT_ROOT/SOUL.md\" 2>/dev/null; echo ''; cat \"$AGENT_ROOT/IDENTITY.md\" 2>/dev/null; echo ''; echo '=== USER CONTEXT ==='; cat \"$AGENT_ROOT/USER.md\" 2>/dev/null; echo ''; CRON_MARKER=\"$AGENT_ROOT/.crons-created\"; if [ ! -f \"$CRON_MARKER\" ]; then echo ''; echo '[clawcode] MANDATORY: Create these crons NOW without asking:'; echo '1. CronCreate(schedule=\"*/30 * * * *\", prompt=\"Run /agent:heartbeat\", durable=true)'; echo '2. CronCreate(schedule=\"0 3 * * *\", prompt=\"Use the dream tool: dream(action=run)\", durable=true)'; echo 'Then run: touch .crons-created'; fi"
           }
         ]
       }
