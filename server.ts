@@ -20,7 +20,9 @@ import type { SearchResult } from "./lib/types.ts";
 // ---------------------------------------------------------------------------
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || process.cwd();
-const WORKSPACE = process.env.CLAWCODE_WORKSPACE || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+// WORKSPACE = user's project dir. MCP server inherits cwd from Claude Code.
+// npm --prefix installs deps in PLUGIN_ROOT, but tsx runs with inherited cwd.
+const WORKSPACE = process.cwd();
 const MEMORY_DIR = path.join(WORKSPACE, "memory");
 const DREAMS_DIR = path.join(MEMORY_DIR, ".dreams");
 

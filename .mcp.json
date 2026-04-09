@@ -1,11 +1,11 @@
 {
   "mcpServers": {
     "clawcode": {
-      "command": "npm",
-      "args": ["--prefix", "${CLAUDE_PLUGIN_ROOT}", "run", "start"],
-      "env": {
-        "CLAWCODE_WORKSPACE": "${CLAUDE_PROJECT_DIR}"
-      }
+      "command": "bash",
+      "args": [
+        "-c",
+        "npm install --prefix \"${CLAUDE_PLUGIN_ROOT}\" --silent >/dev/null 2>&1; exec \"${CLAUDE_PLUGIN_ROOT}/node_modules/.bin/tsx\" \"${CLAUDE_PLUGIN_ROOT}/server.ts\""
+      ]
     }
   }
 }
