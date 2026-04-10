@@ -101,6 +101,10 @@ One-time ritual. After that, the agent wakes up with its personality on every se
 | `/agent:heartbeat` | Run memory consolidation and periodic checks |
 | `/agent:settings` | View/modify agent config (guided) |
 | `/agent:messaging` | Set up a messaging channel (WhatsApp, Telegram, Discord, iMessage, Slack) |
+| `/agent:status` | Agent status dashboard (identity + memory + dream stats) |
+| `/agent:usage` | Agent resource usage (memory size, files, dreams) |
+| `/agent:new` | Save session summary to memory, then prepare for `/clear` |
+| `/agent:compact` | Save important context to memory, then prepare for `/compact` |
 
 ## MCP Tools
 
