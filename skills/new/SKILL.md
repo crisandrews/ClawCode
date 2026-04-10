@@ -56,21 +56,23 @@ This is the honest simulation of a session reset when native `/clear` is not inv
 
 ### CLI
 ```
-🔄 Sesión nueva iniciada. Resumen guardado en memory/<DATE>.md.
+🔄 New session started. Summary saved to memory/<DATE>.md.
 
-Escribe algo para recibir el saludo de bienvenida.
-(O si quieres limpiar el contexto del REPL también, ejecuta /clear después.)
+Send a message to receive the welcome greeting.
+(Or if you also want to clear the REPL context, run /clear afterward.)
 ```
 
 ### WhatsApp
 ```
-🔄 *Sesión reiniciada*. Escribe algo y te saludo de nuevo 👋
+🔄 *Session reset*. Send a message and I'll greet you again 👋
 ```
 
 ### Telegram
 ```
 🔄 **Session reset.** Send a message to get the fresh greeting.
 ```
+
+**IMPORTANT**: Respond in the user's language. The templates above are English defaults — translate on the fly to match the user (Spanish, Portuguese, French, whatever they speak).
 
 5. **Do NOT** invoke `/clear` — you can't. The marker file handles the "fresh start" on the next message.
 

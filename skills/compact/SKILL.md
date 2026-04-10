@@ -49,15 +49,15 @@ This skill does NOT say "now run /compact" (that would cause a loop if the user 
 
 ### CLI
 ```
-✅ Flush completo → memory/<DATE>.md
+✅ Flush complete → memory/<DATE>.md
 
-Si quieres que Claude Code también compacte el contexto, ejecuta /compact nativo.
-(El PreCompact hook ya guarda memoria automáticamente cuando eso pasa.)
+If you want Claude Code to also compact the context, run the native /compact.
+(The PreCompact hook already saves memory automatically when that happens.)
 ```
 
 ### WhatsApp
 ```
-✅ *Guardado* → memory/<DATE>.md
+✅ *Saved* → memory/<DATE>.md
 ```
 
 ### Telegram
@@ -65,11 +65,13 @@ Si quieres que Claude Code también compacte el contexto, ejecuta /compact nativ
 ✅ **Saved** → memory/<DATE>.md
 ```
 
+**IMPORTANT**: Respond in the user's language. If the user writes in Spanish, translate these templates to Spanish on the fly. Do the same for any other language. The templates above are English defaults — adapt them.
+
 5. **Do NOT** say "now run /compact" — that causes a loop. The user decides if they want to run the native command.
 
 ## Important
 
 - APPEND-only.
-- If nothing substantive to save, say so: "Nada importante que guardar ahora".
+- If nothing substantive to save, say so: "Nothing important to save right now" (or in user's language).
 - The native `/compact` in CLI is the real compaction. This skill is just the memory-save part, usable independently.
 - This is the agent-aware memory-flush equivalent.
