@@ -82,6 +82,8 @@ One-time ritual. After that, the agent wakes up with its personality on every se
 | `/agent:settings` | View/modify agent config (guided) |
 | `/agent:doctor [--fix]` | Diagnose agent health (config, memory, crons, HTTP bridge, etc.). `--fix` applies safe auto-repairs |
 | `/agent:skill install\|list\|remove` | Install community skills from GitHub, list installed, remove by name |
+| `/agent:channels [list\|status\|launch]` | Show messaging channel status and the launch command |
+| `/agent:service install\|status\|uninstall\|logs` | Run the agent as an always-on launchd/systemd service |
 | `/agent:messaging` | Set up a messaging channel (WhatsApp, Telegram, Discord, iMessage, Slack) |
 | `/agent:status` | Agent status dashboard (identity + memory + dream stats) |
 | `/agent:usage` | Agent resource usage (memory size, files, dreams) |
@@ -95,6 +97,7 @@ One-time ritual. After that, the agent wakes up with its personality on every se
 | Tool | Description |
 | --- | --- |
 | `memory_search` | Search memory with BM25 ranking, temporal decay, and MMR diversity |
+| `memory_context` | Active-memory turn-start reflex — derives queries, dedupes, formats digest |
 | `memory_get` | Read specific lines from a memory or bootstrap file |
 | `dream` | Dreaming: `status`, `run`, or `dry-run` |
 | `agent_config` | Get/set config programmatically (no JSON editing needed) |
@@ -103,6 +106,8 @@ One-time ritual. After that, the agent wakes up with its personality on every se
 | `skill_install` | Install a skill from GitHub or local path, with scope and requirements gating |
 | `skill_list` | List installed skills across plugin / project / user scopes |
 | `skill_remove` | Remove a skill (requires `confirm: true`) |
+| `channels_detect` | Report installed/authenticated/active messaging channels and build a launch command |
+| `service_plan` | Plan always-on service install/uninstall/status/logs (returns file content + commands; executed by skill) |
 | `chat_inbox_read` | Read pending WebChat messages (only when HTTP bridge is on) |
 | `webchat_reply` | Send a reply to the open WebChat browser (only when HTTP bridge is on) |
 
@@ -396,7 +401,16 @@ Each agent = its own folder. Switch: `cd ~/other-agent && claude`.
 
 ### Always-on (run as a background service)
 
-To keep your agent running permanently, wrap Claude Code with a process manager:
+Use the `service` skill — it generates the platform-specific service file (launchd on macOS, systemd on Linux), asks you to confirm the `--dangerously-skip-permissions` trade-off, and loads it:
+
+```
+/agent:service install
+/agent:service status
+/agent:service logs
+/agent:service uninstall
+```
+
+Full details and safety notes in `docs/service.md`. If you'd rather set it up by hand, the manual templates below still work:
 
 **macOS (launchd):**
 

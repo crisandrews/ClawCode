@@ -18,6 +18,17 @@ export interface AgentConfig {
     /** Bearer token for authenticated endpoints. Empty = no auth required. */
     token?: string;
   };
+  /** Active-memory / memory_context tool configuration */
+  memoryContext?: {
+    /** Master switch. Default: true (opt-out). When false, the tool short-circuits with "disabled". */
+    enabled?: boolean;
+    /** Max chunks in the digest. Default: 4. */
+    maxResults?: number;
+    /** Apply recency boost to scores. Default: true. */
+    includeRecency?: boolean;
+    /** Half-life in days for recency boost. Default: 30. */
+    halfLifeDays?: number;
+  };
   /** Heartbeat configuration */
   heartbeat?: {
     /** Cron schedule (default: every 30 min) */
@@ -117,6 +128,7 @@ export function loadConfig(pluginRoot: string): AgentConfig {
     // Deep merge with defaults
     return {
       http: parsed.http ? { ...parsed.http } : undefined,
+      memoryContext: parsed.memoryContext ? { ...parsed.memoryContext } : undefined,
       heartbeat: parsed.heartbeat ? { ...parsed.heartbeat } : undefined,
       dreaming: parsed.dreaming ? { ...parsed.dreaming } : undefined,
       memory: {

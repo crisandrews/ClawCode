@@ -49,9 +49,11 @@ The plugin ships with per-feature documentation at `${CLAUDE_PLUGIN_ROOT}/docs/`
 
 Key docs:
 - `docs/INDEX.md` — master index with core vs optional features
+- `docs/memory-context.md` — active-memory turn-start reflex (`memory_context` tool)
 - `docs/doctor.md` — `/agent:doctor` diagnostics and auto-repair
 - `docs/http-bridge.md` — optional HTTP server (webhooks, status)
 - `docs/webchat.md` — browser chat UI on top of the HTTP bridge
+- `docs/service.md` — always-on background service
 
 If a feature is marked optional in INDEX and not enabled in `agent-config.json`, don't pretend it works — tell the user how to turn it on.
 

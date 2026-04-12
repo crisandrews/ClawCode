@@ -15,6 +15,12 @@ import {
 } from "./lib/doctor.ts";
 import { DreamEngine } from "./lib/dreaming.ts";
 import { HttpBridge, HTTP_DEFAULTS } from "./lib/http-bridge.ts";
+import { getMemoryContext } from "./lib/memory-context.ts";
+import {
+  buildLaunchCommand,
+  detectChannels,
+  formatStatusTable,
+} from "./lib/channel-detector.ts";
 import {
   formatInstallResult,
   formatList,
@@ -22,6 +28,7 @@ import {
   list as skillList,
   remove as skillRemove,
 } from "./lib/skill-manager.ts";
+import { buildPlan as buildServicePlan } from "./lib/service-generator.ts";
 import { extractKeywords } from "./lib/keywords.ts";
 import { MemoryDB } from "./lib/memory-db.ts";
 import { QmdManager } from "./lib/qmd-manager.ts";
@@ -546,6 +553,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "memory_context",
+      description:
+        "Active memory retrieval — call this at the START of each turn for substantive user messages. Given the user's message, this derives complementary queries, searches memory (respects memory.backend: QMD or builtin), dedupes across queries, applies a recency boost, and returns a pre-formatted markdown digest to inject as context. Skips trivial messages (greetings, slash commands). This is a THIN wrapper on top of memory_search — it doesn't replace it; it just decides when and how to call it automatically.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          message: {
+            type: "string",
+            description: "The user's message or the topic to find context for",
+          },
+          format: {
+            type: "string",
+            enum: ["digest", "json"],
+            description: "'digest' (default) returns a markdown block ready to drop into context. 'json' returns the structured result.",
+          },
+        },
+        required: ["message"],
+      },
+    },
+    {
       name: "agent_doctor",
       description:
         "Run diagnostic checks on the agent workspace (config, identity, memory, SQLite, QMD, HTTP bridge, messaging, dreaming, bootstrap). With action='fix', applies safe auto-repairs (create memory dir, sync index, clean stale BOOTSTRAP) then re-runs checks. Use this when the user asks for a health check or when something feels off.",
@@ -563,6 +590,58 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: "'card' (default) returns a human-readable card; 'json' returns the structured report",
           },
         },
+      },
+    },
+    {
+      name: "channels_detect",
+      description:
+        "Inspect messaging channel plugins (WhatsApp, Telegram, Discord, iMessage, Slack, Fakechat) and return installed / authenticated / active state per channel, plus a ready-to-use launch command. Read-only and safe — does not install, authenticate, or restart Claude Code.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          format: {
+            type: "string",
+            enum: ["table", "json", "launch"],
+            description: "'table' (default) human-readable card; 'json' structured data; 'launch' only the claude launch command",
+          },
+          includeInstalledOnly: {
+            type: "boolean",
+            description: "When building the launch command, include channels that are installed even if not authenticated (default: false)",
+          },
+          skipPermissions: {
+            type: "boolean",
+            description: "Append --dangerously-skip-permissions to the launch command (default: false — user must opt in)",
+          },
+        },
+      },
+    },
+    {
+      name: "service_plan",
+      description:
+        "Plan an always-on service install/uninstall/status/logs for this agent. Returns file content (plist on macOS or systemd unit on Linux), file path, log path, and a list of shell commands to execute. The skill runs the commands after getting user confirmation. This tool does NOT touch the filesystem or invoke launchctl/systemctl — it only computes the plan.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          action: {
+            type: "string",
+            enum: ["install", "status", "uninstall", "logs"],
+            description: "What the plan is for",
+          },
+          claudeBin: {
+            type: "string",
+            description: "Absolute path to the `claude` binary (e.g. /usr/local/bin/claude). Default: 'claude' (uses PATH resolution at runtime)",
+          },
+          extraArgs: {
+            type: "array",
+            items: { type: "string" },
+            description: "Extra arguments to append after --dangerously-skip-permissions (e.g. channel flags)",
+          },
+          logPath: {
+            type: "string",
+            description: "Override default log path (default: /tmp/clawcode-<slug>.log)",
+          },
+        },
+        required: ["action"],
       },
     },
     {
@@ -936,6 +1015,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
+  if (name === "memory_context") {
+    const message = String(params.message || "");
+    const format = String(params.format || "digest");
+
+    const mcCfg = config.memoryContext ?? {};
+    if (mcCfg.enabled === false) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "(memory_context disabled via config — memoryContext.enabled=false)",
+          },
+        ],
+      };
+    }
+
+    const result = getMemoryContext(message, (q, n) => searchMemory(q, n), {
+      maxResults: mcCfg.maxResults,
+      includeRecency: mcCfg.includeRecency,
+      halfLifeDays: mcCfg.halfLifeDays ?? config.memory.builtin?.halfLifeDays,
+    });
+
+    if (format === "json") {
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    }
+    return { content: [{ type: "text", text: result.digest }] };
+  }
+
   if (name === "agent_doctor") {
     const action = String(params.action || "check");
     const format = String(params.format || "card");
@@ -970,6 +1079,72 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         isError: true,
       };
     }
+  }
+
+  if (name === "channels_detect") {
+    const format = String(params.format || "table");
+    const channels = detectChannels();
+
+    if (format === "json") {
+      return {
+        content: [{ type: "text", text: JSON.stringify(channels, null, 2) }],
+      };
+    }
+
+    if (format === "launch") {
+      const cmd = buildLaunchCommand(channels, {
+        includeInstalledOnly: Boolean(params.includeInstalledOnly),
+        skipPermissions: Boolean(params.skipPermissions),
+      });
+      return { content: [{ type: "text", text: cmd }] };
+    }
+
+    const table = formatStatusTable(channels);
+    const cmd = buildLaunchCommand(channels, {
+      includeInstalledOnly: Boolean(params.includeInstalledOnly),
+      skipPermissions: Boolean(params.skipPermissions),
+    });
+    return {
+      content: [
+        {
+          type: "text",
+          text: `📡 Messaging channels\n\n${table}\n\n--- Launch command ---\n\n${cmd}`,
+        },
+      ],
+    };
+  }
+
+  if (name === "service_plan") {
+    const action = String(params.action || "") as
+      | "install"
+      | "status"
+      | "uninstall"
+      | "logs";
+    if (!["install", "status", "uninstall", "logs"].includes(action)) {
+      return {
+        content: [
+          { type: "text", text: "Error: action must be install|status|uninstall|logs" },
+        ],
+        isError: true,
+      };
+    }
+    const claudeBin = String(params.claudeBin || "claude");
+    const extraArgs = Array.isArray(params.extraArgs)
+      ? params.extraArgs.map(String)
+      : undefined;
+    const logPath = params.logPath ? String(params.logPath) : undefined;
+
+    const plan = buildServicePlan(action, {
+      workspace: WORKSPACE,
+      claudeBin,
+      extraArgs,
+      logPath,
+    });
+
+    return {
+      content: [{ type: "text", text: JSON.stringify(plan, null, 2) }],
+      isError: !!plan.error,
+    };
   }
 
   if (name === "skill_install") {

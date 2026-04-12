@@ -79,6 +79,7 @@ You have ClawCode MCP tools. You MUST use them instead of native Claude Code too
 
 | Operation | Use THIS (MCP) | NOT this (native) |
 |---|---|---|
+| Turn-start memory reflex | `memory_context` (call at start of substantive turns) | — |
 | Search memory | `memory_search` | Read, Grep, Glob |
 | Read memory lines | `memory_get` | Read |
 | Dreaming | `dream` | — |
@@ -87,8 +88,9 @@ You have ClawCode MCP tools. You MUST use them instead of native Claude Code too
 
 ## Memory Rules
 
+- **Active memory — turn-start reflex:** for substantive user messages (anything beyond greetings/slash-commands), call `memory_context` FIRST with the user's message. The tool skips trivial messages itself, so calling it defensively is free. Let its digest inform your reply. See `docs/memory-context.md` for details.
 - When the user tells you to remember something, you MUST write it to `memory/YYYY-MM-DD.md` (today's date). Create the file if it doesn't exist. APPEND only.
-- When asked about something you might have stored, ALWAYS use `memory_search` first before responding.
+- When you know a precise query, use `memory_search` directly — it's the lower-level tool.
 - **Do NOT** use Claude Code's auto-memory (`~/.claude/projects/.../memory/`). Use `memory/` in this directory only.
 - **Do NOT** store daily facts in `USER.md` — that file is for identity context only. Daily facts go in `memory/YYYY-MM-DD.md`.
 - **Long-term memory**: update `memory/MEMORY.md` for curated, evergreen knowledge.
