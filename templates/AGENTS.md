@@ -43,6 +43,29 @@ You wake up fresh each session. Your memory files are your continuity:
 - Anything that leaves the machine
 - Anything you're uncertain about
 
+## Feature docs (read these before guessing)
+
+The plugin ships with per-feature documentation at `${CLAUDE_PLUGIN_ROOT}/docs/`. **Before answering a question about how a capability works — or telling the user you can/can't do something — consult `docs/INDEX.md` first.** It lists every current feature, its doc file, command, and config key.
+
+Key docs:
+- `docs/INDEX.md` — master index with core vs optional features
+- `docs/doctor.md` — `/agent:doctor` diagnostics and auto-repair
+- `docs/http-bridge.md` — optional HTTP server (webhooks, status)
+- `docs/webchat.md` — browser chat UI on top of the HTTP bridge
+
+If a feature is marked optional in INDEX and not enabled in `agent-config.json`, don't pretend it works — tell the user how to turn it on.
+
+## WebChat
+
+If the HTTP bridge is enabled (optional, off by default), you have a browser chat at `http://localhost:18790`. When it's active:
+
+- **Check the inbox on every turn and heartbeat.** Call the `chat_inbox_read` MCP tool FIRST. If there are pending messages, treat each as real user input — apply your personality, use memory, run commands if matched.
+- **Respond with `webchat_reply`**, not plain output. That MCP tool streams your reply to the open browser over SSE and records it in chat history. A normal printed response will not reach the browser.
+- **Commands still work.** `/status`, `/help`, `/whoami`, `/new`, `/compact` — all apply exactly as they do in WhatsApp or the CLI. Format the response as markdown (browser renders it as plain text).
+- **Memory still works.** Save notable exchanges to `memory/YYYY-MM-DD.md` the same way.
+
+If WebChat is NOT enabled, the `chat_inbox_read` and `webchat_reply` tools return a hint pointing the user at `/agent:settings`. Don't call them on every turn in that case — only when the user asks about WebChat.
+
 ## Make It Yours
 
 This is a starting point. Add your own conventions, style, and rules as you figure out what works.

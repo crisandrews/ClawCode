@@ -7,6 +7,12 @@ import {
 import fs from "fs";
 import path from "path";
 import { loadConfig, saveConfig } from "./lib/config.ts";
+import {
+  formatFixReport,
+  formatReport,
+  runDoctor,
+  runDoctorFix,
+} from "./lib/doctor.ts";
 import { DreamEngine } from "./lib/dreaming.ts";
 import { HttpBridge, HTTP_DEFAULTS } from "./lib/http-bridge.ts";
 import { extractKeywords } from "./lib/keywords.ts";
@@ -257,6 +263,26 @@ function _loadBootstrapFilesInner(): string {
   sections.push("Do this proactively when the conversation feels like it's wrapping up.");
   sections.push("");
 
+  // -- WebChat (only when HTTP bridge is on)
+  if (httpBridge) {
+    sections.push("## WebChat — CRITICAL\n");
+    sections.push(
+      "The HTTP bridge is enabled and serves a browser chat at `http://127.0.0.1:" +
+        httpConfig.port +
+        "`. Messages from that chat arrive via the `webchat_incoming` MCP notification AND are queued for `chat_inbox_read`."
+    );
+    sections.push(
+      "When you receive a user message from WebChat (role: user, source: webchat), respond using `webchat_reply` — this streams your reply to the open browser over SSE."
+    );
+    sections.push(
+      "On every heartbeat and whenever the user interacts, call `chat_inbox_read` FIRST to surface any pending WebChat messages. Process them in order, replying with `webchat_reply` for each."
+    );
+    sections.push(
+      "WebChat messages count as real user input — apply personality, use memory, and respect the same rules as messaging channels."
+    );
+    sections.push("");
+  }
+
   // -- Dreaming
   sections.push("## Dreaming\n");
   sections.push(
@@ -412,7 +438,7 @@ const instructions = loadBootstrapFiles();
 const server = new Server(
   { name: "clawcode", version: "1.0.0" },
   {
-    capabilities: { tools: {} },
+    capabilities: { tools: {}, logging: {} },
     instructions,
   }
 );
@@ -510,6 +536,55 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object" as const,
         properties: {},
+      },
+    },
+    {
+      name: "agent_doctor",
+      description:
+        "Run diagnostic checks on the agent workspace (config, identity, memory, SQLite, QMD, HTTP bridge, messaging, dreaming, bootstrap). With action='fix', applies safe auto-repairs (create memory dir, sync index, clean stale BOOTSTRAP) then re-runs checks. Use this when the user asks for a health check or when something feels off.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          action: {
+            type: "string",
+            enum: ["check", "fix"],
+            description: "'check' (default) runs diagnostics; 'fix' applies safe auto-repairs then re-checks",
+          },
+          format: {
+            type: "string",
+            enum: ["card", "json"],
+            description: "'card' (default) returns a human-readable card; 'json' returns the structured report",
+          },
+        },
+      },
+    },
+    {
+      name: "chat_inbox_read",
+      description:
+        "Read pending messages from the WebChat inbox. Use this to check for new browser-based chat messages. Returns messages in order. Messages are removed from the inbox once read.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          limit: {
+            type: "number",
+            description: "Max messages to read (default: 20)",
+          },
+        },
+      },
+    },
+    {
+      name: "webchat_reply",
+      description:
+        "Send a reply to the open WebChat browser over SSE. Use this to respond to WebChat messages. The message is delivered in real time and persisted in chat history.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          message: {
+            type: "string",
+            description: "The reply content (plain text or markdown)",
+          },
+        },
+        required: ["message"],
       },
     },
   ],
@@ -787,6 +862,104 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
+  if (name === "agent_doctor") {
+    const action = String(params.action || "check");
+    const format = String(params.format || "card");
+
+    try {
+      if (action === "fix") {
+        const report = await runDoctorFix(WORKSPACE);
+        if (format === "json") {
+          return {
+            content: [{ type: "text", text: JSON.stringify(report, null, 2) }],
+          };
+        }
+        return { content: [{ type: "text", text: formatFixReport(report) }] };
+      }
+
+      // default: check
+      const report = await runDoctor(WORKSPACE);
+      if (format === "json") {
+        return {
+          content: [{ type: "text", text: JSON.stringify(report, null, 2) }],
+        };
+      }
+      return { content: [{ type: "text", text: formatReport(report) }] };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Doctor error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === "chat_inbox_read") {
+    if (!httpBridge) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "WebChat is not enabled. Enable via /agent:settings → set http.enabled and http.webchat.enabled.",
+          },
+        ],
+      };
+    }
+    const limit = Number(params.limit) || 20;
+    const messages = httpBridge.drainChatInbox(limit);
+
+    if (messages.length === 0) {
+      return { content: [{ type: "text", text: "(webchat inbox empty)" }] };
+    }
+
+    const formatted = messages
+      .map((m, i) => `[${i + 1}] ${m.ts} — ${m.content}`)
+      .join("\n");
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `${messages.length} pending WebChat message(s):\n\n${formatted}\n\nReply to each using webchat_reply.`,
+        },
+      ],
+    };
+  }
+
+  if (name === "webchat_reply") {
+    if (!httpBridge) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "WebChat is not enabled. Enable via /agent:settings.",
+          },
+        ],
+        isError: true,
+      };
+    }
+    const message = String(params.message || "").trim();
+    if (!message) {
+      return {
+        content: [{ type: "text", text: "Error: message is required" }],
+        isError: true,
+      };
+    }
+    const msg = httpBridge.sendChatReply(message);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Reply sent to WebChat (id: ${msg.id}, ${httpBridge.sseClientCount()} connected client(s)).`,
+        },
+      ],
+    };
+  }
+
   return {
     content: [{ type: "text", text: `Unknown tool: ${name}` }],
     isError: true,
@@ -802,6 +975,28 @@ await server.connect(transport);
 
 // Start HTTP bridge if enabled (non-blocking — failure doesn't crash the MCP server)
 if (httpBridge) {
+  // Wire WebChat messages into MCP notifications (channel-style delivery)
+  httpBridge.setChatMessageHandler(async (msg) => {
+    // Best-effort notification — if the client doesn't support it, this is silent.
+    // The message is also queued in chatInbox for the chat_inbox_read tool fallback.
+    try {
+      await server.notification({
+        method: "notifications/message",
+        params: {
+          level: "info",
+          logger: "webchat",
+          data: {
+            source: "webchat",
+            role: msg.role,
+            id: msg.id,
+            ts: msg.ts,
+            content: msg.content,
+          },
+        },
+      });
+    } catch {}
+  });
+
   httpBridge.start().catch(() => {
     // Logged inside HttpBridge — nothing else to do
   });

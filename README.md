@@ -80,6 +80,7 @@ One-time ritual. After that, the agent wakes up with its personality on every se
 | `/agent:crons` | Import OpenClaw crons as local scheduled tasks |
 | `/agent:heartbeat` | Run memory consolidation and periodic checks |
 | `/agent:settings` | View/modify agent config (guided) |
+| `/agent:doctor [--fix]` | Diagnose agent health (config, memory, crons, HTTP bridge, etc.). `--fix` applies safe auto-repairs |
 | `/agent:messaging` | Set up a messaging channel (WhatsApp, Telegram, Discord, iMessage, Slack) |
 | `/agent:status` | Agent status dashboard (identity + memory + dream stats) |
 | `/agent:usage` | Agent resource usage (memory size, files, dreams) |
@@ -97,6 +98,9 @@ One-time ritual. After that, the agent wakes up with its personality on every se
 | `dream` | Dreaming: `status`, `run`, or `dry-run` |
 | `agent_config` | Get/set config programmatically (no JSON editing needed) |
 | `agent_status` | Agent identity, memory stats, dream tracking |
+| `agent_doctor` | Diagnose + optionally auto-repair agent health (`action: check \| fix`) |
+| `chat_inbox_read` | Read pending WebChat messages (only when HTTP bridge is on) |
+| `webchat_reply` | Send a reply to the open WebChat browser (only when HTTP bridge is on) |
 
 ### Configuring via tool
 

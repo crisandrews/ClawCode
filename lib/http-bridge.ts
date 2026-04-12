@@ -2,11 +2,19 @@
  * HTTP Bridge — optional local HTTP server that runs alongside the MCP stdio server.
  *
  * When enabled via agent-config.json (`http.enabled: true`), this starts a
- * localhost HTTP listener that exposes agent status, webhook ingestion, and
- * (future) OpenAI-compatible chat endpoints.
+ * localhost HTTP listener that exposes:
+ *   - Agent status and skill listing (`/v1/status`, `/v1/skills`)
+ *   - Webhook ingestion (`POST /v1/webhook`)
+ *   - WebChat: browser-based chat UI with SSE-backed real-time replies
+ *     (`GET /` serves chat.html, `POST /v1/chat/send`, `GET /v1/chat/stream`)
  *
  * Architecture: Node's built-in `http` module — zero external dependencies.
  * The server only binds to 127.0.0.1 by default for security.
+ *
+ * When a WebChat message arrives, the HttpBridge invokes `onChatMessage` if
+ * registered. The MCP server wires this to push an MCP `notifications/claude/channel`
+ * notification so the agent sees the message inline (channel-style), same as WhatsApp.
+ * Messages are also queued for a fallback `chat_inbox_read` MCP tool.
  */
 
 import http from "http";
@@ -43,6 +51,20 @@ interface WebhookEntry {
   body: string;
 }
 
+export interface ChatMessage {
+  id: string;
+  ts: string;
+  role: "user" | "agent";
+  content: string;
+}
+
+type ChatMessageHandler = (msg: ChatMessage) => void | Promise<void>;
+
+interface SseClient {
+  id: string;
+  res: http.ServerResponse;
+}
+
 export class HttpBridge {
   private server: http.Server | null = null;
   private config: HttpBridgeConfig;
@@ -50,6 +72,12 @@ export class HttpBridge {
   private status: StatusProvider;
   private webhookQueue: WebhookEntry[] = [];
   private startedAt: string | null = null;
+
+  // Chat state
+  private chatInbox: ChatMessage[] = [];
+  private chatHistory: ChatMessage[] = [];
+  private sseClients: SseClient[] = [];
+  private onChatMessage: ChatMessageHandler | null = null;
 
   constructor(
     config: HttpBridgeConfig,
@@ -70,7 +98,6 @@ export class HttpBridge {
 
       srv.on("error", (err: NodeJS.ErrnoException) => {
         if (err.code === "EADDRINUSE") {
-          // Port busy — log and don't crash the MCP server
           console.error(
             `[http-bridge] Port ${this.config.port} in use — HTTP bridge disabled`
           );
@@ -95,6 +122,15 @@ export class HttpBridge {
   /** Stop the HTTP server gracefully. */
   async stop(): Promise<void> {
     if (!this.server) return;
+
+    // Close all SSE clients
+    for (const client of this.sseClients) {
+      try {
+        client.res.end();
+      } catch {}
+    }
+    this.sseClients = [];
+
     return new Promise((resolve) => {
       this.server!.close(() => {
         this.server = null;
@@ -109,14 +145,54 @@ export class HttpBridge {
     return this.server !== null;
   }
 
-  /** Drain the webhook queue (called by MCP tool). */
+  // -------------------------------------------------------------------------
+  // Webhook API
+  // -------------------------------------------------------------------------
+
   drainWebhooks(limit = 10): WebhookEntry[] {
     return this.webhookQueue.splice(0, limit);
   }
 
-  /** Peek at webhook queue size without draining. */
   webhookCount(): number {
     return this.webhookQueue.length;
+  }
+
+  // -------------------------------------------------------------------------
+  // WebChat API
+  // -------------------------------------------------------------------------
+
+  /** Register a handler invoked on every incoming WebChat message. */
+  setChatMessageHandler(handler: ChatMessageHandler | null) {
+    this.onChatMessage = handler;
+  }
+
+  /** Push an agent reply to all connected SSE clients AND chat history. */
+  sendChatReply(content: string): ChatMessage {
+    const msg: ChatMessage = {
+      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      ts: new Date().toISOString(),
+      role: "agent",
+      content,
+    };
+    this.chatHistory.push(msg);
+    this.capHistory();
+    this.broadcastSse(msg);
+    return msg;
+  }
+
+  /** Drain the chat inbox (called by fallback MCP tool). */
+  drainChatInbox(limit = 20): ChatMessage[] {
+    return this.chatInbox.splice(0, limit);
+  }
+
+  /** Peek at chat inbox size. */
+  chatInboxCount(): number {
+    return this.chatInbox.length;
+  }
+
+  /** Get count of connected SSE clients (for testing/status). */
+  sseClientCount(): number {
+    return this.sseClients.length;
   }
 
   // -------------------------------------------------------------------------
@@ -141,8 +217,17 @@ export class HttpBridge {
       return;
     }
 
+    // WebChat UI is public on localhost (token can still be required via URL param for tunneled setups)
+    if (method === "GET" && (pathname === "/" || pathname === "/chat" || pathname === "/chat.html")) {
+      if (this.config.token && url.searchParams.get("token") !== this.config.token) {
+        // Still serve the page but JS will prompt for token
+      }
+      this.serveChatHtml(res);
+      return;
+    }
+
     // --- Auth-gated endpoints ---
-    if (this.config.token && !this.checkAuth(req)) {
+    if (this.config.token && !this.checkAuth(req, url)) {
       this.sendJson(res, 401, { error: "Unauthorized — set Bearer token" });
       return;
     }
@@ -156,21 +241,53 @@ export class HttpBridge {
       this.handleIncomingWebhook(req, res);
     } else if (method === "GET" && pathname === "/v1/skills") {
       this.handleListSkills(res);
+    } else if (method === "POST" && pathname === "/v1/chat/send") {
+      this.handleChatSend(req, res);
+    } else if (method === "GET" && pathname === "/v1/chat/history") {
+      this.handleChatHistory(res, url);
+    } else if (method === "GET" && pathname === "/v1/chat/stream") {
+      this.handleChatStream(req, res);
     } else {
       this.sendJson(res, 404, {
         error: "Not found",
         endpoints: [
+          "GET  /",
           "GET  /health",
           "GET  /v1/status",
           "GET  /v1/skills",
           "POST /v1/webhook",
           "GET  /v1/webhooks",
+          "POST /v1/chat/send",
+          "GET  /v1/chat/history",
+          "GET  /v1/chat/stream (SSE)",
         ],
       });
     }
   }
 
   // --- Endpoint handlers ---
+
+  private serveChatHtml(res: http.ServerResponse) {
+    // Resolve from PLUGIN_ROOT (set when MCP server starts) or fall back to this file's dir
+    const pluginRoot =
+      process.env.CLAUDE_PLUGIN_ROOT ||
+      path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+    const htmlPath = path.join(pluginRoot, "static", "chat.html");
+
+    try {
+      const html = fs.readFileSync(htmlPath, "utf-8");
+      res.writeHead(200, {
+        ...corsHeaders(),
+        "Content-Type": "text/html; charset=utf-8",
+        "Content-Length": Buffer.byteLength(html),
+        "Cache-Control": "no-cache",
+      });
+      res.end(html);
+    } catch {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end(`WebChat UI not found at ${htmlPath}. Reinstall the plugin.`);
+    }
+  }
 
   private handleStatus(res: http.ServerResponse) {
     const identity = this.status.getIdentity();
@@ -188,6 +305,8 @@ export class HttpBridge {
         port: this.config.port,
         host: this.config.host,
         webhookQueueSize: this.webhookQueue.length,
+        chatInboxSize: this.chatInbox.length,
+        sseClients: this.sseClients.length,
       },
       config: {
         memoryBackend: config.memory?.backend ?? "builtin",
@@ -209,7 +328,6 @@ export class HttpBridge {
           const skillFile = path.join(skillsDir, entry.name, "SKILL.md");
           try {
             const content = fs.readFileSync(skillFile, "utf-8");
-            // Extract description from frontmatter
             const match = content.match(
               /^---\s*\n[\s\S]*?description:\s*(.+?)\n[\s\S]*?---/m
             );
@@ -222,21 +340,13 @@ export class HttpBridge {
           }
         }
       }
-    } catch {
-      // skills dir doesn't exist or isn't readable
-    }
+    } catch {}
 
     this.sendJson(res, 200, { skills, count: skills.length });
   }
 
-  private handleDrainWebhooks(
-    res: http.ServerResponse,
-    url: URL
-  ) {
-    const limit = Math.min(
-      Number(url.searchParams.get("limit")) || 10,
-      100
-    );
+  private handleDrainWebhooks(res: http.ServerResponse, url: URL) {
+    const limit = Math.min(Number(url.searchParams.get("limit")) || 10, 100);
     const entries = this.drainWebhooks(limit);
     this.sendJson(res, 200, { entries, remaining: this.webhookQueue.length });
   }
@@ -259,10 +369,9 @@ export class HttpBridge {
           "content-type": req.headers["content-type"],
           "x-webhook-source": req.headers["x-webhook-source"] as string,
         },
-        body: body.slice(0, 64_000), // cap body at 64KB
+        body: body.slice(0, 64_000),
       };
 
-      // Cap queue at 1000 entries
       if (this.webhookQueue.length >= 1000) {
         this.webhookQueue.shift();
       }
@@ -276,13 +385,144 @@ export class HttpBridge {
     });
   }
 
+  private handleChatSend(
+    req: http.IncomingMessage,
+    res: http.ServerResponse
+  ) {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      let content = "";
+      try {
+        const parsed = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+        content = String(parsed.message || parsed.content || "").trim();
+      } catch {
+        this.sendJson(res, 400, { error: "Invalid JSON body" });
+        return;
+      }
+
+      if (!content) {
+        this.sendJson(res, 400, { error: "Empty message" });
+        return;
+      }
+
+      if (content.length > 32_000) {
+        this.sendJson(res, 413, { error: "Message too large (32KB max)" });
+        return;
+      }
+
+      const msg: ChatMessage = {
+        id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        ts: new Date().toISOString(),
+        role: "user",
+        content,
+      };
+
+      // Store for history and inbox
+      this.chatHistory.push(msg);
+      this.capHistory();
+      if (this.chatInbox.length >= 500) this.chatInbox.shift();
+      this.chatInbox.push(msg);
+
+      // Echo to SSE clients so the UI confirms the send
+      this.broadcastSse(msg);
+
+      // Fire handler (channel-style notification into MCP)
+      if (this.onChatMessage) {
+        try {
+          Promise.resolve(this.onChatMessage(msg)).catch(() => {});
+        } catch {}
+      }
+
+      this.sendJson(res, 202, { accepted: true, id: msg.id });
+    });
+  }
+
+  private handleChatHistory(res: http.ServerResponse, url: URL) {
+    const limit = Math.min(Number(url.searchParams.get("limit")) || 50, 200);
+    const since = url.searchParams.get("since");
+
+    let entries = this.chatHistory;
+    if (since) {
+      const idx = entries.findIndex((m) => m.id === since);
+      if (idx >= 0) entries = entries.slice(idx + 1);
+    }
+
+    entries = entries.slice(-limit);
+    this.sendJson(res, 200, { entries, total: this.chatHistory.length });
+  }
+
+  private handleChatStream(
+    req: http.IncomingMessage,
+    res: http.ServerResponse
+  ) {
+    res.writeHead(200, {
+      ...corsHeaders(),
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+
+    const clientId = `sse_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const client: SseClient = { id: clientId, res };
+    this.sseClients.push(client);
+
+    // Initial hello event
+    res.write(`event: hello\ndata: ${JSON.stringify({ clientId })}\n\n`);
+
+    // Heartbeat every 20s to keep connection alive
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(`: heartbeat\n\n`);
+      } catch {
+        clearInterval(heartbeat);
+      }
+    }, 20_000);
+
+    // Clean up on disconnect
+    req.on("close", () => {
+      clearInterval(heartbeat);
+      this.sseClients = this.sseClients.filter((c) => c.id !== clientId);
+    });
+  }
+
   // --- Helpers ---
 
-  private checkAuth(req: http.IncomingMessage): boolean {
+  private broadcastSse(msg: ChatMessage) {
+    const payload = `event: message\ndata: ${JSON.stringify(msg)}\n\n`;
+    const stale: string[] = [];
+    for (const client of this.sseClients) {
+      try {
+        client.res.write(payload);
+      } catch {
+        stale.push(client.id);
+      }
+    }
+    if (stale.length) {
+      this.sseClients = this.sseClients.filter((c) => !stale.includes(c.id));
+    }
+  }
+
+  private capHistory() {
+    if (this.chatHistory.length > 500) {
+      this.chatHistory = this.chatHistory.slice(-500);
+    }
+  }
+
+  private checkAuth(req: http.IncomingMessage, url?: URL): boolean {
+    // Bearer header
     const auth = req.headers.authorization;
-    if (!auth) return false;
-    const token = auth.replace(/^Bearer\s+/i, "").trim();
-    return token === this.config.token;
+    if (auth) {
+      const token = auth.replace(/^Bearer\s+/i, "").trim();
+      if (token === this.config.token) return true;
+    }
+    // Query string fallback (useful for SSE/EventSource which can't set headers)
+    if (url) {
+      const qToken = url.searchParams.get("token");
+      if (qToken === this.config.token) return true;
+    }
+    return false;
   }
 
   private sendJson(

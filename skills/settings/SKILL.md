@@ -149,6 +149,53 @@ Outside these hours, the heartbeat cron still fires but the agent should skip si
 }
 ```
 
+## HTTP bridge + WebChat (optional)
+
+The HTTP bridge is an optional local server that exposes the agent over HTTP — for webhooks, status checks, and a browser-based chat UI (WebChat).
+
+**Off by default.** Enable with:
+
+```json
+{
+  "http": {
+    "enabled": true,
+    "port": 18790,
+    "host": "127.0.0.1",
+    "token": ""
+  }
+}
+```
+
+Settings:
+- `enabled` — turn the server on/off (default: `false`)
+- `port` — port to listen on (default: `18790`)
+- `host` — bind address (default: `127.0.0.1` — localhost only; change only if you know what you're doing)
+- `token` — Bearer token for authenticated endpoints. Empty = no auth (fine for localhost-only). Set a value when exposing via tunnel (ngrok, Cloudflare, Tailscale).
+
+### Using WebChat
+
+1. Enable the HTTP bridge (above).
+2. Run `/mcp` to reload.
+3. Open `http://localhost:18790` in a browser.
+4. Type. The agent sees messages as real user input — personality, memory, and commands all work the same as in WhatsApp or the CLI.
+
+Endpoints exposed when `http.enabled: true`:
+- `GET /` — WebChat UI
+- `GET /health` — liveness (no auth)
+- `GET /v1/status` — agent status
+- `GET /v1/skills` — installed skills
+- `POST /v1/webhook` — ingest webhooks
+- `GET /v1/webhooks` — drain webhook queue
+- `POST /v1/chat/send` — send a chat message
+- `GET /v1/chat/history` — chat history
+- `GET /v1/chat/stream` — real-time replies (SSE)
+
+To turn WebChat off without losing other HTTP features, just close the browser tab. To turn the whole bridge off, set `http.enabled: false` and run `/mcp`.
+
+### Security note
+
+Bind to `127.0.0.1` unless you know your network is safe. If you must expose the port (LAN, tunnel), always set a `token` — otherwise anyone who can reach the port can chat as you.
+
 ## Important
 
 - After any config change, the user must run `/mcp` to reload
