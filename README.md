@@ -281,6 +281,8 @@ All settings in `agent-config.json` — edit directly or use the `agent_config` 
   - **GREEN** — importable as-is
   - **YELLOW** — needs adaptation (comments added for manual review)
   - **RED** — depends on OpenClaw infrastructure (skipped, documented in IMPORT_BACKLOG.md)
+- Skipped items are saved to `IMPORT_BACKLOG.md` with per-item recovery notes
+- Import event is logged to memory so the agent remembers what was skipped
 - Credentials are never copied
 
 **Crons** (`/agent:crons`):
@@ -333,6 +335,47 @@ Then scan the QR code:
 ```
 
 Now message your WhatsApp number from another phone — your agent responds with its personality.
+
+### WebChat (browser UI)
+
+Talk to your agent from a browser. Enable the HTTP bridge:
+
+```
+agent_config(action='set', key='http.enabled', value='true')
+/mcp
+```
+
+Then open `http://localhost:18790` — a clean chat UI with real-time SSE delivery, message history, and your agent's personality.
+
+Features:
+- Dark/light mode (follows system preference)
+- Enter to send, Shift+Enter for newline
+- Typing indicator while the agent thinks
+- History persists across page reloads
+- Status dot shows connection state (green = live)
+
+For remote access, set a token: `agent_config(action='set', key='http.token', value='your-secret')` then open `http://host:18790?token=your-secret`.
+
+### HTTP Bridge (API)
+
+When `http.enabled: true`, a local HTTP server runs alongside the MCP server:
+
+| Endpoint | Method | Description |
+| --- | --- | --- |
+| `/health` | GET | Always public — `{status: "ok"}` |
+| `/v1/status` | GET | Agent identity, memory stats, config |
+| `/v1/skills` | GET | List installed skills |
+| `/v1/webhook` | POST | Ingest external events (queue up to 1000) |
+| `/v1/webhooks` | GET | Drain the webhook queue |
+| `/v1/chat/send` | POST | Send a message to the agent |
+| `/v1/chat/history` | GET | Chat message history |
+| `/v1/chat/stream` | GET | SSE stream for real-time replies |
+
+Default: off, port 18790, localhost only. Configure via `agent-config.json`:
+
+```json
+{ "http": { "enabled": true, "port": 18790, "host": "127.0.0.1", "token": "" } }
+```
 
 ### Multiple agents
 
@@ -423,10 +466,31 @@ systemctl --user enable --now clawcode-agent
 - **Import from OpenClaw fails** — Make sure `~/.openclaw/` exists and contains workspace directories. Run `/agent:import` for an interactive walkthrough.
 - **BOOTSTRAP.md won't delete** — The agent deletes it at the end of the bootstrap ritual. If it persists, the ritual didn't complete — run through it again or delete manually.
 
+## Testing
+
+245 automated tests across 4 tiers:
+
+| Tier | What | Tests |
+| --- | --- | --- |
+| **1a–1e** | MCP tools, internals, skills, HTTP bridge, doctor | 130 (no API, <10s) |
+| **2–2i** | Agent behavior via `claude -p` — identity, memory, import, commands, UX | 104 (real API, ~15min) |
+| **3b** | REPL cron import end-to-end | 8 (expect, ~3min) |
+| **4** | WebChat E2E via Chrome MCP | 8 (browser, ~2min) |
+
+Run all:
+
+```sh
+bash tests/run-tests.sh       # All tiers
+bash tests/run-tests.sh 1     # Tier 1 only (fast)
+bash tests/run-tests.sh 2     # Tier 2 only (needs API)
+```
+
+See `tests/README.md` for details and `tests/manual-protocol.md` for REPL-based manual tests.
+
 ## License
 
 MIT
 
 ## Disclaimer
 
-ClawCode is not affiliated with, endorsed by, or associated with OpenClaw, Anthropic, or any of their affiliates. OpenClaw is a trademark of its respective owners. Claude is a trademark of Anthropic, PBC. ClawCode is an independent, open-source project that provides compatibility with OpenClaw's agent file format.
+ClawCode is an independent, open-source project. Claude is a trademark of Anthropic, PBC. ClawCode is not affiliated with or endorsed by Anthropic.
