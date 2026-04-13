@@ -1,11 +1,19 @@
 {
   "name": "agent",
   "description": "crisandrews — OpenClaw-compatible agent system with personality, memory, dreaming, and heartbeats.",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "author": {
     "name": "crisandrews"
   },
-  "keywords": ["agent", "personality", "memory", "openclaw", "soul", "dreaming", "clawcode"],
+  "keywords": [
+    "agent",
+    "personality",
+    "memory",
+    "openclaw",
+    "soul",
+    "dreaming",
+    "clawcode"
+  ],
   "hooks": "./hooks/hooks.json",
   "mcpServers": "./.mcp.json"
 }

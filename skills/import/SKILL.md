@@ -78,37 +78,19 @@ Write `agent-config.json` based on the choice:
 
 **Wait for the user's answer before proceeding to Step B.**
 
-### Step B — Default crons (heartbeat + dreaming)
+### Step B — Seed default crons into the registry
 
-Check if crons are already configured:
+The SessionStart reconcile flow handles default crons automatically via the registry at `memory/crons.json`. During onboarding, just call `writeback.sh seed-defaults` to bootstrap it:
+
 ```bash
-test -f .crons-created && echo "already done" || echo "pending"
+bash "$CLAUDE_PLUGIN_ROOT/skills/crons/writeback.sh" seed-defaults
 ```
 
-If pending, create the two default crons by calling `CronCreate`. **Note**: `CronCreate` is a deferred tool — call `ToolSearch` with `query="select:CronCreate"` first to load its schema. The parameter is `cron` (the 5-field expression), not `schedule`. `durable: true` persists to `.claude/scheduled_tasks.json`.
+This creates registry entries for `heartbeat-default` (*/30 * * * *) and `dreaming-default` (0 3 * * *) if missing; idempotent if already present. The next SessionStart (or a manual `/agent:crons reconcile`) will call `CronCreate` to realize them in the harness.
 
-1. **Heartbeat** (every 30 min):
-```
-CronCreate(
-  cron: "*/30 * * * *",
-  prompt: "Run /agent:heartbeat",
-  durable: true
-)
-```
+**Do NOT** create `touch .crons-created` — that marker is obsolete, cleaned up by reconcile.
 
-2. **Dreaming** (nightly at 3 AM):
-```
-CronCreate(
-  cron: "0 3 * * *",
-  prompt: "Use the dream tool: dream(action=run)",
-  durable: true
-)
-```
-
-3. After both succeed, mark as done:
-```bash
-touch .crons-created
-```
+**Do NOT** call `CronCreate` directly for defaults during import — the reconcile flow handles it and avoids PostToolUse duplicate-capture races.
 
 ### Step C — Import the agent's skills (interactive)
 
@@ -286,7 +268,14 @@ AskUserQuestion(
 3   🟡    meditation               0 2 * * *                 channel=whatsapp (fallback to memory)
 ```
 
-**D.5 — Import each selected cron.** For each chosen cron, build an **adapted prompt**:
+**D.5 — Import each selected cron.** Before the batch, suppress PostToolUse capture so entries get the correct `openclaw-<uuid>` key and `source: openclaw-import`:
+
+```bash
+touch "$CLAUDE_PROJECT_DIR/memory/.reconciling"
+trap 'rm -f "$CLAUDE_PROJECT_DIR/memory/.reconciling"' EXIT
+```
+
+For each chosen cron, build an **adapted prompt**:
 
 1. Prepend: `"You are running as agent <AgentName>. Read SOUL.md, IDENTITY.md, USER.md for context. "`
 2. Apply token replacements:
@@ -299,18 +288,39 @@ AskUserQuestion(
    - `kind: every` with `everyMs` → `*/N * * * *` where N is `max(1, round(everyMs / 60000))`. If N > 59, warn and fall back to `0 */N * * *` if possible, otherwise skip with a red warning.
    - `kind: at` → one-shot with `recurring: false`. If `expr` is a specific date, convert to a minute-precision cron that fires once around that time; if `expr` is null, skip.
 
-Then load the CronCreate schema (first time per session) and call it:
-```
+Then load the CronCreate schema (first time per session), create the cron, and immediately register it in the registry with the stable OpenClaw key:
+
+```bash
 ToolSearch(query="select:CronCreate")   # deferred tool, load schema once
+```
+```
 CronCreate(
   cron: "<converted expr>",              # parameter is `cron`, NOT `schedule`
   prompt: "<adapted message>",
-  durable: true,                         # persists to .claude/scheduled_tasks.json
+  durable: true,
   recurring: <true for cron/every, false for at>
 )
+# Capture the returned 8-hex task_id from the response.
+```
+```bash
+bash "$CLAUDE_PLUGIN_ROOT/skills/crons/writeback.sh" upsert \
+  --key "openclaw-<original-uuid>" \
+  --source openclaw-import \
+  --harness-task-id "<new task_id>" \
+  --cron "<converted expr>" \
+  --prompt "<adapted message>" \
+  --recurring <true|false>
 ```
 
+The `--source openclaw-import` also auto-marks `migration.openclawAnsweredAt = "auto-imported"` if it was null, preventing future SessionStart migration offers.
+
 For RED crons the user forced via `s`, include a warning in the prompt: `"[WARNING: this cron depends on <specific reason> which has no Claude Code equivalent — it may fail at runtime]"`.
+
+After the batch, remove the suppression marker:
+```bash
+rm -f "$CLAUDE_PROJECT_DIR/memory/.reconciling"
+trap - EXIT
+```
 
 **D.6 — Per-item summary**:
 ```
@@ -385,17 +395,41 @@ Imported agent <Name> from `<path>`.
 
 This is important: the memory entry is how the agent "remembers" the backlog exists across sessions. Without it, when the user later says "retomemos los crons" the agent won't know which crons were skipped.
 
-**E.3 — Offer a reminder cron (optional).** Ask the user:
+**E.3 — Offer a reminder cron (optional).** Ask the user with `AskUserQuestion`:
 
-> *"I saved the items we couldn't import automatically to `IMPORT_BACKLOG.md`. Want me to set up a weekly reminder cron to nudge you to review it?"*
+```
+question: "¿Configuro un recordatorio semanal para que revises los items que no se importaron automáticamente (IMPORT_BACKLOG.md)?",
+header: "Recordatorio semanal",
+options:
+  - label: "Sí, lunes 10:00"
+  - label: "No, gracias"
+```
 
-If yes:
+If yes, suppress PostToolUse, create + register explicitly:
+
+```bash
+touch "$CLAUDE_PROJECT_DIR/memory/.reconciling"
+```
 ```
 CronCreate(
   cron: "0 10 * * 1",
   prompt: "Read ./IMPORT_BACKLOG.md and remind the user about any skipped skills/crons that still need porting. If the file is empty or doesn't exist, do nothing.",
-  durable: true
+  durable: true,
+  recurring: true
 )
+# Capture returned 8-hex task_id.
+```
+```bash
+bash "$CLAUDE_PLUGIN_ROOT/skills/crons/writeback.sh" upsert \
+  --key "backlog-reminder" \
+  --source backlog-reminder \
+  --harness-task-id "<new task_id>" \
+  --cron "0 10 * * 1" \
+  --prompt "Read ./IMPORT_BACKLOG.md and remind the user about any skipped skills/crons that still need porting. If the file is empty or doesn't exist, do nothing." \
+  --recurring true \
+  --note "Weekly backlog review reminder"
+
+rm -f "$CLAUDE_PROJECT_DIR/memory/.reconciling"
 ```
 
 If no, continue without the cron — the memory entry and the file itself are enough for later retrieval.

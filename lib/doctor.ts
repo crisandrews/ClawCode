@@ -13,6 +13,7 @@
 import fs from "fs";
 import path from "path";
 import http from "http";
+import { execSync } from "child_process";
 import { loadConfig } from "./config.ts";
 import { MemoryDB } from "./memory-db.ts";
 import { QmdManager } from "./qmd-manager.ts";
@@ -432,6 +433,107 @@ export function checkDreaming(workspace: string): DiagnosticCheck {
   };
 }
 
+export function checkCronRegistry(workspace: string): DiagnosticCheck {
+  const registryPath = path.join(workspace, "memory", "crons.json");
+
+  if (!fs.existsSync(registryPath)) {
+    return {
+      id: "cron-registry",
+      label: "Cron registry",
+      status: "info",
+      message: "memory/crons.json not yet created",
+      hint: "will be seeded on first SessionStart reconcile",
+    };
+  }
+
+  let parsed: { version?: number; entries?: unknown[]; migration?: unknown };
+  try {
+    parsed = JSON.parse(fs.readFileSync(registryPath, "utf-8"));
+  } catch (err) {
+    return {
+      id: "cron-registry",
+      label: "Cron registry",
+      status: "error",
+      message: `memory/crons.json invalid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      hint: "reconcile will quarantine this file and rebuild defaults on next session",
+    };
+  }
+
+  if (parsed.version !== 1 || !Array.isArray(parsed.entries)) {
+    return {
+      id: "cron-registry",
+      label: "Cron registry",
+      status: "error",
+      message: "memory/crons.json missing expected shape (version=1, entries[])",
+      hint: "reconcile will quarantine this file and rebuild defaults on next session",
+    };
+  }
+
+  const entries = parsed.entries as Array<{
+    key?: string;
+    paused?: boolean;
+    tombstone?: string | null;
+    harnessTaskId?: string | null;
+  }>;
+
+  const active = entries.filter((e) => !e.tombstone && !e.paused).length;
+  const paused = entries.filter((e) => e.paused).length;
+  const tombstoned = entries.filter((e) => e.tombstone).length;
+
+  // Stale tombstones: older than 30 days.
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const staleTombstones = entries.filter((e) => {
+    if (!e.tombstone) return false;
+    const ts = Date.parse(e.tombstone);
+    return !Number.isNaN(ts) && now - ts > THIRTY_DAYS_MS;
+  }).length;
+
+  const parts = [
+    `${active} active`,
+    ...(paused > 0 ? [`${paused} paused`] : []),
+    ...(tombstoned > 0 ? [`${tombstoned} tombstoned`] : []),
+  ];
+
+  if (staleTombstones > 0) {
+    return {
+      id: "cron-registry",
+      label: "Cron registry",
+      status: "warn",
+      message: `${parts.join(" · ")} (${staleTombstones} stale >30d)`,
+      hint: "run /agent:crons reconcile to prune old tombstones",
+    };
+  }
+
+  return {
+    id: "cron-registry",
+    label: "Cron registry",
+    status: "ok",
+    message: parts.join(" · "),
+  };
+}
+
+export function checkJq(): DiagnosticCheck {
+  // jq is required by hooks/reconcile-crons.sh and hooks/cron-posttool.sh.
+  try {
+    execSync("command -v jq", { stdio: "ignore" });
+    return {
+      id: "jq",
+      label: "jq",
+      status: "ok",
+      message: "jq available in PATH",
+    };
+  } catch {
+    return {
+      id: "jq",
+      label: "jq",
+      status: "warn",
+      message: "jq not found in PATH — cron persistence runs in degraded mode",
+      hint: "install: brew install jq (macOS) or apt install jq (Linux)",
+    };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
@@ -449,6 +551,8 @@ export async function runDoctor(
   checks.push(await checkHttpBridge(workspace));
   checks.push(checkMessaging(workspace));
   checks.push(checkDreaming(workspace));
+  checks.push(checkCronRegistry(workspace));
+  checks.push(checkJq());
 
   const summary = { ok: 0, warn: 0, error: 0, info: 0, off: 0 };
   for (const c of checks) summary[c.status]++;

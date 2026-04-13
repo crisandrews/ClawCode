@@ -214,9 +214,26 @@ Full details: [`docs/http-bridge.md`](docs/http-bridge.md)
 
 ### [Diagnostics](#diagnostics)
 
-`/agent:doctor` runs 9 health checks: config validity, identity files, memory directory, SQLite integrity, QMD availability, bootstrap state, HTTP bridge, messaging plugins, dreaming. Returns a ✅/⚠️/❌ card. Use `--fix` to auto-repair safe issues (create missing `memory/`, reindex SQLite, remove stale `BOOTSTRAP.md`).
+`/agent:doctor` runs 11 health checks: config validity, identity files, memory directory, SQLite integrity, QMD availability, bootstrap state, HTTP bridge, messaging plugins, dreaming, cron registry, jq availability. Returns a ✅/⚠️/❌ card. Use `--fix` to auto-repair safe issues (create missing `memory/`, reindex SQLite, remove stale `BOOTSTRAP.md`).
 
 Full details: [`docs/doctor.md`](docs/doctor.md)
+
+### [Cron persistence](#cron-persistence)
+
+Reminders (heartbeat, dreaming, imports, and ad-hoc "recordame en 2h") survive session closes. ClawCode maintains a registry at `memory/crons.json` and reconciles it against the live harness on every SessionStart: anything missing gets recreated, anything live-but-unknown gets adopted. PostToolUse captures ad-hoc `CronCreate`/`CronDelete` automatically — you don't need a special command for "recordame".
+
+Manage reminders through `/agent:crons` (aliases `/agent:reminders`, `list reminders`, `recordatorios`):
+
+```
+/agent:crons list                       # ✅⚠️⏸ status table
+/agent:crons add "0 9 * * *" "email"    # add a reminder
+/agent:crons delete 3                   # remove with AskUserQuestion confirm
+/agent:crons pause heartbeat-default    # pause without deleting
+/agent:crons reconcile                  # force sync
+/agent:crons import                     # bring OpenClaw crons into the registry
+```
+
+Full details: [`docs/crons.md`](docs/crons.md)
 
 ## [Skills](#skills)
 
@@ -231,7 +248,7 @@ Full details: [`docs/doctor.md`](docs/doctor.md)
 | `/agent:service install\|status\|uninstall\|logs` | Always-on background service |
 | `/agent:voice status\|setup` | TTS / STT backends |
 | `/agent:messaging` | Set up WhatsApp, Telegram, Discord, iMessage, Slack |
-| `/agent:crons` | Import crons as local scheduled tasks |
+| `/agent:crons` / `/agent:reminders` | Manage reminders: list, add, delete, pause, reconcile, import |
 | `/agent:heartbeat` | Memory consolidation and periodic checks |
 | `/agent:status` | Agent status dashboard |
 | `/agent:usage` | Resource usage |

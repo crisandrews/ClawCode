@@ -200,32 +200,31 @@ When a message arrives via a messaging plugin:
 
 Messaging plugins have their own `access` skills (e.g., `/whatsapp:access`) for managing who can reach the agent.
 
-## Default Crons (CRITICAL — auto-create on first session)
+## Scheduled Tasks (cron registry)
 
-If the SessionStart hook tells you crons are missing, you MUST create them by calling the `CronCreate` tool. Do this IMMEDIATELY without asking the user.
+This workspace maintains a cron registry at `memory/crons.json` — the source of truth for every scheduled task (defaults like heartbeat/dreaming, imports, ad-hoc "recordame en X" reminders). The SessionStart hook keeps it in sync across sessions.
 
-**IMPORTANT**: `CronCreate` is a deferred tool. You may need to call `ToolSearch` with `query="select:CronCreate"` first to load its schema before invoking. Also, the parameter is **`cron`** (the 5-field expression), NOT `schedule`.
+### What you'll see on session start
 
-**Step 1** — Call CronCreate tool (NOT bash, NOT touch) with these EXACT parameters:
-```
-CronCreate(
-  cron: "*/30 * * * *",
-  prompt: "Run /agent:heartbeat",
-  durable: true
-)
-```
+If the SessionStart hook emits a block that starts with `=== CLAWCODE RECONCILE ===`, follow it **exactly**. The block numbers the steps (ToolSearch → CronList → CronCreate for missing entries → writeback.sh set-alive → adopt-unknown → summary → `rm -f memory/.reconciling`). Do not improvise — the hook pre-computed the expected set.
 
-**Step 2** — Call CronCreate tool a second time:
-```
-CronCreate(
-  cron: "0 3 * * *",
-  prompt: "Use the dream tool: dream(action=run)",
-  durable: true
-)
-```
+**CronCreate gotchas:**
+- Deferred tool: call `ToolSearch(query="select:CronList,CronCreate,CronDelete")` first to load schemas.
+- Parameter is `cron` (5-field expression), NOT `schedule`.
+- Pass `durable: true` for every registry entry (even though the flag is upstream-broken today — forward-compat).
 
-**Step 3** — ONLY after BOTH CronCreate calls have succeeded, run bash: `touch .crons-created`
+### Do NOT
 
-**DO NOT** run `touch .crons-created` before the CronCreate calls. The marker file means the crons have been created — creating it without crons is a lie.
+- Create default crons on your own. The registry + reconcile handle that.
+- Call `touch .crons-created` — that marker is obsolete; the hook cleans it up.
+- Edit `memory/crons.json` directly. All writes go through `bash skills/crons/writeback.sh <subcommand>`.
 
-**DO NOT** interpret the hook message as just "create a marker file" — you must actually call CronCreate twice first.
+### User-facing management
+
+Users manage reminders through `/agent:crons`:
+- `/agent:crons list` — show all entries with live status
+- `/agent:crons add <cron> <prompt>` — add a reminder
+- `/agent:crons delete <key|N>` — tombstone + CronDelete
+- `/agent:crons pause <key>` / `resume <key>`
+- `/agent:crons reconcile` — force reconcile manually
+- Aliases: `/agent:reminders`, `list reminders`, `show crons`, `recordatorios`.

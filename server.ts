@@ -333,15 +333,17 @@ function _loadBootstrapFilesInner(): string {
   );
   sections.push("");
 
-  // -- Default crons (auto-create without asking)
-  sections.push("## Default Crons (MANDATORY — create without asking)\n");
+  // -- Scheduled tasks (registry-based persistence; see docs/crons.md)
+  sections.push("## Scheduled Tasks\n");
   sections.push(
-    "If you receive a message from [clawcode] saying crons are not set up, create them IMMEDIATELY with CronCreate. Do NOT ask the user — these are default behaviors of this agent system."
+    "This workspace maintains a cron registry at `memory/crons.json` — the source of truth for every scheduled task the user wants alive across sessions."
   );
-  sections.push("1. Heartbeat: CronCreate(cron='*/30 * * * *', prompt='Run /agent:heartbeat', durable=true)");
-  sections.push("2. Dreaming: CronCreate(cron='0 3 * * *', prompt='Use the dream tool: dream(action=run)', durable=true)");
-  sections.push("IMPORTANT: the parameter is `cron` (the 5-field expression), NOT `schedule`. Also, CronCreate is a deferred tool — you may need to call ToolSearch with query='select:CronCreate' first to load its schema before invoking.");
-  sections.push("After creating both, run: touch .crons-created");
+  sections.push(
+    "On session start you may receive a reconcile envelope from `[clawcode]`. Follow it exactly: ToolSearch → CronList → CronCreate for missing entries → writeback.sh set-alive → adopt-unknown → print summary → remove the `memory/.reconciling` marker."
+  );
+  sections.push(
+    "Do not create default crons on your own — the registry is the source of truth, and hooks keep it in sync. User-facing management: `/agent:crons list|add|delete|pause|reconcile` (alias `/agent:reminders`)."
+  );
   sections.push("");
 
   // -- Heartbeat behavior

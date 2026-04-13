@@ -1,12 +1,23 @@
 {
-  "description": "Agent lifecycle hooks — identity injection, memory flush, heartbeat, dreaming, session summary",
+  "description": "Agent lifecycle hooks — identity injection, cron reconcile, PostToolUse cron capture, memory flush, session summary.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "AGENT_ROOT=\"${CLAUDE_PROJECT_DIR:-$PWD}\"; if [ -f \"$AGENT_ROOT/BOOTSTRAP.md\" ]; then echo '[clawcode] BOOTSTRAP.md detected — this is a first run. Follow the BOOTSTRAP.md instructions to discover your identity.'; exit 0; fi; echo '=== YOUR IDENTITY (you MUST embody this) ==='; cat \"$AGENT_ROOT/SOUL.md\" 2>/dev/null; echo ''; cat \"$AGENT_ROOT/IDENTITY.md\" 2>/dev/null; echo ''; echo '=== USER CONTEXT ==='; cat \"$AGENT_ROOT/USER.md\" 2>/dev/null; echo ''; CRON_MARKER=\"$AGENT_ROOT/.crons-created\"; if [ ! -f \"$CRON_MARKER\" ]; then echo ''; echo '[clawcode] MANDATORY ACTION REQUIRED: You MUST call CronCreate tool TWICE now. Do NOT run touch alone. Do NOT skip. Steps:'; echo 'Step 1: Call CronCreate with schedule=\"*/30 * * * *\", prompt=\"Run /agent:heartbeat\", durable=true'; echo 'Step 2: Call CronCreate with schedule=\"0 3 * * *\", prompt=\"Use the dream tool: dream(action=run)\", durable=true'; echo 'Step 3: ONLY after both CronCreate calls succeed, run bash: touch .crons-created'; fi"
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/reconcile-crons.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "CronCreate|CronDelete",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/cron-posttool.sh"
           }
         ]
       }

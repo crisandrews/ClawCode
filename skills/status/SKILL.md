@@ -41,7 +41,7 @@ Show a compact status card with everything the user needs at a glance. Works fro
    
    If the file doesn't exist or is stale, fall back to "run /cost for details".
 
-5. **Get cron info** — Bash: `ls .crons-created 2>/dev/null` to check if defaults are set up.
+5. **Get cron info** — Bash: `jq '.entries | length' memory/crons.json 2>/dev/null || echo 0` to count active registry entries. Optionally: `jq '[.entries[] | select(.paused == false and .tombstone == null)] | length' memory/crons.json` for the expected-alive count.
 
 6. **Get channel info** — if `channels_detect` MCP tool is available, call it. Otherwise check `ls ~/.claude/plugins/cache/ 2>/dev/null` for installed plugins.
 

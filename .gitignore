@@ -10,6 +10,11 @@ memory/.memory.sqlite
 memory/.memory.sqlite-wal
 memory/.memory.sqlite-shm
 memory/.dreams/
+memory/.crons-lock/
+memory/.reconciling
+memory/crons-errors.jsonl
+memory/crons-pending.jsonl
+memory/crons.json.corrupt-*
 DREAMS.md
 .DS_Store
 .env
@@ -19,3 +24,4 @@ DREAMS.md
 *.swp
 *.swo
 *.bak
+.plans/
