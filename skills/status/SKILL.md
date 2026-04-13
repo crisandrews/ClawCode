@@ -27,7 +27,19 @@ Show a compact status card with everything the user needs at a glance. Works fro
 
 3. **Get model name** — you know your own model. Use the display name (e.g. "Opus 4.6"), not the internal ID.
 
-4. **Get context usage** — you know approximately how much context you've used in this conversation. Report it as a percentage or "low/medium/high" if exact number isn't available.
+4. **Get context + session usage** — the statusline script writes the latest Claude Code runtime data to `/tmp/claude-statusline-latest.json`. Read it:
+   ```bash
+   cat /tmp/claude-statusline-latest.json 2>/dev/null
+   ```
+   This JSON contains:
+   - `model.display_name` — current model (e.g. "Claude Opus 4.6 (1M context)")
+   - `context_window.used_percentage` — context window usage (0-100)
+   - `rate_limits.five_hour.used_percentage` — 5-hour session usage
+   - `rate_limits.five_hour.resets_at` — epoch when session resets
+   - `rate_limits.seven_day.used_percentage` — weekly usage
+   - `rate_limits.seven_day.resets_at` — epoch when week resets
+   
+   If the file doesn't exist or is stale, fall back to "run /cost for details".
 
 5. **Get cron info** — Bash: `ls .crons-created 2>/dev/null` to check if defaults are set up.
 
@@ -40,11 +52,11 @@ Show a compact status card with everything the user needs at a glance. Works fro
 ### CLI
 ```
 👽 **Wally** 👽
-🧠 Model: Opus 4.6 (1M context)
-📊 Context: ~35% · Memory: 42 files, 120 chunks · builtin
+🧠 Model: Opus 4.6 (1M context) · Context: 23%
+📊 Memory: 42 files, 120 chunks · builtin (QMD vsearch)
+⏱️ Session: 15% (3h 20min left) · Week: 8% (Resets Fri, 6:00AM)
 🕐 Crons: heartbeat */30, dreaming 3am
-🔊 Voice: say (disabled)
-📡 Channels: whatsapp (installed, not authenticated)
+📡 Channels: whatsapp (connected)
 ```
 
 ### WhatsApp
