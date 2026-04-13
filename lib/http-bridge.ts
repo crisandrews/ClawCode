@@ -108,6 +108,17 @@ export class HttpBridge {
   async start(): Promise<number> {
     if (this.server) return this.config.port;
 
+    // Security: require token when binding to non-localhost (accessible from network)
+    const isLocalhost = this.config.host === "127.0.0.1" || this.config.host === "localhost";
+    if (!isLocalhost && !this.config.token) {
+      const err = new Error(
+        `[http-bridge] REFUSED to start: host is "${this.config.host}" (network-accessible) but no token is set. ` +
+        `Set http.token in agent-config.json to secure the bridge, or use host "127.0.0.1" for localhost-only.`
+      );
+      console.error(err.message);
+      throw err;
+    }
+
     return new Promise((resolve, reject) => {
       const srv = http.createServer((req, res) => this.handleRequest(req, res));
 
@@ -237,10 +248,13 @@ export class HttpBridge {
       return;
     }
 
-    // WebChat UI is public on localhost (token can still be required via URL param for tunneled setups)
+    // WebChat UI — auth-gated when token is set (prevents open access on 0.0.0.0)
     if (method === "GET" && (pathname === "/" || pathname === "/chat" || pathname === "/chat.html")) {
-      if (this.config.token && url.searchParams.get("token") !== this.config.token) {
-        // Still serve the page but JS will prompt for token
+      if (this.config.token && !this.checkAuth(req, url)) {
+        this.sendJson(res, 401, {
+          error: "Unauthorized — add ?token=YOUR_TOKEN to the URL",
+        });
+        return;
       }
       this.serveChatHtml(res);
       return;

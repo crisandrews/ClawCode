@@ -192,17 +192,21 @@ Files are copied **clean** — no annotations, no comments. Adaptation details g
 External systems can send events to the agent via `POST /v1/webhook` (requires HTTP bridge enabled). The agent queues them and processes on the next turn.
 
 Use cases:
-- **CI/CD** — GitHub Actions sends build results → agent summarizes and notifies via WhatsApp
-- **Cloudflare Workers** — edge function triggers agent actions on schedule or on demand
+- **[Email catch-all](docs/webhooks.md#cloudflare-email-worker--real-time-email-catch-all)** — Cloudflare Email Worker forwards every incoming email to the agent in real-time
+- **[Gmail push](docs/webhooks.md#gmail--real-time-push-notifications)** — Gmail notifies the agent via Pub/Sub when new emails arrive
+- **[CI/CD](docs/webhooks.md#cicd-github-actions)** — GitHub Actions sends build results → agent summarizes and notifies via WhatsApp
+- **[Scheduled tasks](docs/webhooks.md#cloudflare-worker--scheduled-tasks)** — Cloudflare Workers trigger agent actions on a cron schedule
 - **Monitoring** — uptime checker sends alert → agent investigates and reports
 - **IoT** — sensor data arrives → agent logs to memory and acts on thresholds
-- **Custom integrations** — any system that can POST JSON can talk to your agent
 
 ```sh
 curl -X POST http://localhost:18790/v1/webhook \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-token" \
   -d '{"event": "deploy", "status": "success", "repo": "my-app"}'
 ```
+
+**Security:** when the bridge is exposed to the network (`host: "0.0.0.0"`), a token is **required** — the bridge refuses to start without one.
 
 Queue holds up to 1000 events. Drain with `GET /v1/webhooks` or the `chat_inbox_read` MCP tool.
 
@@ -281,9 +285,12 @@ Full details: [`docs/config-reload.md`](docs/config-reload.md)
 **Update to the latest version:**
 
 ```
+/plugin marketplace update crisandrews/ClawCode
 /plugin update agent@clawcode
 /reload-plugins
 ```
+
+If `/plugin update` says "already at latest version" but you know there's a new one, use the manual method: type `/plugin`, find `agent@clawcode` in the list, press Enter, and select **Update**.
 
 Your personality, memory, skills, and config are preserved — only the plugin code updates. No data loss.
 

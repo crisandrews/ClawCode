@@ -59,12 +59,13 @@ Status `202 Accepted` means the event is queued. The agent will process it when 
 
 The agent receives the event and can: summarize, notify via WhatsApp, log to memory, or take corrective action.
 
-### Cloudflare Worker
+### Cloudflare Worker — scheduled tasks
 
 ```js
+// wrangler.toml: [triggers] crons = ["0 9 * * *"]
 export default {
   async scheduled(event, env) {
-    await fetch("http://your-host:18790/v1/webhook", {
+    await fetch(env.AGENT_URL + "/v1/webhook", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -76,19 +77,123 @@ export default {
 };
 ```
 
+### Cloudflare Email Worker — real-time email catch-all
+
+Receive every email sent to your domain and forward it to the agent. Setup: [Cloudflare Email Workers docs](https://developers.cloudflare.com/email-routing/email-workers/).
+
+```js
+// email-worker.js — deploy via wrangler
+import { EmailMessage } from "cloudflare:email";
+import { createMimeMessage } from "mimetext";
+
+export default {
+  async email(message, env) {
+    // Extract email content
+    const rawEmail = await new Response(message.raw).text();
+    const subject = message.headers.get("subject") || "(no subject)";
+    
+    // Forward to your agent's webhook
+    const res = await fetch(env.AGENT_URL + "/v1/webhook", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + env.AGENT_TOKEN,
+      },
+      body: JSON.stringify({
+        event: "email",
+        from: message.from,
+        to: message.to,
+        subject,
+        body: rawEmail.slice(0, 32000), // trim large emails
+        headers: {
+          "message-id": message.headers.get("message-id"),
+          "date": message.headers.get("date"),
+        }
+      }),
+    });
+    
+    if (!res.ok) {
+      // Forward to fallback address if agent is down
+      await message.forward("fallback@yourdomain.com");
+    }
+  }
+};
+```
+
+**Cloudflare setup:**
+1. Enable Email Routing on your domain in Cloudflare dashboard
+2. Create the worker: `wrangler deploy email-worker.js`
+3. In Email Routing → Routes → add a catch-all route pointing to this worker
+4. Set `AGENT_URL` and `AGENT_TOKEN` as worker secrets: `wrangler secret put AGENT_TOKEN`
+
+Now every email to `*@yourdomain.com` arrives as a webhook event. The agent can read, summarize, respond, or notify you via WhatsApp.
+
+Full guide: [Cloudflare Email Workers](https://developers.cloudflare.com/email-routing/email-workers/) · [Community: forward emails to webhook](https://community.cloudflare.com/t/forward-all-emails-to-a-webhook/585444)
+
+### Gmail — real-time push notifications
+
+Gmail uses Pub/Sub to push notifications when new emails arrive. Setup: [Gmail Push Notifications](https://developers.google.com/workspace/gmail/api/guides/push).
+
+**Architecture:** Gmail → Pub/Sub topic → Cloud Function → POST to your agent webhook
+
+**Step 1 — Create a Pub/Sub topic:**
+```sh
+gcloud pubsub topics create gmail-agent
+gcloud pubsub topics add-iam-policy-binding gmail-agent \
+  --member="serviceAccount:gmail-api-push@system.gserviceaccount.com" \
+  --role="roles/pubsub.publisher"
+```
+
+**Step 2 — Cloud Function to forward to your agent:**
+```js
+// index.js — deploy as Cloud Function triggered by Pub/Sub
+const fetch = require("node-fetch");
+
+exports.gmailWebhook = async (event) => {
+  const data = JSON.parse(Buffer.from(event.data, "base64").toString());
+  // data = { emailAddress: "you@gmail.com", historyId: "12345" }
+  
+  await fetch(process.env.AGENT_URL + "/v1/webhook", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + process.env.AGENT_TOKEN,
+    },
+    body: JSON.stringify({
+      event: "gmail-notification",
+      email: data.emailAddress,
+      historyId: data.historyId,
+    }),
+  });
+};
+```
+
+**Step 3 — Subscribe Gmail to the topic:**
+```sh
+# Using Gmail API (via OAuth)
+curl -X POST "https://gmail.googleapis.com/gmail/v1/users/me/watch" \
+  -H "Authorization: Bearer $GMAIL_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"topicName": "projects/YOUR_PROJECT/topics/gmail-agent", "labelIds": ["INBOX"]}'
+```
+
+**Note:** Gmail watch expires after 7 days — re-call `watch()` daily via a cron. The notification only contains the `historyId`, not the email itself. The agent needs Gmail API access to fetch the actual email content.
+
+Full guide: [Gmail Push Notifications](https://developers.google.com/workspace/gmail/api/guides/push) · [Step-by-step tutorial](https://livefiredev.com/step-by-step-gmail-api-webhook-to-monitor-emails-node-js/)
+
 ### Monitoring / Uptime
 
 ```sh
-# From your monitoring system
 curl -X POST http://localhost:18790/v1/webhook \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"event": "alert", "service": "api-gateway", "status": "timeout", "duration_ms": 30000}'
 ```
 
 ### IoT / Sensors
 
 ```sh
-# From a Raspberry Pi or sensor
 curl -X POST http://localhost:18790/v1/webhook \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"event": "sensor", "device": "greenhouse", "temperature": 38.5, "humidity": 72}'
 ```
 
