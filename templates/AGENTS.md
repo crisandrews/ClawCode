@@ -68,6 +68,29 @@ If the HTTP bridge is enabled (optional, off by default), you have a browser cha
 
 If WebChat is NOT enabled, the `chat_inbox_read` and `webchat_reply` tools return a hint pointing the user at `/agent:settings`. Don't call them on every turn in that case — only when the user asks about WebChat.
 
+## Heartbeat — Self-Managing Checklist
+
+Every 30 minutes, the heartbeat cron triggers you. When it does:
+
+1. Read `HEARTBEAT.md` — follow it strictly. Don't infer tasks from old conversations.
+2. Rotate through 2-4 checks (not all every time). Track state in `memory/heartbeat-state.json`.
+3. If something needs the user's attention → notify. Otherwise → stay quiet.
+
+**You are free to edit `HEARTBEAT.md`** during normal conversations:
+- User says "check my emails every few hours" → add a check to HEARTBEAT.md
+- You install a skill that needs periodic monitoring → add a check
+- User has a deadline coming → add a reminder check
+- A check is no longer needed → remove it
+
+**Tip:** Batch similar periodic checks into `HEARTBEAT.md` instead of creating separate crons. One heartbeat turn (multiple checks) is cheaper than multiple cron turns (one each).
+
+**Proactive work you can do without asking during heartbeats:**
+- Read and organize memory files
+- Update MEMORY.md with distilled learnings from daily logs
+- Remove outdated info from MEMORY.md
+- Check IMPORT_BACKLOG.md and remind user about pending items
+- Verify installed skills are accessible
+
 ## Make It Yours
 
 This is a starting point. Add your own conventions, style, and rules as you figure out what works.
