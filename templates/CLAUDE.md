@@ -53,6 +53,19 @@ All three run concurrently. After they all return, you consolidate and respond t
 
 **When to delegate at all**: only when the work would meaningfully fill the main context (long reads, multi-file searches, deep research). For 2-line edits or single grep commands, just do it inline.
 
+## Interactive wizards
+
+When a skill flow needs user choices (import options, config decisions, setup steps), use `AskUserQuestion` to present structured options the user can click — **one question at a time**. Do NOT dump multiple questions in one message expecting the user to answer all at once.
+
+Pattern:
+1. Do the work for the current step (classify skills, check QMD, etc.)
+2. Call `AskUserQuestion` with the relevant choices for THIS step only
+3. Wait for the user's answer
+4. Process the answer
+5. Move to the next step and repeat
+
+This applies to `/agent:import`, `/agent:create`, `/agent:settings`, and any other multi-step skill.
+
 ## Local imported skills
 
 If `AGENTS.md` has a `## Local imported skills` section, those skills live in `./skills/<name>/SKILL.md` in this directory. When a user message matches a trigger phrase listed there, read the corresponding `SKILL.md` file and follow its instructions. These may include `⚠️ needs review` or `🛑 likely broken` headers — respect those warnings when deciding whether to execute the skill.

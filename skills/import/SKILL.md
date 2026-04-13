@@ -56,47 +56,27 @@ After the files are copied, the imported agent is functional but not fully confi
 
 ### Step A — Memory backend (QMD vs builtin)
 
-Check if QMD is installed:
-```bash
-qmd --version 2>/dev/null
+Check if QMD is installed: `qmd --version 2>/dev/null`
+
+Use `AskUserQuestion` to present the choice (do NOT dump this with other questions):
+
+```
+AskUserQuestion(
+  question: "Memory backend for this agent?",
+  options: [
+    { label: "QMD (semantic search)", description: "Local embeddings, reranking. Best quality. Requires qmd installed." },
+    { label: "Builtin (SQLite + FTS5)", description: "Full-text search with BM25. Works out of the box." }
+  ]
+)
 ```
 
-**If QMD is available**, offer to enable it:
-> "I detected QMD on your system. It gives you much better memory — local embeddings, semantic search, reranking. Want me to enable it for this imported agent?"
+If QMD is not installed, skip the question and auto-select builtin — just inform the user: "Using builtin memory (QMD not detected). Install later with `bun install -g qmd`."
 
-If yes, write `agent-config.json`:
-```json
-{
-  "memory": {
-    "backend": "qmd",
-    "citations": "auto",
-    "qmd": {
-      "searchMode": "vsearch",
-      "includeDefaultMemory": true,
-      "limits": { "maxResults": 6, "timeoutMs": 15000 }
-    }
-  }
-}
-```
+Write `agent-config.json` based on the choice:
+- QMD: `{ "memory": { "backend": "qmd", "citations": "auto", "qmd": { "searchMode": "vsearch", "includeDefaultMemory": true, "limits": { "maxResults": 6, "timeoutMs": 15000 } } } }`
+- Builtin: `{ "memory": { "backend": "builtin", "citations": "auto", "builtin": { "temporalDecay": true, "halfLifeDays": 30, "mmr": true, "mmrLambda": 0.7 } } }`
 
-**If QMD is NOT available**, explain the option:
-> "I'm using built-in search (SQLite + FTS5). For semantic search you can install QMD later (`bun install -g qmd`) and enable it with `/agent:settings`."
-
-Write default config:
-```json
-{
-  "memory": {
-    "backend": "builtin",
-    "citations": "auto",
-    "builtin": {
-      "temporalDecay": true,
-      "halfLifeDays": 30,
-      "mmr": true,
-      "mmrLambda": 0.7
-    }
-  }
-}
-```
+**Wait for the user's answer before proceeding to Step B.**
 
 ### Step B — Default crons (heartbeat + dreaming)
 
@@ -168,96 +148,45 @@ classify_skill() {
 
 For each skill, record: name, tier, matched tokens (for reason text), description (first line).
 
-**C.3 — Present the menu.** Output a summary table to the user:
+**C.3 — Present results and ask via `AskUserQuestion`.**
+
+First, show a brief summary: "Found <TOTAL> skills: <G> green, <Y> yellow, <R> red."
+
+Then use `AskUserQuestion` (one question at a time — do NOT combine with other steps):
 
 ```
-I found <TOTAL> skills in <agent>'s workspace:
-
-  🟢 <G> can be imported as-is
-  🟡 <Y> need minor adaptation (I'll add a header noting what to review)
-  🔴 <R> can't be imported (depend on OpenClaw-only infrastructure)
-
-  [a] Import all importable (<G+Y> skills: <G> green + <Y> yellow)
-  [s] Select specific skills (I'll show the full list)
-  [l] List all <TOTAL> with their status, then decide
-  [n] Skip skills import
-
-  What would you like?
+AskUserQuestion(
+  question: "Found <TOTAL> skills in <agent>'s workspace: <G> portable, <Y> need adaptation, <R> incompatible. What to do?",
+  options: [
+    { label: "Import all portable (<G+Y>)", description: "GREEN as-is, YELLOW with adaptation headers. RED skipped." },
+    { label: "Let me pick specific ones", description: "I'll show the full list with tiers so you can choose." },
+    { label: "Skip skills", description: "Don't import any skills for now." }
+  ]
+)
 ```
+
+**Wait for the user's answer before proceeding.**
 
 **C.4 — Handle the choice:**
 
-- **`a`** → import all GREEN + YELLOW skills. Skip all RED.
-- **`s`** → Show a numbered list of every skill:
-  ```
-  #   Tier  Name                    Reason/Description
-  1   🟢    first-principles        Break down problems from first principles
-  2   🔴    fix-api-keys            Uses `gateway config.patch` (OpenClaw gateway)
-  3   🟡    shopping                Uses ~/.openclaw/ paths at lines 15, 89
-  ...
-  ```
-  Then ask: *"Enter the numbers or names of the skills to import (comma-separated), or `done` to proceed."* Import only those. If the user picks a RED skill, import it with a 🛑 header (see C.5).
-- **`l`** → Print the same numbered list as `s`, then re-ask with the [a]/[s]/[n] menu.
-- **`n`** → Skip step C entirely. Print `"Skills: skipped"` to the report.
+- **"Import all portable"** → import all GREEN + YELLOW skills. Skip all RED.
+- **"Let me pick"** → Show a numbered list of every skill with tier + reason. Then use a second `AskUserQuestion` or let the user type the numbers/names. If the user picks a RED skill, import it with a 🛑 header (see C.5).
+- **"Skip skills"** → Skip step C entirely. Print `"Skills: skipped"` to the report.
 
 **C.5 — Import each selected skill.** For each chosen skill:
 
-**If GREEN**: Copy the entire directory (SKILL.md + sibling `scripts/`, `data/`, `references/`, etc.) verbatim:
+**If GREEN**: Copy the entire directory verbatim — NO comments, NO headers, NO annotations:
 ```bash
 mkdir -p "./skills/<name>"
 cp -r "$SRC_SKILLS/<name>/." "./skills/<name>/"
 ```
-Then prepend this HTML comment to `./skills/<name>/SKILL.md` (preserving YAML frontmatter position — insert AFTER the closing `---` of the frontmatter, at the top of the body):
-```html
-<!-- Imported from OpenClaw on <YYYY-MM-DD> (GREEN: no adaptation needed) -->
-```
+The file should look identical to the source. Clean.
 
-**If YELLOW**: Copy the directory the same way, then prepend an adaptation header (also AFTER the frontmatter closing `---`). Detect tokens with `grep -nE` to get line numbers:
-```bash
-grep -nE "$SOFT_YELLOW" "$SRC_SKILLS/<name>/SKILL.md"
-```
-Build a per-skill Markdown block like:
-```markdown
-> ## ⚠️ Imported from OpenClaw — needs review
->
-> This skill was imported automatically on <YYYY-MM-DD>. The following tokens were detected and may need manual adaptation:
->
-> | Token found | Line | Claude Code equivalent | Notes |
-> |---|---|---|---|
-> | `sessions_send(...)` | 42 | `Agent` (Task) tool | One-shot sub-agent, not a persistent session |
-> | `message(...)` | 87 | messaging plugin's `reply` tool | Only works if WhatsApp/Telegram plugin is installed |
-> | `~/.openclaw/credentials/gmail.json` | 104 | Move to a path inside this agent's directory | Check the credentials still exist |
->
-> Once you've reviewed and tested, you can delete this header.
-```
-Only include rows for tokens actually found. Look up the equivalent from this mapping:
-- `sessions_send` → `Agent` (Task) tool — one-shot sub-agent, not a persistent session
-- `message(` → messaging plugin's `reply` tool — requires WhatsApp/Telegram/etc plugin installed
-- `~/.openclaw/` → move referenced files into the agent's project directory or use env variables
-- `.openclaw/credentials` → store credentials elsewhere; OpenClaw credentials path may not exist here
+**If YELLOW**: Copy the directory verbatim — same as GREEN, NO headers in the file. Instead, record the adaptation notes in `IMPORT_BACKLOG.md` (Step C.8) so the file stays clean but the user knows what to review later.
 
-**If RED (only if user explicitly selected via `s`)**: Copy the directory with a louder warning header. Detect hard tokens with `grep -nE`:
-```markdown
-> ## 🛑 Imported but likely broken
->
-> This skill depends on OpenClaw-only infrastructure that has no direct Claude Code equivalent:
->
-> - `sessions_spawn(...)` at line N — OpenClaw's multi-agent orchestration. Claude Code has `Agent` (one-shot) but no persistent multi-agent gateway.
-> - `http://192.168.3.102:3123` at line M — OpenClaw Control Center HTTP API. No equivalent; HTTP calls will fail.
-> - `canvas(...)` at line K — OpenClaw iOS Canvas notifications. No equivalent.
->
-> You'll need to either rewrite this skill for Claude Code or set up the missing infrastructure.
-```
-Equivalent lookup for red tokens:
-- `sessions_spawn` → OpenClaw multi-agent orchestration; no persistent-session equivalent
-- `gateway config.patch` → OpenClaw gateway config; Claude Code has no equivalent global config
-- `http://192.168.3.102` → OpenClaw Control Center dashboard; no equivalent
-- `canvas(` → OpenClaw iOS Canvas notifications; no equivalent
-- `remindctl` → OpenClaw macOS Reminders bridge; you'd need to rewrite using AppleScript or computer-use
-- `wacli` → OpenClaw WhatsApp CLI; use a messaging plugin instead
-- `openclaw gateway` → OpenClaw CLI; no equivalent
-- `HEARTBEAT_OK` / `NO_REPLY` → OpenClaw response codes for isolated cron runs; not meaningful in Claude Code
-- `peekaboo` → OpenClaw desktop bridge; replaced by claude-in-chrome or computer-use MCP
+**If RED (only if user explicitly selected)**: Copy verbatim. Record the incompatibility details in `IMPORT_BACKLOG.md`.
+
+**IMPORTANT**: Never add comments, headers, or annotations inside imported files. They fill context unnecessarily and reference external systems. All adaptation notes go to `IMPORT_BACKLOG.md` — one centralized place, not scattered across files.
 
 **C.6 — Append to AGENTS.md.** For every successfully imported skill (GREEN + YELLOW + any forced RED), append a row to a `## Local imported skills` section in `./AGENTS.md`. Create the section if it doesn't exist yet.
 
@@ -271,10 +200,10 @@ SKILL.md file in `./skills/` and follow its instructions:
 
 - **first-principles** (`./skills/first-principles/SKILL.md`) — "think from first principles", "break down from scratch"
 - **deep-profile** (`./skills/deep-profile/SKILL.md`) — "profile this person", "deep research on"
-- **shopping** (`./skills/shopping/SKILL.md`) ⚠️ needs review — "buy", "compare prices", "shopping list"
+- **shopping** (`./skills/shopping/SKILL.md`) — "buy", "compare prices", "shopping list"
 ```
 
-Mark YELLOW-imported entries with `⚠️ needs review` and RED-imported entries with `🛑 likely broken`.
+All entries look the same — no tier markers in AGENTS.md. Adaptation details live in `IMPORT_BACKLOG.md`.
 
 **C.7 — Per-item summary.** Print to the user:
 
@@ -332,27 +261,29 @@ for j in jobs:
 
 For each classified cron, also record the *specific reason* (matched token name, schedule kind problem, channel problem).
 
-**D.3 — Present the menu** (same format as C.3):
+**D.3 — Present results and ask via `AskUserQuestion`.**
+
+Show brief summary, then use `AskUserQuestion`:
 
 ```
-<agent> has <N> enabled crons:
-
-  🟢 <G> can be imported as-is
-  🟡 <Y> need adaptation (schedule conversion or channel fallback)
-  🔴 <R> can't be imported
-
-  [a] Import all importable
-  [s] Select specific crons
-  [l] List all with status, then decide
-  [n] Skip crons import
+AskUserQuestion(
+  question: "<agent> has <N> enabled crons: <G> portable, <Y> need adaptation, <R> incompatible. What to do?",
+  options: [
+    { label: "Import all portable (<G+Y>)", description: "GREEN as-is, YELLOW with adapted prompts. RED skipped." },
+    { label: "Let me pick specific ones", description: "I'll show the full list with schedules and tiers." },
+    { label: "Skip crons", description: "Don't import user crons. Default heartbeat + dreaming already set up." }
+  ]
+)
 ```
 
-**D.4 — Handle the choice** (same `a`/`s`/`l`/`n` flow as C.4). The numbered list for `s`/`l` shows:
+**Wait for the user's answer before proceeding.**
+
+**D.4 — Handle the choice.** If "Let me pick", show numbered list:
 ```
-#   Tier  Name                     Schedule                  Reason/Description
-1   🟢    Ideas Check-in           0 14 * * 3,6              Ask about active ideas via WhatsApp
-2   🔴    eva-sync-systemEvent     every 5min                kind:systemEvent has no equivalent
-3   🟡    meditation               0 2 * * *                 delivery.channel=whatsapp (plugin not installed)
+#   Tier  Name                     Schedule                  Reason
+1   🟢    Ideas Check-in           0 14 * * 3,6              OK
+2   🔴    eva-sync-systemEvent     every 5min                kind:systemEvent — no equivalent
+3   🟡    meditation               0 2 * * *                 channel=whatsapp (fallback to memory)
 ```
 
 **D.5 — Import each selected cron.** For each chosen cron, build an **adapted prompt**:
@@ -439,9 +370,9 @@ If both lists are empty, don't create the file — print `"Backlog: empty (every
 ```markdown
 ## Import event ($(date +%H:%M))
 
-Imported from OpenClaw workspace `<path>`. Agent: <Name>.
+Imported agent <Name> from `<path>`.
 
-- Skills imported: <G+Y> (<G> green, <Y> yellow with adaptation header)
+- Skills imported: <G+Y> (<G> portable, <Y> need adaptation — details in IMPORT_BACKLOG.md)
 - Skills skipped: <R> — see `IMPORT_BACKLOG.md` for the full list and recovery notes
 - Crons imported: <G+Y> (<G> as-is, <Y> adapted)
 - Crons skipped: <R> — see `IMPORT_BACKLOG.md`
@@ -471,13 +402,21 @@ If no, continue without the cron — the memory entry and the file itself are en
 
 ### Step F — Messaging channel (optional)
 
-Ask the user:
-> "Your agent is imported. Want to also connect it to WhatsApp, Telegram, Discord, or iMessage so you can reach it from your phone? I can guide you through the setup."
+Use `AskUserQuestion`:
 
-If yes:
-- Run the `/agent:messaging` skill flow
-- Default recommendation: WhatsApp via `crisandrews/claude-whatsapp`
-- The skill shows the exact commands for the user to run (plugin install + relaunch with channel flags)
+```
+AskUserQuestion(
+  question: "Set up a messaging channel so you can reach this agent from your phone?",
+  options: [
+    { label: "WhatsApp (recommended)", description: "Via crisandrews/claude-whatsapp. QR scan pairing." },
+    { label: "Telegram", description: "Official Bot API via claude-plugins-official." },
+    { label: "Other", description: "Discord, iMessage, Slack — I'll guide you." },
+    { label: "Later", description: "Skip for now. Run /agent:messaging anytime." }
+  ]
+)
+```
+
+**Wait for the answer.** If the user picks a platform, run the `/agent:messaging` skill flow for that platform. If "Later", skip.
 
 If the user already has a messaging plugin installed (from a previous agent), offer to add its log directory to `memory.extraPaths` so past conversations become searchable.
 
@@ -520,9 +459,9 @@ When Step C.8 or D.7 first writes to `./IMPORT_BACKLOG.md`, create the file with
 ```markdown
 # Import Backlog — Items Not Imported Automatically
 
-This file records OpenClaw skills and crons from the import flow that couldn't
-be translated directly to Claude Code. Review each entry and decide
-case-by-case: port manually, set up the missing infrastructure, or drop the
+This file records skills and crons from the import that couldn't be
+translated directly. Review each entry and decide case-by-case:
+port manually, set up the missing infrastructure, or drop the
 item.
 
 Generated: <YYYY-MM-DD HH:MM>
