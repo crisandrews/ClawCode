@@ -15,11 +15,25 @@
  * registered. The MCP server wires this to push an MCP `notifications/claude/channel`
  * notification so the agent sees the message inline (channel-style), same as WhatsApp.
  * Messages are also queued for a fallback `chat_inbox_read` MCP tool.
+ *
+ * Logging: dual-format (JSONL + Markdown) mirroring the WhatsApp plugin's approach.
+ * Conversation logs live at `{workspace}/.webchat/logs/conversations/`.
+ * System events go to `{workspace}/.webchat/logs/system.log`.
  */
 
 import http from "http";
 import fs from "fs";
 import path from "path";
+
+/** Format a Date as YYYY-MM-DD. */
+function datestamp(d: Date = new Date()): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/** Format a Date as HH:MM:SS. */
+function timeOnly(d: Date = new Date()): string {
+  return d.toISOString().slice(11, 19);
+}
 
 export interface HttpBridgeConfig {
   enabled: boolean;
@@ -78,6 +92,7 @@ export class HttpBridge {
   private chatHistory: ChatMessage[] = [];
   private sseClients: SseClient[] = [];
   private onChatMessage: ChatMessageHandler | null = null;
+  private convLogDirCreated = false;
 
   constructor(
     config: HttpBridgeConfig,
@@ -111,6 +126,9 @@ export class HttpBridge {
       srv.listen(this.config.port, this.config.host, () => {
         this.server = srv;
         this.startedAt = new Date().toISOString();
+        // Restore today's chat history from JSONL on disk
+        this.loadHistoryFromDisk();
+        this.logSystem(`HTTP bridge started on ${this.config.host}:${this.config.port}`);
         console.error(
           `[http-bridge] Listening on http://${this.config.host}:${this.config.port}`
         );
@@ -130,6 +148,7 @@ export class HttpBridge {
       } catch {}
     }
     this.sseClients = [];
+    this.logSystem("HTTP bridge stopped");
 
     return new Promise((resolve) => {
       this.server!.close(() => {
@@ -176,6 +195,7 @@ export class HttpBridge {
     };
     this.chatHistory.push(msg);
     this.capHistory();
+    this.logConversation("out", "agent", msg.content);
     this.broadcastSse(msg);
     return msg;
   }
@@ -307,6 +327,7 @@ export class HttpBridge {
         webhookQueueSize: this.webhookQueue.length,
         chatInboxSize: this.chatInbox.length,
         sseClients: this.sseClients.length,
+        chatLogPath: this.convLogsDir,
       },
       config: {
         memoryBackend: config.memory?.backend ?? "builtin",
@@ -421,6 +442,7 @@ export class HttpBridge {
       // Store for history and inbox
       this.chatHistory.push(msg);
       this.capHistory();
+      this.logConversation("in", "webchat-user", msg.content);
       if (this.chatInbox.length >= 500) this.chatInbox.shift();
       this.chatInbox.push(msg);
 
@@ -485,6 +507,105 @@ export class HttpBridge {
       clearInterval(heartbeat);
       this.sseClients = this.sseClients.filter((c) => c.id !== clientId);
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Conversation logging — dual format (JSONL + Markdown)
+  // Mirrors the WhatsApp plugin's logConversation() approach.
+  // -------------------------------------------------------------------------
+
+  /** Base directory for webchat logs. */
+  private get convLogsDir(): string {
+    return path.join(this.workspace, ".webchat", "logs", "conversations");
+  }
+
+  /** System log path. */
+  private get systemLogPath(): string {
+    return path.join(this.workspace, ".webchat", "logs", "system.log");
+  }
+
+  /** Create .webchat/logs/conversations/ directory lazily on first write. */
+  private ensureConvLogDir(): void {
+    if (this.convLogDirCreated) return;
+    try {
+      fs.mkdirSync(this.convLogsDir, { recursive: true });
+      this.convLogDirCreated = true;
+    } catch {
+      // If it already exists that's fine; flag it so we don't retry
+      if (fs.existsSync(this.convLogsDir)) this.convLogDirCreated = true;
+    }
+  }
+
+  /**
+   * Log a conversation event in dual format (JSONL + Markdown).
+   * Matches the WhatsApp plugin's logConversation() signature.
+   */
+  private logConversation(direction: "in" | "out", user: string, text: string, meta?: Record<string, any>): void {
+    try {
+      this.ensureConvLogDir();
+      const ts = new Date().toISOString();
+      const date = ts.slice(0, 10);
+
+      // JSONL — one structured JSON per line
+      const jsonLine = JSON.stringify({ ts, direction, user, text, channel: "webchat", ...meta }) + "\n";
+      fs.appendFileSync(path.join(this.convLogsDir, `${date}.jsonl`), jsonLine, "utf-8");
+
+      // Markdown — human-readable
+      const arrow = direction === "in" ? "\u2190" : "\u2192";
+      const mdLine = `**${arrow} ${user}** (${ts.slice(11, 19)}): ${text}\n\n`;
+      fs.appendFileSync(path.join(this.convLogsDir, `${date}.md`), mdLine, "utf-8");
+    } catch {
+      // Logging is best-effort — never crash the chat for a log write failure
+    }
+  }
+
+  /** Write a system-level log entry. */
+  private logSystem(message: string): void {
+    try {
+      this.ensureConvLogDir();
+      const ts = new Date().toISOString();
+      const line = `[${ts}] ${message}\n`;
+      fs.appendFileSync(this.systemLogPath, line, "utf-8");
+    } catch {
+      // Best-effort — never crash for a log failure
+    }
+  }
+
+  /**
+   * Load today's conversation history from JSONL on disk.
+   * JSONL is the structured source of truth (not MD).
+   */
+  private loadHistoryFromDisk(): void {
+    try {
+      const today = datestamp();
+      const jsonlPath = path.join(this.convLogsDir, `${today}.jsonl`);
+      if (!fs.existsSync(jsonlPath)) return;
+      const raw = fs.readFileSync(jsonlPath, "utf-8");
+      const lines = raw.split("\n");
+      let idx = 0;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const entry = JSON.parse(trimmed);
+          const role: "user" | "agent" = entry.direction === "in" ? "user" : "agent";
+          const msg: ChatMessage = {
+            id: `log_${today}_${idx++}`,
+            ts: entry.ts || `${today}T00:00:00.000Z`,
+            role,
+            content: entry.text || "",
+          };
+          if (msg.content) {
+            this.chatHistory.push(msg);
+          }
+        } catch {
+          // Skip malformed lines
+        }
+      }
+      this.capHistory();
+    } catch {
+      // Best-effort — if log file is corrupted, just start fresh
+    }
   }
 
   // --- Helpers ---
