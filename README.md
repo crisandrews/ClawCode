@@ -29,16 +29,19 @@ ClawCode turns Claude Code into a stateful autonomous agent. It gives Claude a p
 
 ## [Highlights](#highlights)
 
-- **[Persistent identity](#quick-setup)** — name, personality, emoji. The agent wakes up as itself on every session.
-- **[Active memory](#memory)** — bilingual recall at the start of every turn. Spanish question finds English memory and vice versa.
-- **[Dreaming](#dreaming)** — nightly 3-phase memory consolidation with 6 weighted signals.
-- **[Voice](#voice)** — TTS via sag, ElevenLabs, OpenAI, macOS `say`. STT via Whisper.
-- **[WebChat](#webchat)** — browser-based chat UI with real-time SSE, conversation logging in JSONL + Markdown.
-- **[Messaging channels](#messaging-channels)** — WhatsApp, Telegram, Discord, iMessage, Slack via MCP plugins.
-- **[Community skills](#community-skills)** — install from GitHub with `owner/repo@branch#subdir`.
-- **[Always-on](#always-on-service)** — launchd / systemd service with one command.
-- **[Doctor](#diagnostics)** — diagnose and auto-repair agent health.
-- **[Terse by design](#features)** — "Guardado. 🍣" not "I will now proceed to save your message to the daily memory log..."
+- **[Persistent identity](#how-it-works)** — name, personality, emoji. The agent wakes up as itself on every session via lifecycle hooks that inject SOUL.md + IDENTITY.md at startup.
+- **[Active memory](#memory)** — bilingual recall (ES ↔ EN) at the start of every turn. Ask "cómo se llama mi perro?" and it finds "Cookie" from English notes. Warns about allergies before suggesting food.
+- **[Lifecycle hooks](#hooks)** — SessionStart injects identity + auto-creates crons. PreCompact flushes memory before context compression. Stop writes session summaries. SessionEnd tracks dream events.
+- **[Dreaming](#dreaming)** — nightly 3-phase consolidation (Light → REM → Deep) with 6 weighted signals. Promotes important memories to long-term storage.
+- **[Language adaptation](#how-it-works)** — detects the user's language and responds in kind. Switch mid-conversation and the agent switches too. Commands, status cards, and errors all adapt.
+- **[Voice](#voice)** — TTS via sag, ElevenLabs, OpenAI, macOS `say`. STT via local Whisper or OpenAI API.
+- **[WebChat](#webchat)** — browser chat UI with SSE real-time delivery. Conversation logs in JSONL + Markdown (same format as WhatsApp).
+- **[Messaging channels](#messaging-channels)** — WhatsApp, Telegram, Discord, iMessage, Slack. Slash commands (`/status`, `/help`, `/whoami`) work from any channel.
+- **[Smart import](#importing-agents)** — 3-tier classifier (GREEN/YELLOW/RED) for skills and crons. Step-by-step wizard with clickable options. Skipped items go to a backlog with recovery notes.
+- **[Community skills](#community-skills)** — install from GitHub with `owner/repo@branch#subdir`. OS + dependency validation.
+- **[Always-on](#always-on-service)** — launchd / systemd service. Enables dreaming + heartbeat 24/7.
+- **[Doctor](#diagnostics)** — 9 health checks (config, identity, memory, SQLite, QMD, bootstrap, HTTP, messaging, dreaming). `--fix` auto-repairs safe issues.
+- **[Terse by design](#how-it-works)** — "Guardado. 🍣" not "I will now proceed to save your message to the daily memory log..."
 
 ## [Prerequisites](#prerequisites)
 
@@ -97,11 +100,32 @@ This starts the bootstrap ritual — a casual conversation where the agent disco
 
 The agent now wakes up with its identity on every session.
 
+## [How it works](#how-it-works)
+
+ClawCode injects personality and behavior at four points in the session lifecycle:
+
+| Hook | When | What happens |
+| --- | --- | --- |
+| **SessionStart** | Session opens | Reads SOUL.md + IDENTITY.md + USER.md and injects them as context. Checks if heartbeat + dreaming crons exist — creates them if missing. |
+| **PreCompact** | Context getting full | Reminds agent to save important facts to `memory/YYYY-MM-DD.md` before compression erases them. |
+| **Stop** | Session closing | Reminds agent to write a session summary (what was discussed, decisions, open items). |
+| **SessionEnd** | Session closed | Logs a `session.end` event for the dreaming system. |
+
+This means:
+- **Every session starts with personality** — the agent never says "I'm Claude." It knows its name, vibe, and your info.
+- **Memory survives compaction** — PreCompact flushes facts before they're lost.
+- **Sessions are summarized** — the next session knows what happened in the last one.
+- **Dreaming tracks sessions** — knows when you were active, when you paused.
+
+The agent also **detects your language** from each message and responds in kind. Switch from Spanish to English mid-conversation — the agent switches too. Status cards, error messages, and commands all adapt.
+
+Full details: [`docs/hooks.md`](docs/hooks.md)
+
 ## [Features](#features)
 
 ### [Memory](#memory)
 
-The agent writes to `memory/YYYY-MM-DD.md` during sessions and searches it automatically at the start of every turn — no need to say "search memory." Bilingual (Spanish ↔ English), date-aware ("what did we discuss yesterday?"), and safety-critical (warns about allergies before suggesting food).
+The agent writes to `memory/YYYY-MM-DD.md` during sessions and searches it automatically at the start of every turn — no need to say "search memory." Bilingual (Spanish ↔ English, 40+ synonym pairs), date-aware ("hoy" resolves to today's date), and safety-critical (warns about allergies before suggesting food). Trivial messages (greetings, "ok", slash commands) skip the search — no wasted context.
 
 Two backends: **builtin** (SQLite + FTS5, works out of the box) and **QMD** (local embeddings for semantic search — install with `bun install -g qmd`).
 
@@ -109,7 +133,13 @@ Full details: [`docs/memory.md`](docs/memory.md) · [`docs/memory-context.md`](d
 
 ### [Dreaming](#dreaming)
 
-Nightly cron (3 AM) runs 3-phase memory consolidation — Light, REM, Deep — using 6 weighted signals to promote important memories to `memory/MEMORY.md`. Run manually with `dream(action='run')`.
+Nightly cron (3 AM) runs 3-phase memory consolidation:
+
+- **Light** — ingests recall signals from the day, deduplicates candidates
+- **REM** — extracts recurring themes, identifies multi-day patterns, writes reflections to `DREAMS.md`
+- **Deep** — ranks candidates with 6 weighted signals (relevance 0.30, frequency 0.24, query diversity 0.15, recency 0.15, consolidation 0.10, conceptual richness 0.06) and promotes winners to `memory/MEMORY.md`
+
+Run manually: `dream(action='run')` or preview with `dream(action='dry-run')`.
 
 Full details: [`docs/dreaming.md`](docs/dreaming.md)
 
@@ -138,11 +168,26 @@ Reach your agent from WhatsApp, Telegram, Discord, iMessage, or Slack. Each mess
 /agent:messaging
 ```
 
+Slash commands work from any channel — `/status`, `/help`, `/whoami`, `/new`, `/compact` all respond whether the user is in the CLI terminal or chatting via WhatsApp. Formatting adapts automatically (`*bold*` for WhatsApp, `**bold**` for Telegram, standard markdown for CLI).
+
 Full details: [`docs/channels.md`](docs/channels.md)
+
+### [Importing agents](#importing-agents)
+
+`/agent:import` brings an existing agent into Claude Code with a step-by-step wizard (clickable options, one question at a time):
+
+1. **Bootstrap files** — copies SOUL.md, IDENTITY.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md
+2. **Memory** — imports MEMORY.md + recent daily logs (credentials are never copied)
+3. **Memory backend** — asks: QMD (semantic search) or builtin (SQLite + FTS5)?
+4. **Skills** — classifies each skill as GREEN (portable), YELLOW (needs adaptation), or RED (incompatible). You choose: all, specific ones, or skip.
+5. **Crons** — same 3-tier classification for scheduled tasks. Prompts are adapted for Claude Code tools.
+6. **Messaging** — offers WhatsApp, Telegram, Discord, iMessage setup.
+
+Files are copied **clean** — no annotations, no comments. Adaptation details go to `IMPORT_BACKLOG.md` so the user can revisit skipped items later. The import event is logged to memory so the agent remembers what was imported.
 
 ### [Diagnostics](#diagnostics)
 
-`/agent:doctor` inspects config, identity, memory, SQLite, QMD, crons, HTTP bridge, messaging, and dreaming. Returns a ✅/⚠️/❌ card. Use `--fix` to auto-repair safe issues.
+`/agent:doctor` runs 9 health checks: config validity, identity files, memory directory, SQLite integrity, QMD availability, bootstrap state, HTTP bridge, messaging plugins, dreaming. Returns a ✅/⚠️/❌ card. Use `--fix` to auto-repair safe issues (create missing `memory/`, reindex SQLite, remove stale `BOOTSTRAP.md`).
 
 Full details: [`docs/doctor.md`](docs/doctor.md)
 
@@ -247,6 +292,22 @@ Each agent is its own folder with its own personality, memory, and config:
 ```
 
 Install the plugin in each folder with local scope. Switch: `cd ~/other-agent && claude`.
+
+## [Personality files](#personality-files)
+
+Every agent has these files in its root. They're injected as context at session start via the SessionStart hook.
+
+| File | What it defines |
+| --- | --- |
+| `SOUL.md` | Core truths, boundaries, philosophy — the agent's deepest identity |
+| `IDENTITY.md` | Name, emoji, creature type, vibe, birth date |
+| `USER.md` | Your info: name, timezone, language, preferences |
+| `AGENTS.md` | Operational rules, safety boundaries, local skill triggers |
+| `TOOLS.md` | Platform-specific formatting (WhatsApp uses `*bold*`, Telegram uses `**bold**`) |
+| `HEARTBEAT.md` | What to check every 30 min (review daily logs, consolidate memory) |
+| `BOOTSTRAP.md` | First-run ritual (deleted after onboarding) |
+
+The agent never says "I'm Claude" — it uses its name from IDENTITY.md. Even when asked directly "are you Claude?", it answers: "I'm [name] — built on Claude, but with my own memory, personality, and name."
 
 ## [Session & data](#session--data)
 

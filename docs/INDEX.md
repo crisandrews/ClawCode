@@ -16,6 +16,7 @@ Master index of every capability. The agent reads this first when it needs to re
 | Skill manager | [skill-manager.md](skill-manager.md) | `/agent:skill install\|list\|remove` | `skill_install`, `skill_list`, `skill_remove` |
 | Command discovery | [command-discovery.md](command-discovery.md) | `/help` (uses it) | `list_commands` |
 | Channels | [channels.md](channels.md) | `/agent:channels [list\|status\|launch]` | `channels_detect` |
+| Hooks (lifecycle) | [hooks.md](hooks.md) | — (automatic) | — |
 
 ## Optional (user enables)
 
