@@ -58,9 +58,16 @@ import type { SearchResult } from "./lib/types.ts";
 // ---------------------------------------------------------------------------
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || process.cwd();
-// WORKSPACE = user's project dir. MCP server inherits cwd from Claude Code.
-// npm --prefix installs deps in PLUGIN_ROOT, but tsx runs with inherited cwd.
-const WORKSPACE = process.cwd();
+// WORKSPACE = user's project dir. .mcp.json's launch wrapper `cd`s into
+// PLUGIN_ROOT to find node_modules before exec'ing tsx, which makes
+// process.cwd() resolve to the plugin dir instead of the user's project.
+// OLDPWD is set by that `cd` and reliably points to Claude Code's original
+// cwd (the user's project). Prefer CLAUDE_PROJECT_DIR if Claude Code exports
+// it, then OLDPWD, then process.cwd() as a last resort.
+const WORKSPACE =
+  process.env.CLAUDE_PROJECT_DIR ||
+  process.env.OLDPWD ||
+  process.cwd();
 const MEMORY_DIR = path.join(WORKSPACE, "memory");
 const DREAMS_DIR = path.join(MEMORY_DIR, ".dreams");
 
