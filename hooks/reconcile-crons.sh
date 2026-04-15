@@ -83,6 +83,32 @@ if [[ -f "$IMPORT_BACKLOG" && -f "$OPENCLAW_CRON" ]]; then
   fi
 fi
 
+# --- 6b. FAST-PATH CHECK ---
+# Skip the reconcile envelope when the registry is already fully bootstrapped
+# (every active entry has a live harnessTaskId) AND there's no pending
+# migration offer. This keeps the first user-facing turn cheap on steady-state
+# sessions; any drift that occurs after bootstrap is picked up by the
+# heartbeat skill's reconcile check within 30 minutes.
+#
+# On the very first boot the registry has no harnessTaskId values yet, so this
+# check falls through to the full envelope below and the agent creates the
+# crons exactly as it did in prior versions. Same story after upgrading from
+# an older version — the first session after upgrade runs the envelope once
+# to populate harnessTaskId, subsequent sessions take the fast path.
+#
+# If a cron is externally deleted (e.g. `CronDelete` on an adopted entry),
+# writeback marks its registry harnessTaskId as stale and the next
+# SessionStart re-emits the envelope to reconcile. No silent drift.
+if [[ $MIGRATION_NEEDED -eq 0 && -f "$REGISTRY" ]]; then
+  UNBOOTSTRAPPED=$(jq '[.entries[]
+      | select(.paused == false and .tombstone == null
+               and (.harnessTaskId == null or .harnessTaskId == ""))]
+      | length' "$REGISTRY" 2>/dev/null || echo 1)
+  if [[ "$UNBOOTSTRAPPED" == "0" ]]; then
+    exit 0
+  fi
+fi
+
 # --- 7. BUILD EXPECTED SET ---
 EXPECTED_LINES=""
 if [[ -f "$REGISTRY" ]]; then
