@@ -11,21 +11,41 @@ Import an existing agent from an OpenClaw installation into this directory, then
 
 ## Part 1: Copy the agent
 
-1. **List available OpenClaw agents**:
+1. **Discover OpenClaw workspaces** across plausible source locations. Users
+   commonly run OpenClaw as `root` and then run ClawCode as a non-root user
+   (e.g. inside an LXC where the service user is `claude`), so checking only
+   `~/.openclaw` misses those setups. Look in every readable root below and
+   union the results:
+
    ```bash
-   ls -d ~/.openclaw/workspace* 2>/dev/null
+   for root in \
+     "${CLAWCODE_OPENCLAW_ROOT:-}" \
+     "$HOME/.openclaw" \
+     "/root/.openclaw"; do
+     [[ -z "$root" ]] && continue
+     [[ -r "$root" ]] || continue
+     ls -d "$root"/workspace* 2>/dev/null
+   done | sort -u
    ```
-   
-   For each workspace, read IDENTITY.md to show the agent's name:
-   - `~/.openclaw/workspace/` — default agent (main)
-   - `~/.openclaw/workspace-eva/` — agent "eva"
-   - `~/.openclaw/workspace-jack/` — agent "jack"
+
+   Override the search roots with the `CLAWCODE_OPENCLAW_ROOT` env var when
+   OpenClaw data lives in a non-standard location (e.g. a mounted volume).
+
+   If the loop returns nothing, ask the user for an absolute path to the
+   source workspace instead of silently falling back.
+
+   For each workspace found, read `IDENTITY.md` to show the agent's name.
+   Typical layouts:
+   - `<root>/workspace/` — default agent (main)
+   - `<root>/workspace-eva/` — agent "eva"
+   - `<root>/workspace-jack/` — agent "jack"
 
 2. **Let the user choose** which agent to import (or use argument if provided).
 
-3. **Determine the source path**:
-   - Default/main: `~/.openclaw/workspace/`
-   - Named agent: `~/.openclaw/workspace-{id}/`
+3. **Determine the source path**: use the absolute path from the chosen
+   workspace (e.g. `/root/.openclaw/workspace-eva/` or
+   `/home/claude/.openclaw/workspace/`). Do NOT re-expand `~` from an
+   agent-id alone — the discovered path already carries the correct root.
 
 4. **Copy bootstrap files** to the current project root:
    Files to copy from the source workspace:
@@ -454,7 +474,48 @@ AskUserQuestion(
 
 If the user already has a messaging plugin installed (from a previous agent), offer to add its log directory to `memory.extraPaths` so past conversations become searchable.
 
-### Step G — Reload
+### Step G — Path sanity check
+
+After everything is copied and written, scan Claude Code's config files for
+absolute paths that point at a different user's home directory. This is the
+other half of the cross-user import problem: Claude Code writes absolute paths
+into its own settings when plugins are installed, and switching the runtime
+user (e.g. from `root` to `claude`) leaves those paths pointing at a home dir
+the new user can't read. Skills silently fail with "unknown skill" errors.
+
+ClawCode does NOT own these files, so don't auto-patch them — just detect and
+warn:
+
+```bash
+# Any absolute path in Claude Code's config that doesn't live under $HOME is
+# suspect. /root paths are the usual culprit after a user switch.
+for f in \
+  "$HOME/.claude/settings.json" \
+  "$HOME/.claude/installed_plugins.json" \
+  "./agent-config.json"; do
+  [[ -f "$f" ]] || continue
+  # Match quoted absolute paths; reject anything under $HOME.
+  grep -oE '"/[^"]+"' "$f" \
+    | tr -d '"' \
+    | grep -v "^$HOME/" \
+    | grep -v "^/usr/\|^/bin/\|^/etc/\|^/tmp/\|^/opt/" \
+    | while read -r p; do echo "$f → $p"; done
+done
+```
+
+For every hit, print a specific, fix-ready warning — e.g.:
+
+```
+⚠️ ~/.claude/installed_plugins.json references /root/.claude/plugins/...
+   but this agent runs as $(whoami) ($HOME). Skills from those plugins will
+   fail with "unknown skill". Fix with:
+
+   sed -i "s|/root/.claude|$HOME/.claude|g" ~/.claude/installed_plugins.json
+```
+
+If nothing is flagged, print one line: "Paths OK — no stale home-dir references."
+
+### Step H — Reload
 
 Tell the user to reload the MCP server so all the new config takes effect:
 ```
