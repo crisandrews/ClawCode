@@ -73,14 +73,21 @@ The `/agent:service install` skill asks for explicit confirmation before generat
     </array>
     <key>WorkingDirectory</key>
     <string>/Users/you/my-agent</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/you</string>
+        <key>TERM</key>
+        <string>xterm-256color</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/clawcode-my-agent.log</string>
+    <string>/Users/you/.clawcode/logs/my-agent.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/clawcode-my-agent.log</string>
+    <string>/Users/you/.clawcode/logs/my-agent.log</string>
     <key>ProcessType</key>
     <string>Interactive</string>
 </dict>
@@ -97,12 +104,16 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/you/my-agent
+Environment=HOME=/home/you
+Environment=TERM=xterm-256color
 ExecStartPre=-/usr/bin/pkill -f "claude.*--dangerously-skip-permissions"
 ExecStart=/usr/local/bin/claude --dangerously-skip-permissions
 Restart=always
 RestartSec=10
-StandardOutput=append:/tmp/clawcode-my-agent.log
-StandardError=append:/tmp/clawcode-my-agent.log
+StartLimitIntervalSec=300
+StartLimitBurst=5
+StandardOutput=append:/home/you/.clawcode/logs/my-agent.log
+StandardError=append:/home/you/.clawcode/logs/my-agent.log
 
 [Install]
 WantedBy=default.target
@@ -132,9 +143,9 @@ Remember: the more tools you load, the more attack surface the always-on agent h
 
 ## Logs
 
-Default log path: `/tmp/clawcode-<slug>.log`. Both stdout and stderr go there.
+Default log path: `~/.clawcode/logs/<slug>.log`. Both stdout and stderr go there. The install plan creates `~/.clawcode/logs/` automatically — without that, systemd's `append:` and launchd's `StandardOutPath` silently refuse to start the service.
 
-`/tmp` is cleared on reboot. If you want persistent logs, pass a custom `logPath` when installing — e.g. `~/.clawcode/logs/my-agent.log`. Log rotation is not handled — add your own `logrotate` rule or pipe through a rotator if needed.
+Persistent across reboots. Override with a custom `logPath` when installing if you want the file elsewhere. Log rotation is not handled — add your own `logrotate` rule or pipe through a rotator if needed.
 
 ## Resume-on-restart wrapper
 
@@ -155,7 +166,7 @@ The wrapper is regenerated every time `install` is run, so safe to re-run after 
 |---|---|---|
 | Service installed but WebChat / HTTP bridge never come up; logs empty or stuck before "listening" | Bypass Permissions startup dialog waiting for a "Do you accept?" that the daemon (launchd / systemd) cannot answer — no TTY | Add `"skipDangerousModePermissionPrompt": true` to `~/.claude/settings.json`, then restart the service. Only affects service mode; interactive `claude` is unaffected |
 | "service installed" but WebChat still unreachable | Service file is correct but `claude` not in PATH for launchd | Verify with `/agent:service status`; use absolute path to `claude` (`which claude` then pass as `claudeBin`) |
-| Service keeps crashing / restart loop | Config error (bad `agent-config.json`) or missing permission the `--dangerously-skip-permissions` flag can't cover | Check `/tmp/clawcode-<slug>.log`; run `/agent:doctor` to see if config is valid |
+| Service keeps crashing / restart loop | Config error (bad `agent-config.json`) or missing permission the `--dangerously-skip-permissions` flag can't cover | Check `~/.clawcode/logs/<slug>.log`; run `/agent:doctor` to see if config is valid. `StartLimitBurst=5` means systemd will stop retrying after 5 failures in 5 minutes — look for the last error there. |
 | On Linux: service dies when you log out | Lingering not enabled | `sudo loginctl enable-linger $USER` |
 | Uninstall didn't fully stop | systemd cache | `systemctl --user daemon-reload` then re-run uninstall |
 | Multiple agents conflicting | Same slug | Ensure workspace folder names are distinct |
