@@ -136,6 +136,19 @@ Default log path: `/tmp/clawcode-<slug>.log`. Both stdout and stderr go there.
 
 `/tmp` is cleared on reboot. If you want persistent logs, pass a custom `logPath` when installing — e.g. `~/.clawcode/logs/my-agent.log`. Log rotation is not handled — add your own `logrotate` rule or pipe through a rotator if needed.
 
+## Resume-on-restart wrapper
+
+`/agent:service install` emits a small shim at `~/.clawcode/service/<slug>-resume-wrapper.sh` and points the unit's `ExecStart` (or plist `ProgramArguments`) at it. The wrapper runs `claude --continue` so a service restart rehydrates the prior session's conversation history instead of starting fresh — useful when a watchdog aggressively restarts stalled sessions.
+
+Behavior:
+- Runs `claude --continue` by default
+- Falls back to a plain start when there is no prior session jsonl (first boot)
+- Falls back to a plain start when the last session is more than 7 days old (long-stale resumes tend to behave oddly)
+
+Opt out by passing `resumeOnRestart: false` to `service_plan`. You'll get the pre-v1.3 behavior — `ExecStart` invokes `claude` directly with no context preservation across restarts.
+
+The wrapper is regenerated every time `install` is run, so safe to re-run after changing `extraArgs` or `claudeBin`. `uninstall` removes it.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
