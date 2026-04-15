@@ -171,7 +171,17 @@ export function generateSystemdUnit(opts: {
   const execStartParts = [opts.claudeBin, ...args].map((a) =>
     /\s/.test(a) ? `"${shellEscape(a)}"` : a
   );
-  const execStart = execStartParts.join(" ");
+  // Wrap the invocation in `script -q -c '...' /dev/null` so claude runs
+  // under a PTY. Without a PTY, Claude Code's SessionEnd (and other
+  // lifecycle) hooks cannot spawn `/bin/sh`, graceful exits return code 1
+  // instead of 0, and `Restart=on-failure`/`always` produces a crash loop
+  // on every normal shutdown. The inner single-quoted command is re-parsed
+  // by `script`'s child /bin/sh, which strips the outer quotes — so any
+  // literal single-quote in a path/arg must be escaped with '\''.
+  const innerCmd = execStartParts
+    .map((a) => a.replace(/'/g, `'\\''`))
+    .join(" ");
+  const execStart = `/usr/bin/script -q -c '${innerCmd}' /dev/null`;
 
   return `[Unit]
 Description=ClawCode Agent (${opts.name})
@@ -180,6 +190,11 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=${opts.workspace}
+# Disable Claude Code's in-process auto-updater while running as a daemon.
+# Background updates have regenerated service files and left the system in
+# inconsistent states; pin the installed version and update explicitly via
+# package manager instead.
+Environment=DISABLE_AUTOUPDATER=1
 ExecStartPre=-/usr/bin/pkill -f "claude.*--dangerously-skip-permissions"
 ExecStart=${execStart}
 Restart=always
