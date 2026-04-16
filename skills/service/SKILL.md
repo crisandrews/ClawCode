@@ -50,6 +50,7 @@ Parse the action and call `service_plan` with it.
        `Bash: jq '. + {"skipDangerousModePermissionPrompt": true}' ~/.claude/settings.json > ~/.claude/settings.json.tmp && mv ~/.claude/settings.json.tmp ~/.claude/settings.json`
        (If the file did not exist, first run `Bash: echo '{}' > ~/.claude/settings.json` so `jq` has something to merge into.) Confirm with one line: *"Added skipDangerousModePermissionPrompt: true to ~/.claude/settings.json."*
      - If no: warn explicitly *"Without it the service will hang at startup. Continue anyway? [y/N]"*. On a second `no`, abort with a neutral acknowledgement and do not write any service files. On `yes`, proceed and let the user deal with it.
+   - If `plan.extraFiles` is present, for each entry: ensure the parent dir exists (`Bash(mkdir -p <dirname>)`), then `Write(file.path, file.content)`, then `Bash(chmod <octal> <file.path>)` using `file.mode` (default 0o644 when omitted). These are auxiliary scripts the unit file needs to exist before start — e.g. the resume-on-restart wrapper.
    - Write the plist / unit file: `Write(filePath, fileContent)` — the plan tells you the path
    - Run each command from `plan.commands` in order with `Bash`, printing the label before each
    - If any command fails, stop and report the error (do NOT try to roll back — the user can run `uninstall` to clean up)
