@@ -37,6 +37,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/stop-guard.sh"
+          },
+          {
+            "type": "command",
             "command": "echo '[clawcode] Session ending. If this was a significant conversation, write a brief summary to memory/'$(date +%Y-%m-%d)'.md before closing. Include: what was discussed, decisions made, open items.'"
           }
         ]
