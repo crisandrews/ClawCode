@@ -73,7 +73,7 @@ export interface AutoResearchResult {
 const DEFAULT_AUTORESEARCH_CONFIG: AutoResearchConfig = {
   enabled: false,
   maxGapsPerNight: 5,
-  confidenceThreshold: 0.7,
+  confidenceThreshold: 0.6,
   sources: ["codebase", "memory"],
   maxResearchTimeMinutes: 10,
 };
@@ -110,9 +110,12 @@ export class GapTracker {
     if (existing) {
       existing.occurrences++;
       existing.lastSeen = now;
-      existing.resultCount = resultCount;
-      existing.maxScore = maxScore;
-      existing.gapType = gapType;
+      // Only update search context if this was an actual search (not a manual add)
+      if (resultCount > 0 || existing.resultCount === 0) {
+        existing.resultCount = resultCount;
+        existing.maxScore = maxScore;
+        existing.gapType = gapType;
+      }
     } else {
       gaps.push({
         query,
@@ -168,8 +171,13 @@ export class GapTracker {
   }
 
   private saveGaps(gaps: KnowledgeGap[]): void {
+    // Cap at 100 entries — keep the most frequent, drop the rest
+    const MAX_GAPS = 100;
+    const toSave = gaps.length > MAX_GAPS
+      ? gaps.sort((a, b) => b.occurrences - a.occurrences).slice(0, MAX_GAPS)
+      : gaps;
     fs.mkdirSync(path.dirname(this.gapsFile), { recursive: true });
-    fs.writeFileSync(this.gapsFile, JSON.stringify(gaps, null, 2));
+    fs.writeFileSync(this.gapsFile, JSON.stringify(toSave, null, 2));
   }
 }
 
@@ -181,6 +189,14 @@ export type SearchFn = (
   query: string,
   maxResults?: number
 ) => Array<{ path: string; snippet: string; score: number }>;
+
+function inferSourceType(filePath: string): ResearchSource["type"] {
+  const lower = filePath.toLowerCase();
+  if (lower.startsWith("memory/") || lower.startsWith("memory\\") || lower.includes("/memory/")) {
+    return "memory";
+  }
+  return "codebase";
+}
 
 export class ResearchEngine {
   private workspace: string;
@@ -251,30 +267,37 @@ export class ResearchEngine {
         for (const r of results) {
           if (r.score > 0.2) {
             sources.push({
-              type: "memory",
+              type: inferSourceType(r.path),
               path: r.path,
               snippet: r.snippet.slice(0, 300),
               score: r.score,
             });
           }
         }
-      } catch {}
+      } catch {
+        // Search failure for individual keyword — continue with remaining.
+      }
     }
 
-    // Strategy 2: partial-match search with substrings
-    if (sources.length === 0 && gap.query.length > 10) {
-      const half = gap.query.slice(0, Math.ceil(gap.query.length / 2));
-      try {
-        const results = searchFn(half, 3);
-        for (const r of results) {
-          sources.push({
-            type: "memory",
-            path: r.path,
-            snippet: r.snippet.slice(0, 300),
-            score: r.score,
-          });
+    // Strategy 2: partial-match search using word boundaries
+    if (sources.length === 0) {
+      const words = gap.query.split(/\s+/).filter((w) => w.length > 2);
+      const halfWords = words.slice(0, Math.max(1, Math.ceil(words.length / 2)));
+      if (halfWords.length > 0) {
+        try {
+          const results = searchFn(halfWords.join(" "), 3);
+          for (const r of results) {
+            sources.push({
+              type: inferSourceType(r.path),
+              path: r.path,
+              snippet: r.snippet.slice(0, 300),
+              score: r.score,
+            });
+          }
+        } catch {
+          // Partial-match search failure — proceed with what we have.
         }
-      } catch {}
+      }
     }
 
     // Deduplicate sources by path
@@ -325,13 +348,18 @@ export class ResearchEngine {
 
     const avgScore =
       sources.reduce((sum, s) => sum + s.score, 0) / sources.length;
-    const sourceCount = Math.min(sources.length / 3, 1.0);
-    const typeCount =
-      new Set(sources.map((s) => s.type)).size / 3;
+    // Source count: 1 source gives 0.5, 2 gives 0.75, 3+ gives 1.0
+    const sourceCount = Math.min(sources.length / 2, 1.0);
+    // Type diversity bonus: only applies when multiple distinct types are present
+    const uniqueTypes = new Set(sources.map((s) => s.type)).size;
+    const diversityBonus = uniqueTypes >= 2 ? 0.15 : 0;
 
-    // Weighted: avg relevance 50%, source count 30%, source diversity 20%
+    // Primary: avg relevance 65%, source count 25%, diversity bonus 10%
+    // A single high-quality source (score 0.8) → 0.8*0.65 + 0.5*0.25 = 0.645
+    // Two sources avg 0.7 → 0.7*0.65 + 0.75*0.25 = 0.643
+    // Two diverse sources avg 0.7 → 0.643 + 0.15*0.10 = 0.658
     return Math.min(
-      avgScore * 0.5 + sourceCount * 0.3 + typeCount * 0.2,
+      avgScore * 0.65 + sourceCount * 0.25 + diversityBonus * 0.10,
       1.0
     );
   }
@@ -401,7 +429,12 @@ export class ResearchEngine {
           `# Dreams\n\n*Memory consolidation diary.*\n${markdown}`
         );
       }
-    } catch {}
+    } catch (err) {
+      // Log but don't crash — dreaming is best-effort
+      process.stderr.write(
+        `[clawcode/autoresearch] Failed to write DREAMS.md: ${err instanceof Error ? err.message : String(err)}\n`
+      );
+    }
   }
 
   getConfig(): AutoResearchConfig {
