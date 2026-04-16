@@ -49,6 +49,7 @@ import {
 import { extractKeywords } from "./lib/keywords.ts";
 import { MemoryDB } from "./lib/memory-db.ts";
 import { QmdManager } from "./lib/qmd-manager.ts";
+import { PaperclipClient, resolvePaperclipConfig } from "./lib/paperclip-bridge.ts";
 import type { SearchResult } from "./lib/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -105,6 +106,10 @@ try {
 
 // Dream engine (always available — uses recall data from .dreams/)
 const dreamEngine = new DreamEngine(WORKSPACE);
+
+// Paperclip bridge (null if not configured — tools gracefully report this)
+const paperclipConfig = resolvePaperclipConfig(WORKSPACE);
+const paperclipClient = paperclipConfig ? new PaperclipClient(paperclipConfig) : null;
 
 // Initialize QMD if configured (non-blocking, with full error isolation)
 let qmdManager: QmdManager | null = null;
@@ -501,6 +506,10 @@ const MCP_TOOL_DIRECTORY: Array<{ name: string; description: string }> = [
   { name: "chat_inbox_read", description: "Read pending WebChat messages." },
   { name: "webchat_reply", description: "Stream a reply to the open WebChat browser." },
   { name: "watchdog_ping", description: "Cheap liveness probe for external watchdogs — returns version + installed channel plugin names. No LLM, no side effects." },
+  { name: "paperclip_inbox", description: "Get your Paperclip inbox — assigned issues and pending tasks." },
+  { name: "paperclip_issue", description: "Get, create, or update a Paperclip issue." },
+  { name: "paperclip_comment", description: "List or add comments on a Paperclip issue." },
+  { name: "paperclip_agents", description: "List agents or wake up a specific agent in Paperclip." },
 ];
 
 /**
@@ -953,6 +962,66 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object" as const,
         properties: {},
+      },
+    },
+    {
+      name: "paperclip_inbox",
+      description:
+        "Get your Paperclip inbox — assigned issues and pending work. Requires Paperclip credentials in env vars or agent-config.json.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {},
+      },
+    },
+    {
+      name: "paperclip_issue",
+      description:
+        "Interact with Paperclip issues. Actions: 'get' (by id/identifier), 'create' (new issue), 'update' (change status/title), 'list' (search), 'checkout' (assign to agent).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          action: {
+            type: "string",
+            enum: ["get", "create", "update", "list", "checkout"],
+            description: "Action to perform on the issue",
+          },
+          id: { type: "string", description: "Issue ID or identifier (for get/update/checkout)" },
+          title: { type: "string", description: "Issue title (for create)" },
+          description: { type: "string", description: "Issue description (for create/update)" },
+          status: { type: "string", description: "Issue status (for update/list filter)" },
+          agentId: { type: "string", description: "Agent ID (for checkout — defaults to self)" },
+          limit: { type: "number", description: "Max results (for list, default 10)" },
+        },
+        required: ["action"],
+      },
+    },
+    {
+      name: "paperclip_comment",
+      description:
+        "List or add comments on a Paperclip issue. Actions: 'list' (get comments), 'add' (post a comment).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          action: { type: "string", enum: ["list", "add"], description: "Action" },
+          issueId: { type: "string", description: "Issue ID" },
+          body: { type: "string", description: "Comment body (for add)" },
+          limit: { type: "number", description: "Max comments (for list, default 20)" },
+        },
+        required: ["action", "issueId"],
+      },
+    },
+    {
+      name: "paperclip_agents",
+      description:
+        "List agents in your Paperclip company or wake up (invoke heartbeat on) a specific agent. Actions: 'list', 'wakeup'.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          action: { type: "string", enum: ["list", "wakeup"], description: "Action" },
+          agentId: { type: "string", description: "Agent ID (for wakeup)" },
+          reason: { type: "string", description: "Wakeup reason (for wakeup)" },
+        },
+        required: ["action"],
       },
     },
   ],
@@ -1636,6 +1705,121 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         },
       ],
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Paperclip tools
+  // ---------------------------------------------------------------------------
+
+  const PAPERCLIP_NOT_CONFIGURED =
+    "Paperclip not configured. Set PAPERCLIP_API_URL, PAPERCLIP_API_KEY, and PAPERCLIP_COMPANY_ID as env vars, or add a 'paperclip' block to agent-config.json.";
+
+  if (name === "paperclip_inbox") {
+    if (!paperclipClient) {
+      return { content: [{ type: "text", text: PAPERCLIP_NOT_CONFIGURED }], isError: true };
+    }
+    try {
+      const inbox = await paperclipClient.inbox();
+      return { content: [{ type: "text", text: JSON.stringify(inbox, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === "paperclip_issue") {
+    if (!paperclipClient) {
+      return { content: [{ type: "text", text: PAPERCLIP_NOT_CONFIGURED }], isError: true };
+    }
+    const action = String(params.action || "");
+    try {
+      if (action === "get") {
+        const id = String(params.id || "");
+        if (!id) return { content: [{ type: "text", text: "Error: id is required" }], isError: true };
+        const issue = await paperclipClient.getIssue(id);
+        return { content: [{ type: "text", text: JSON.stringify(issue, null, 2) }] };
+      }
+      if (action === "list") {
+        const issues = await paperclipClient.listIssues({
+          status: params.status ? String(params.status) : undefined,
+          limit: Number(params.limit) || 10,
+        });
+        return { content: [{ type: "text", text: JSON.stringify(issues, null, 2) }] };
+      }
+      if (action === "create") {
+        const title = String(params.title || "").trim();
+        if (!title) return { content: [{ type: "text", text: "Error: title is required" }], isError: true };
+        const issue = await paperclipClient.createIssue({
+          title,
+          description: params.description ? String(params.description) : undefined,
+        });
+        return { content: [{ type: "text", text: `Issue created: ${JSON.stringify(issue, null, 2)}` }] };
+      }
+      if (action === "update") {
+        const id = String(params.id || "");
+        if (!id) return { content: [{ type: "text", text: "Error: id is required" }], isError: true };
+        const update: any = {};
+        if (params.title) update.title = String(params.title);
+        if (params.status) update.status = String(params.status);
+        if (params.description) update.description = String(params.description);
+        const issue = await paperclipClient.updateIssue(id, update);
+        return { content: [{ type: "text", text: `Issue updated: ${JSON.stringify(issue, null, 2)}` }] };
+      }
+      if (action === "checkout") {
+        const id = String(params.id || "");
+        if (!id) return { content: [{ type: "text", text: "Error: id is required" }], isError: true };
+        const result = await paperclipClient.checkoutIssue(id, params.agentId ? String(params.agentId) : undefined);
+        return { content: [{ type: "text", text: `Issue checked out: ${JSON.stringify(result, null, 2)}` }] };
+      }
+      return { content: [{ type: "text", text: 'Unknown action. Use: "get", "create", "update", "list", "checkout"' }], isError: true };
+    } catch (e: any) {
+      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === "paperclip_comment") {
+    if (!paperclipClient) {
+      return { content: [{ type: "text", text: PAPERCLIP_NOT_CONFIGURED }], isError: true };
+    }
+    const action = String(params.action || "");
+    const issueId = String(params.issueId || "");
+    if (!issueId) return { content: [{ type: "text", text: "Error: issueId is required" }], isError: true };
+    try {
+      if (action === "list") {
+        const comments = await paperclipClient.listComments(issueId, Number(params.limit) || 20);
+        return { content: [{ type: "text", text: JSON.stringify(comments, null, 2) }] };
+      }
+      if (action === "add") {
+        const body = String(params.body || "").trim();
+        if (!body) return { content: [{ type: "text", text: "Error: body is required" }], isError: true };
+        const comment = await paperclipClient.addComment(issueId, body);
+        return { content: [{ type: "text", text: `Comment added: ${JSON.stringify(comment, null, 2)}` }] };
+      }
+      return { content: [{ type: "text", text: 'Unknown action. Use: "list" or "add"' }], isError: true };
+    } catch (e: any) {
+      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === "paperclip_agents") {
+    if (!paperclipClient) {
+      return { content: [{ type: "text", text: PAPERCLIP_NOT_CONFIGURED }], isError: true };
+    }
+    const action = String(params.action || "");
+    try {
+      if (action === "list") {
+        const agents = await paperclipClient.listAgents();
+        return { content: [{ type: "text", text: JSON.stringify(agents, null, 2) }] };
+      }
+      if (action === "wakeup") {
+        const agentId = String(params.agentId || "");
+        if (!agentId) return { content: [{ type: "text", text: "Error: agentId is required" }], isError: true };
+        const result = await paperclipClient.wakeupAgent(agentId, params.reason ? String(params.reason) : undefined);
+        return { content: [{ type: "text", text: `Agent wakeup requested: ${JSON.stringify(result, null, 2)}` }] };
+      }
+      return { content: [{ type: "text", text: 'Unknown action. Use: "list" or "wakeup"' }], isError: true };
+    } catch (e: any) {
+      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+    }
   }
 
   return {
