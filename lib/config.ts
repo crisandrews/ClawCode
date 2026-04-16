@@ -77,6 +77,19 @@ export interface AgentConfig {
     schedule?: string;
     /** Timezone for dreaming cron */
     timezone?: string;
+    /** AutoResearch — active gap filling during REM phase (Karpathy-inspired) */
+    autoresearch?: {
+      /** Master switch. Default: false (opt-in). */
+      enabled?: boolean;
+      /** Max gaps to investigate per dream cycle. Default: 5. */
+      maxGapsPerNight?: number;
+      /** Minimum confidence to keep a research finding. Default: 0.7. */
+      confidenceThreshold?: number;
+      /** Sources to consult. Default: ["codebase", "memory"]. */
+      sources?: Array<"codebase" | "memory" | "web">;
+      /** Time budget per cycle in minutes. Default: 10. */
+      maxResearchTimeMinutes?: number;
+    };
   };
   memory: {
     /** "builtin" = SQLite+FTS5 (default), "qmd" = QMD external tool */
