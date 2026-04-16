@@ -78,6 +78,27 @@ export interface AgentConfig {
     /** Timezone for dreaming cron */
     timezone?: string;
   };
+  /**
+   * Paperclip integration — connect to the Paperclip control plane for task
+   * management, issue tracking, and agent coordination. Credentials can also
+   * be provided via env vars (PAPERCLIP_API_URL, PAPERCLIP_API_KEY, etc.).
+   */
+  paperclip?: {
+    /** Paperclip API base URL (e.g., "http://localhost:3000") */
+    apiUrl?: string;
+    /** Bearer token for API auth (agent API key) */
+    apiKey?: string;
+    /** Company ID for scoped requests */
+    companyId?: string;
+    /** Agent ID (defaults to the authenticated agent) */
+    agentId?: string;
+    /**
+     * Auto-sync Paperclip issues with the Task Ledger when invoked via
+     * heartbeat. The Task Completion Guard will enforce issue completion.
+     * Default: true.
+     */
+    autoSync?: boolean;
+  };
   memory: {
     /** "builtin" = SQLite+FTS5 (default), "qmd" = QMD external tool */
     backend: "builtin" | "qmd";
@@ -160,6 +181,7 @@ export function loadConfig(pluginRoot: string): AgentConfig {
       memoryContext: parsed.memoryContext ? { ...parsed.memoryContext } : undefined,
       heartbeat: parsed.heartbeat ? { ...parsed.heartbeat } : undefined,
       dreaming: parsed.dreaming ? { ...parsed.dreaming } : undefined,
+      paperclip: parsed.paperclip ? { ...parsed.paperclip } : undefined,
       memory: {
         ...DEFAULT_CONFIG.memory,
         ...parsed.memory,
