@@ -96,7 +96,7 @@ During `dream(action='run')`, if `dreaming.autoresearch.enabled` is true:
     "autoresearch": {
       "enabled": false,
       "maxGapsPerNight": 5,
-      "confidenceThreshold": 0.7,
+      "confidenceThreshold": 0.6,
       "sources": ["codebase", "memory"],
       "maxResearchTimeMinutes": 10
     }
