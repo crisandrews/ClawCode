@@ -41,7 +41,7 @@ Duplicate queries increment `occurrences` — frequently-asked gaps are research
 ```json
 [
   {
-    "query": "navitaire change flight endpoint",
+    "query": "redis cache invalidation strategy",
     "timestamp": "2026-04-15T...",
     "resultCount": 0,
     "maxScore": 0,
@@ -73,12 +73,12 @@ During `dream(action='run')`, if `dreaming.autoresearch.enabled` is true:
 
 ### Investigated 3 knowledge gaps
 
-1. ✅ "navitaire change flight endpoint" (confidence: 0.89)
+1. ✅ "redis cache invalidation strategy" (confidence: 0.89)
    - Sources: memory (memory/2026-04-10.md)
-   - Learned: POST /api/nsk/v4/booking/flights with {journeyKey, fareKey}
+   - Learned: use pub/sub TTL-based invalidation with write-through pattern
    - Validation: single-source
 
-2. ❌ "ancillary pricing connections" (confidence: 0.45) — DISCARDED
+2. ❌ "WebSocket reconnection backoff" (confidence: 0.45) — DISCARDED
    - Reason: below confidence threshold
 ```
 
