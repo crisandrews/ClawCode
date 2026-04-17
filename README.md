@@ -18,6 +18,10 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/anthropics/claude-plugins-community"><img src="https://img.shields.io/badge/Listed%20on-Anthropic's%20claude--plugins--community-FF6B35?style=for-the-badge" alt="Listed on Anthropic's claude-plugins-community"></a>
+</p>
+
+<p align="center">
   <a href="#quick-setup">Quick Setup</a> ·
   <a href="#why-it-exists">Why</a> ·
   <a href="#features">Features</a> ·
@@ -80,16 +84,11 @@ claude
 
 **2. Install the plugin.**
 
-Inside Claude Code, add the marketplace:
+Inside Claude Code, add Anthropic's official community marketplace and install:
 
 ```
-/plugin marketplace add crisandrews/ClawCode
-```
-
-Then install the plugin:
-
-```
-/plugin install agent@clawcode
+/plugin marketplace add anthropics/claude-plugins-community
+/plugin install clawcode@claude-community
 ```
 
 When prompted for scope, select **"Install for you, in this repo only (local scope)"** — this keeps the agent isolated to this folder.
@@ -99,6 +98,13 @@ Then reload plugins so the skills become available:
 ```
 /reload-plugins
 ```
+
+> **Bleeding-edge alternative.** The community marketplace syncs nightly from Anthropic's review pipeline, so brand-new fixes can take up to ~24h to land. If you want the absolute latest commit, install from this repo's marketplace instead — same plugin, different identifier:
+>
+> ```
+> /plugin marketplace add crisandrews/ClawCode
+> /plugin install agent@clawcode
+> ```
 
 **3. Create your agent:**
 
@@ -324,7 +330,17 @@ Full details: [`docs/config-reload.md`](docs/config-reload.md)
 
 ## [Updating, uninstalling, and cache](#updating-uninstalling-and-cache)
 
-**Update to the latest version:**
+**Update to the latest version.** Use the command set that matches how you installed.
+
+If you installed from the community marketplace (`clawcode@claude-community`):
+
+```
+/plugin marketplace update anthropics/claude-plugins-community
+/plugin update clawcode@claude-community
+/reload-plugins
+```
+
+If you installed from this repo's marketplace (`agent@clawcode`):
 
 ```
 /plugin marketplace update crisandrews/ClawCode
@@ -332,24 +348,24 @@ Full details: [`docs/config-reload.md`](docs/config-reload.md)
 /reload-plugins
 ```
 
-If `/plugin update` says "already at latest version" but you know there's a new one, use the manual method: type `/plugin`, find `agent@clawcode` in the list, press Enter, and select **Update**.
+If `/plugin update` says "already at latest version" but you know there's a new one, use the manual method: type `/plugin`, find your installed plugin in the list, press Enter, and select **Update**.
 
 Your personality, memory, skills, and config are preserved — only the plugin code updates. No data loss.
 
 **Uninstall:**
 
 ```
-/plugin uninstall agent@clawcode
+/plugin uninstall clawcode@claude-community   # if installed from community marketplace
+/plugin uninstall agent@clawcode              # if installed from this repo's marketplace
 ```
 
 Your agent files (SOUL.md, IDENTITY.md, memory/, skills/) stay in the folder — they're yours. Only the plugin code is removed.
 
-**Clear cache (if reinstall fails or behaves unexpectedly):**
-
-Close Claude, then in terminal:
+**Clear cache (if reinstall fails or behaves unexpectedly).** The cache path depends on which marketplace you installed from. Close Claude, then in terminal:
 
 ```sh
-rm -rf ~/.claude/plugins/cache/clawcode
+rm -rf ~/.claude/plugins/cache/claude-community/clawcode   # community marketplace install
+rm -rf ~/.claude/plugins/cache/clawcode                    # own marketplace install
 ```
 
 Reopen Claude and install again.
@@ -406,7 +422,7 @@ The agent never says "I'm Claude" — it uses its name from IDENTITY.md. Even wh
 
 Run `/agent:doctor` first — it checks everything in one shot. Add `--fix` to auto-repair safe issues.
 
-- **"Failed to reconnect to plugin:agent:clawcode"** — Dependencies didn't install. Check Node.js v18+ (`node --version`). Then try manually: close Claude, run `cd ~/.claude/plugins/cache/clawcode/agent/*/  && npm install`, reopen Claude.
+- **"Failed to reconnect to plugin:agent:clawcode" (or `:clawcode:clawcode` on community installs)** — Dependencies didn't install. Check Node.js v18+ (`node --version`). Then try manually depending on where you installed from: close Claude, run `cd ~/.claude/plugins/cache/clawcode/agent/*/  && npm install` (own marketplace) or `cd ~/.claude/plugins/cache/claude-community/clawcode/*/  && npm install` (community), then reopen Claude.
 - **Agent has no personality** — Run `/mcp` to reload. The SessionStart hook injects identity from SOUL.md + IDENTITY.md.
 - **Memory search returns nothing** — Index builds on first search. For QMD: `agent_config(action='set', key='memory.backend', value='qmd')`.
 - **Agent doesn't remember things** — The active memory reflex uses bilingual synonyms but not everything. Try different keywords.
