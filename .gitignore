@@ -2,6 +2,12 @@ node_modules/
 package-lock.json
 .claude/
 dev-tests/
+# Ignore scratch test output but keep real *.test.ts files tracked.
+# Rule shape matters: excluding the directory (trailing slash) prevents git
+# from descending into it, so negation has no effect. Glob files instead.
+tests/*
+!tests/*.test.ts
+!tests/README.md
 agent-config.json
 .qmd/
 .crons-created

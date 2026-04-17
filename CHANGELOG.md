@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Automatic self-heal for stuck deferred-tool resume loops.** `claude --continue` can land back inside a session with a stale deferred-tool marker and then log `No deferred tool marker found in the resumed session` or `Input must be provided either through stdin or as a prompt argument when using --print` hundreds of times without crashing, so `StartLimitBurst` never fires and manual intervention was the only exit. `/agent:service install` now ships three layered defenses by default: (1) the resume wrapper gains a pre-flight that honors a `~/.clawcode/service/<slug>.force-fresh` flag and inspects the tail of the service log for the error pattern, skipping `--continue` when the rate exceeds threshold; (2) a new heal sidecar (`clawcode-heal-<slug>.timer` + `.service` on Linux, `com.clawcode.heal.<slug>.plist` on macOS) fires every 60 s, writes the force-fresh flag, and restarts the main service when the pattern trips, observing a 10-minute cooldown between bounces; (3) `StartLimitBurst` tightened from 5 to 3 since the slow-spam failure mode is now Layer 2's job. All three are on by default. Opt out with `service_plan({ action: "install", selfHeal: false })` if an external watchdog (`recipes/watchdog/`) handles recovery. New exported constants `HEAL_PATTERN` / `HEAL_THRESHOLD` / `HEAL_WINDOW_SECONDS` / `HEAL_LOG_TAIL_LINES` are the single source of truth for both layers. First failure mode observed in production by [@JD2005L](https://github.com/JD2005L) on 2026-04-17 (log flood of 22 "deferred tool marker" errors followed by 7 "input must be provided" errors, with `pkill` permission failures preventing self-recovery).
+- **`npm test`.** New smoke test at `tests/service-generator-smoke.test.ts` runs `bash -n` on every generated shell script, asserts the plan shape for install / uninstall across both platforms, and exercises the wrapper pre-flight + heal sidecar against a synthetic log flood. 18 checks, ~1 second, zero external deps.
+- **`resumeOnRestart` and `selfHeal` now exposed on `service_plan`.** Previously `resumeOnRestart` lived only in the library layer. Both knobs are now part of the MCP tool schema so they're discoverable and opt-outable without dropping into TypeScript.
+
 ## [1.4.0] — 2026-04-17
 
 ### Thanks
