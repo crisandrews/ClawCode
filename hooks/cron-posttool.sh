@@ -10,6 +10,10 @@
 # See docs/crons.md for the full rationale.
 set -uo pipefail
 
+# See reconcile-crons.sh for the full rationale. Same PATH prefix so jq
+# installed to ~/.local/bin is visible to this hook too.
+export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+
 AGENT_ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(dirname "$HOOK_DIR")}"
