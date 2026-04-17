@@ -18,10 +18,6 @@
 
 - **`jq` visible to cron hooks when installed user-local.** `hooks/cron-posttool.sh`, `hooks/reconcile-crons.sh`, and `skills/crons/writeback.sh` now prepend `$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin` to their PATH. Needed when the hook runs under systemd user service / launchd LaunchAgent, where the inherited PATH is minimal and skips Homebrew / pip-user install dirs; without this, `command -v jq` returns empty and the hook silently drops to degraded mode. No effect on interactive sessions where the shell's PATH already exposes `jq`. Reported by [@JD2005L](https://github.com/JD2005L) in [#20](https://github.com/crisandrews/ClawCode/pull/20).
 
-### Internal
-
-- Internal dev test suite (`tier1*/tier2*` and tooling) moved from `tests/` to `dev-tests/` so the repo's `tests/` folder can host publicly-tracked smoke tests like the one above. Both folders remain gitignored by default; only files matching `tests/*.test.ts` are tracked.
-
 ## [1.4.0] — 2026-04-17
 
 ### Thanks
