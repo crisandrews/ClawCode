@@ -229,7 +229,13 @@ export function generatePlist(opts: {
 }): string {
   const defaults = opts.skipDefaultArgs ? [] : ["--dangerously-skip-permissions"];
   const args = [...defaults, ...(opts.extraArgs || [])];
-  const argsXml = [opts.claudeBin, ...args]
+  // Wrap the invocation in `/usr/bin/script -q /dev/null <cmd...>` so claude
+  // runs under a pseudo-terminal. Without a PTY, launchd services inherit
+  // stdio that lacks a controlling terminal, which can cause lifecycle hooks
+  // (SessionEnd and others) to fail to spawn subshells and return non-zero,
+  // producing a crash loop under `KeepAlive`. BSD `script(1)` takes positional
+  // args: `script [flags] [typescript] [command args...]`.
+  const argsXml = ["/usr/bin/script", "-q", "/dev/null", opts.claudeBin, ...args]
     .map((a) => `        <string>${xmlEscape(a)}</string>`)
     .join("\n");
 
@@ -299,11 +305,6 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=${opts.workspace}
-# Disable Claude Code's in-process auto-updater while running as a daemon.
-# Background updates have regenerated service files and left the system in
-# inconsistent states; pin the installed version and update explicitly via
-# package manager instead.
-Environment=DISABLE_AUTOUPDATER=1
 ExecStartPre=-/usr/bin/pkill -f "claude.*--dangerously-skip-permissions"
 ExecStart=${execStart}
 Restart=always
