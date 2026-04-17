@@ -118,7 +118,9 @@ export function serviceFilePath(platform: Platform, slug: string): string {
 }
 
 export function defaultLogPath(slug: string): string {
-  return path.join("/tmp", `clawcode-${slug}.log`);
+  // Persistent per-user location. `/tmp` is wiped on reboot, making it
+  // near-useless for diagnosing failures that survived a restart cycle.
+  return path.join(os.homedir(), ".clawcode", "logs", `${slug}.log`);
 }
 
 /** Where the resume-on-restart wrapper script gets installed per service. */
@@ -251,6 +253,13 @@ ${argsXml}
     </array>
     <key>WorkingDirectory</key>
     <string>${xmlEscape(opts.workspace)}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>${xmlEscape(os.homedir())}</string>
+        <key>TERM</key>
+        <string>xterm-256color</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -305,10 +314,16 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=${opts.workspace}
+Environment=HOME=${os.homedir()}
+Environment=TERM=xterm-256color
 ExecStartPre=-/usr/bin/pkill -f "claude.*--dangerously-skip-permissions"
 ExecStart=${execStart}
 Restart=always
 RestartSec=10
+# Crash-loop guard: stop restarting after 5 failures within 5 minutes
+# so a deterministic boot-time error doesn't churn forever.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 StandardOutput=append:${opts.logPath}
 StandardError=append:${opts.logPath}
 
@@ -390,6 +405,13 @@ export function buildPlan(action: ServiceAction, opts: ServiceOptions): ServiceP
           });
 
     const commands: PlanCommand[] = [];
+    // Ensure the log directory exists first — systemd's `append:` and
+    // launchd's StandardOutPath do NOT create missing parent directories,
+    // and the service silently refuses to start if they don't.
+    commands.push({
+      label: "Create log directory",
+      cmd: `mkdir -p "${path.dirname(logPath)}"`,
+    });
     if (platform === "darwin") {
       commands.push({
         label: "Create LaunchAgents directory",
