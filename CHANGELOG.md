@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Version stamp at service start.** `generateSystemdUnit` and `generatePlist` now write the workspace's current `git HEAD` to a reboot-clean runtime file (`$XDG_RUNTIME_DIR/clawcode-<slug>.version` on Linux, `$TMPDIR/clawcode-<slug>.version` on macOS) before `claude` boots. The service itself never reads the file; it exists so external watchdogs can detect the "user pulled upstream but only ran `/mcp`" case, where plugins keep serving stale code while systemd still reports the unit as active. On Linux this is a best-effort `ExecStartPre=-/bin/bash -c '...'`; on macOS the whole `ProgramArguments` is wrapped in `/bin/sh -c 'git rev-parse HEAD > $TMPDIR/...; exec "$@"'` with the real argv passed as positionals, so a missing `git` or non-git workspace falls through to the normal exec path instead of crash-looping launchd. New exported `versionStampPathExpr(platform, slug)` helper gives consumers the canonical shell expression for the path. `generatePlist` gains a required `slug` option so the stamp filename can be emitted without re-parsing it out of the label. Five new smoke-test checks cover per-platform expressions, per-slug isolation, ExecStartPre ordering (stamp before exec), the launchd `sh -c` wrapper shape, and `|| true` fallthrough on non-git workspaces. Two watchdog-side consumers land in parallel: `recipes/watchdog/` and the external `claude-telegram-watchdog`. Reported by [@JD2005L](https://github.com/JD2005L) after hitting the silent-stale-code failure mode in production on 2026-04-17.
+
 ## [1.4.1] — 2026-04-17
 
 ### Thanks

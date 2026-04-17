@@ -20,6 +20,9 @@ import {
   generateHealSystemdService,
   generateHealSystemdTimer,
   generateHealLaunchdPlist,
+  generateSystemdUnit,
+  generatePlist,
+  versionStampPathExpr,
   forceFreshFlagPath,
   healScriptPath,
   healServiceFilePath,
@@ -249,6 +252,126 @@ check("systemd main unit tightened StartLimitBurst=3", () => {
   const plan = buildPlan("install", linuxOpts);
   assert(plan.fileContent.includes("StartLimitBurst=3"), "main unit not tightened to 3");
   assert(!plan.fileContent.includes("StartLimitBurst=5"), "main unit still has old 5");
+});
+
+check("versionStampPathExpr: per-platform + per-slug isolation", () => {
+  const linuxExpr = versionStampPathExpr("linux", "my-agent");
+  assert(linuxExpr.includes("XDG_RUNTIME_DIR"), "linux expr missing XDG_RUNTIME_DIR");
+  assert(linuxExpr.includes("/run/user/$(id -u)"), "linux expr missing /run/user fallback");
+  assert(linuxExpr.includes("clawcode-my-agent.version"), "linux expr missing slug in filename");
+
+  const macExpr = versionStampPathExpr("darwin", "my-agent");
+  assert(macExpr.includes("TMPDIR"), "mac expr missing TMPDIR");
+  assert(macExpr.includes("clawcode-my-agent.version"), "mac expr missing slug in filename");
+  assert(!macExpr.includes("XDG_RUNTIME_DIR"), "mac expr should not reference XDG_RUNTIME_DIR");
+
+  // Two agents must get distinct stamp paths (no cross-talk between
+  // multi-agent installs reading the same file).
+  const a = versionStampPathExpr("linux", "alpha");
+  const b = versionStampPathExpr("linux", "beta");
+  assert(a !== b, "different slugs produced the same stamp path");
+});
+
+check("systemd unit: emits version-stamp ExecStartPre; bash-valid", () => {
+  const unit = generateSystemdUnit({
+    name: "my-agent",
+    workspace: "/home/tester/my-agent",
+    claudeBin: "/usr/local/bin/claude",
+    logPath: "/home/tester/.clawcode/logs/my-agent.log",
+  });
+  // Must have an ExecStartPre line that writes the git HEAD somewhere
+  // named after the slug. Leading `-` on the line makes it best-effort.
+  const stampLine = unit
+    .split("\n")
+    .find((l) => l.startsWith("ExecStartPre=") && l.includes("rev-parse HEAD"));
+  assert(stampLine, "unit missing version-stamp ExecStartPre");
+  assert(stampLine!.startsWith("ExecStartPre=-"), "stamp ExecStartPre not best-effort (missing `-`)");
+  assert(stampLine!.includes("clawcode-my-agent.version"), "stamp path missing per-slug filename");
+  assert(
+    stampLine!.includes("/home/tester/my-agent"),
+    "stamp writer does not target the workspace's git repo"
+  );
+
+  // Bash-parse the payload after /bin/bash -c to catch quoting mistakes.
+  const m = stampLine!.match(/\/bin\/bash -c '(.+)'$/);
+  assert(m, "stamp line not of form `/bin/bash -c '...'`");
+  const payload = m![1].replace(/'\\''/g, "'"); // undo the systemd-level escaping
+  bashSyntaxCheck(payload, "systemd-stamp-payload");
+});
+
+check("systemd unit: stamp runs BEFORE exec (ordering matters)", () => {
+  const unit = generateSystemdUnit({
+    name: "my-agent",
+    workspace: "/home/tester/my-agent",
+    claudeBin: "/usr/local/bin/claude",
+    logPath: "/home/tester/.clawcode/logs/my-agent.log",
+  });
+  const stampIdx = unit.indexOf("rev-parse HEAD");
+  const execIdx = unit.indexOf("ExecStart=");
+  assert(stampIdx > 0 && execIdx > 0, "stamp or exec line missing");
+  assert(stampIdx < execIdx, "stamp must be written before ExecStart");
+});
+
+check("plist: wraps exec via sh -c with stamp write; sh-valid", () => {
+  const plist = generatePlist({
+    label: "com.clawcode.my-agent",
+    slug: "my-agent",
+    workspace: "/Users/tester/my-agent",
+    claudeBin: "/usr/local/bin/claude",
+    logPath: "/Users/tester/.clawcode/logs/my-agent.log",
+  });
+  // ProgramArguments must start with /bin/sh -c ... so the stamp runs
+  // before the real binary. If a future refactor drops that, the stamp
+  // is silently skipped and the drift detector goes blind.
+  const programArgsMatch = plist.match(
+    /<key>ProgramArguments<\/key>\s*<array>([\s\S]+?)<\/array>/
+  );
+  assert(programArgsMatch, "plist missing ProgramArguments");
+  const argEntries = [...programArgsMatch![1].matchAll(/<string>([\s\S]*?)<\/string>/g)].map(
+    (m) => m[1]
+  );
+  assert(argEntries[0] === "/bin/sh", "plist arg[0] not /bin/sh");
+  assert(argEntries[1] === "-c", "plist arg[1] not -c");
+  assert(argEntries[2].includes("rev-parse HEAD"), "plist sh script missing stamp write");
+  assert(argEntries[2].includes("/Users/tester/my-agent"), "plist stamp not targeting workspace");
+  assert(argEntries[2].includes("clawcode-my-agent.version"), "plist stamp missing per-slug filename");
+  // XML-decode first, then assert the script ends with `exec "$@"`.
+  const decoded = argEntries[2]
+    .replace(/&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&gt;/g, ">")
+    .replace(/&lt;/g, "<")
+    .replace(/&amp;/g, "&");
+  assert(decoded.endsWith(`exec "$@"`), "plist sh script must end with exec \"$@\"");
+  // The subsequent argv must include the real binary so `exec "$@"` reaches it.
+  assert(
+    argEntries.some((a) => a === "/usr/local/bin/claude"),
+    "plist argv missing claude binary after sh -c wrapper"
+  );
+  // The embedded script must parse as valid sh.
+  bashSyntaxCheck(decoded, "plist-stamp-script");
+});
+
+check("plist: stamp failure cannot block the service (|| true)", () => {
+  const plist = generatePlist({
+    label: "com.clawcode.my-agent",
+    slug: "my-agent",
+    workspace: "/Users/tester/non-git-workspace",
+    claudeBin: "/usr/local/bin/claude",
+    logPath: "/Users/tester/.clawcode/logs/my-agent.log",
+  });
+  // Without `|| true`, a non-git workspace would make the sh script exit
+  // non-zero before `exec "$@"` runs, and launchd would crash-loop the
+  // service forever. This is the launchd equivalent of the `-` prefix
+  // on the systemd ExecStartPre line.
+  const scriptMatch = plist.match(
+    /<string>(git -C[^<]+rev-parse HEAD[^<]+)<\/string>/
+  );
+  assert(scriptMatch, "plist stamp script not found");
+  assert(
+    scriptMatch![1].includes("|| true"),
+    "plist stamp script must fall through on failure"
+  );
 });
 
 // ---------------------------------------------------------------------------

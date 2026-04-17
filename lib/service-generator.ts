@@ -194,6 +194,31 @@ export const HEAL_THRESHOLD = 10;
 export const HEAL_WINDOW_SECONDS = 300;
 export const HEAL_LOG_TAIL_LINES = 200;
 
+/**
+ * Path expression (not literal path) for the version-stamp file the
+ * service writes at boot. The service writes its git HEAD here before
+ * claude starts; external watchdogs (recipes/watchdog,
+ * claude-telegram-watchdog) compare the stamp to the on-disk HEAD and
+ * trigger a restart when they diverge. This catches the case where
+ * the user does `git pull` without restarting the service.
+ *
+ * Returned as a shell expression rather than an absolute path because
+ * $XDG_RUNTIME_DIR (Linux) and $TMPDIR (macOS) resolve at runtime
+ * from the service's environment; both point at reboot-clean
+ * tmpfs/per-user-temp locations, which is exactly the semantics we
+ * want for a "currently-running-version" marker.
+ */
+export function versionStampPathExpr(platform: Platform, slug: string): string {
+  if (platform === "darwin") {
+    // launchd sets TMPDIR per LaunchAgent (typically /var/folders/.../T/).
+    return `"\${TMPDIR%/}/clawcode-${slug}.version"`;
+  }
+  // systemd user services always have XDG_RUNTIME_DIR set; the fallback
+  // handles the pathological case where the unit is started outside a
+  // normal user session.
+  return `"\${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/clawcode-${slug}.version"`;
+}
+
 // ---------------------------------------------------------------------------
 // File content generators
 // ---------------------------------------------------------------------------
@@ -537,6 +562,7 @@ export function generateHealLaunchdPlist(opts: {
 /** Generate a launchd plist. */
 export function generatePlist(opts: {
   label: string;
+  slug: string;
   workspace: string;
   claudeBin: string;
   logPath: string;
@@ -556,7 +582,28 @@ export function generatePlist(opts: {
   // (SessionEnd and others) to fail to spawn subshells and return non-zero,
   // producing a crash loop under `KeepAlive`. BSD `script(1)` takes positional
   // args: `script [flags] [typescript] [command args...]`.
-  const argsXml = ["/usr/bin/script", "-q", "/dev/null", opts.claudeBin, ...args]
+  //
+  // Version stamp wrapper: launchd has no ExecStartPre equivalent, so we
+  // wrap the whole invocation in `/bin/sh -c 'stamp; exec "$@"'` with the
+  // real argv passed as positionals. `exec "$@"` preserves each argv entry
+  // as a separate element (no shell re-parsing) and replaces the sh process,
+  // so the resulting process tree is identical to the pre-stamp version.
+  // See versionStampPathExpr for why the stamp lives in $TMPDIR.
+  const stampExpr = versionStampPathExpr("darwin", opts.slug);
+  const workspaceShell = opts.workspace.replace(/'/g, `'\\''`);
+  const stampScript =
+    `git -C '${workspaceShell}' rev-parse HEAD > ${stampExpr} 2>/dev/null || true; exec "$@"`;
+  const argsXml = [
+    "/bin/sh",
+    "-c",
+    stampScript,
+    "clawcode-service", // $0 (dummy label; exec uses $@ only)
+    "/usr/bin/script",
+    "-q",
+    "/dev/null",
+    opts.claudeBin,
+    ...args,
+  ]
     .map((a) => `        <string>${xmlEscape(a)}</string>`)
     .join("\n");
 
@@ -626,6 +673,17 @@ export function generateSystemdUnit(opts: {
     .join(" ");
   const execStart = `/usr/bin/script -q -c '${innerCmd}' /dev/null`;
 
+  // Version stamp: record the git HEAD we're about to boot with so
+  // external watchdogs can detect post-`git pull` drift. Leading `-`
+  // makes systemd ignore failures (non-git workspace, missing git,
+  // readonly tmpfs) so the stamp is best-effort and never blocks a
+  // legitimate service start. /bin/bash -c for the shell features.
+  const stampExpr = versionStampPathExpr("linux", opts.name);
+  const workspaceShell = opts.workspace.replace(/'/g, `'\\''`);
+  const stampCmd =
+    `/bin/bash -c 'git -C '\\''${workspaceShell}'\\'' rev-parse HEAD > ` +
+    `${stampExpr} 2>/dev/null'`;
+
   return `[Unit]
 Description=ClawCode Agent (${opts.name})
 After=network.target
@@ -644,6 +702,9 @@ Environment=TERM=xterm-256color
 # DISABLE_AUTOUPDATER is a documented env var Claude Code exposes.
 Environment=DISABLE_AUTOUPDATER=1
 ExecStartPre=-/usr/bin/pkill -f "claude.*--dangerously-skip-permissions"
+# Version stamp: see versionStampPathExpr. Watchdogs read this file and
+# trigger a restart when the on-disk HEAD diverges from the stamped SHA.
+ExecStartPre=-${stampCmd}
 ExecStart=${execStart}
 Restart=always
 RestartSec=10
@@ -772,6 +833,7 @@ export function buildPlan(action: ServiceAction, opts: ServiceOptions): ServiceP
       platform === "darwin"
         ? generatePlist({
             label,
+            slug,
             workspace: opts.workspace,
             claudeBin: execBin,
             logPath,

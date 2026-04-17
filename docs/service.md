@@ -225,6 +225,14 @@ If you want an external probe to detect silent failures (plugin subprocess dies 
 
 Full docs: [`docs/watchdog.md`](watchdog.md).
 
+## Version stamp
+
+At service start the unit writes the current `git HEAD` of the workspace to a reboot-clean runtime file (`$XDG_RUNTIME_DIR/clawcode-<slug>.version` on Linux, `$TMPDIR/clawcode-<slug>.version` on macOS). The service never reads this back; it exists purely for external observers.
+
+The motivation: `git pull` followed by `/mcp` doesn't actually reload the plugins from disk. The running session keeps serving stale code, and from the outside everything still looks "active". An external watchdog can compare the stamped SHA against the on-disk HEAD and trigger a restart when they diverge. See [`docs/watchdog.md`](watchdog.md) for the consumer side.
+
+The stamp write is best-effort. It's prefixed with `-` on the systemd `ExecStartPre` and wrapped in `|| true` in the launchd `sh -c`, so a missing `git`, a non-git workspace, or a read-only runtime dir never blocks service start. If the stamp file is absent, downstream watchdogs treat that as "drift detection disabled" rather than as a fault.
+
 ## Implementation
 
 | File | Role |
