@@ -305,6 +305,14 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=${opts.workspace}
+# Disable Claude Code's in-process auto-updater while running as a daemon.
+# In a service context the updater can regenerate files it manages mid-run,
+# including the resume-on-restart wrapper script (see generateResumeWrapper).
+# A long-running daemon rewriting its own ExecStart target while live is a
+# file-integrity issue, separate from the PTY-wrap crash-loop fix. Pin the
+# installed version and update explicitly via the /agent:update skill.
+# DISABLE_AUTOUPDATER is a documented env var Claude Code exposes.
+Environment=DISABLE_AUTOUPDATER=1
 ExecStartPre=-/usr/bin/pkill -f "claude.*--dangerously-skip-permissions"
 ExecStart=${execStart}
 Restart=always
