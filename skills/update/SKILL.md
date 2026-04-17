@@ -45,7 +45,7 @@ Detect whether new versions of Claude Code (`@anthropic-ai/claude-code`) or Claw
 3. **Compare and decide.** Two boolean signals: `CC_UPDATE_AVAILABLE` and `CW_UPDATE_AVAILABLE`.
 
    - Claude Code: `CC_UPDATE_AVAILABLE=1` if `CC_INSTALLED` and `CC_LATEST` are both set and not equal.
-   - ClawCode: `CW_UPDATE_AVAILABLE=1` if `CW_LOCAL` and `CW_UPSTREAM_HEAD` are both set and `git merge-base --is-ancestor upstream/main HEAD` is **false** — i.e. upstream has commits the local repo doesn't yet have.
+   - ClawCode: `CW_UPDATE_AVAILABLE=1` if `CW_LOCAL_TAG` and `CW_UPSTREAM_TAG` are both set, neither is `no-tag`, and they differ (i.e. upstream has cut a newer release tag). Plain commits on `upstream/main` (docs, chore, ci) do NOT trigger an update notification; otherwise routine upstream activity would teach users to ignore the pings.
 
 4. **Surface the result.** Always show a status block. If updates are available, append the safe procedure for each.
 
@@ -92,7 +92,8 @@ if [[ -n "$CC_LATEST" && "$CC_LATEST" != "$CC_INSTALLED" && "$CC_LATEST" != "$LA
   jq --arg v "$CC_LATEST" '.["claude-code"] = $v' "$NOTIFIED_FILE" > "$NOTIFIED_FILE.tmp" \
     && mv "$NOTIFIED_FILE.tmp" "$NOTIFIED_FILE"
 fi
-# Same shape for ClawCode.
+# Same shape for ClawCode, keyed by tag (CW_UPSTREAM_TAG), so each release is
+# announced once, and pure-chore upstream commits never trigger a notification.
 ```
 
 Initialize the file as `{}` if it doesn't exist. The dedupe survives restarts because it's in `memory/`, not `/tmp`.
