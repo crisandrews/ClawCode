@@ -8,6 +8,13 @@
 # with a warning on stderr. See docs/crons.md.
 set -uo pipefail
 
+# User-local bindirs first so jq installed to ~/.local/bin (pip --user,
+# Homebrew on Linuxbrew, manual installs) is visible inside systemd user
+# services, launchd LaunchAgents, and any other context that spawns the
+# hook with a minimal inherited PATH. Without this, `command -v jq`
+# returns empty and the hook silently drops into degraded mode.
+export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+
 AGENT_ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(dirname "$HOOK_DIR")}"

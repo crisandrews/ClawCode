@@ -4,6 +4,11 @@
 # See docs/crons.md for the registry schema and the full lifecycle.
 set -uo pipefail
 
+# Same PATH prefix as the hooks so jq is visible when writeback.sh is
+# invoked from a systemd/launchd context that strips ~/.local/bin from
+# the inherited PATH. Callers in interactive shells are unaffected.
+export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+
 AGENT_ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
 MEMORY_DIR="$AGENT_ROOT/memory"
 REGISTRY="$MEMORY_DIR/crons.json"
