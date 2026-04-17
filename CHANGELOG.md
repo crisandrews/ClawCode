@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.4.2] — 2026-04-17
+
+### Added
+
+- **Listed on Anthropic's `claude-plugins-community` marketplace.** Install via `/plugin marketplace add anthropics/claude-plugins-community` then `/plugin install clawcode@claude-community`. The plugin entry is registered in the official catalog under the name `clawcode` (the marketplace catalog label) — note this differs from the `agent@clawcode` identifier used when installing from this repo's own marketplace, but both install the same code from the same source. The community marketplace syncs nightly from Anthropic's review pipeline, so brand-new fixes can take up to ~24h to land there; install from `crisandrews/ClawCode` directly if you need the absolute latest commit. The two install paths can coexist on the same machine in different workspaces — they live under separate cache directories (`~/.claude/plugins/cache/claude-community/clawcode/<version>/` vs `~/.claude/plugins/cache/clawcode/agent/<version>/`) and Claude Code tracks them as separate `installed_plugins.json` entries.
+
+### Documentation
+
+- `README.md` — Quick Setup install commands now lead with the community marketplace path; the `crisandrews/ClawCode` path is kept as the bleeding-edge alternative for users who need same-day fixes. Update / uninstall / clear-cache sections refactored to cover both install origins explicitly. Troubleshooting row for the "Failed to reconnect" error now lists both possible cache paths. New badge in the header signaling the community listing.
+
 ## [1.4.1] — 2026-04-17
 
 ### Thanks
