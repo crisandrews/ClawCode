@@ -19,6 +19,7 @@
 
 <p align="center">
   <a href="#quick-setup">Quick Setup</a> ·
+  <a href="#why-it-exists">Why</a> ·
   <a href="#features">Features</a> ·
   <a href="#skills">Skills</a> ·
   <a href="#going-further">Going further</a> ·
@@ -28,22 +29,34 @@
 
 ---
 
-Claude Code is stateless by default. Every session starts from zero — no memory of who you are, what you talked about, or how the agent should behave.
+## [What this is](#what-this-is)
 
-ClawCode turns Claude Code into a persistent agent. It gives Claude a persistent identity, searchable memory with bilingual recall, nightly dreaming that consolidates important memories, and a terse conversational style. The agent remembers your dog's name, warns you about allergies before suggesting food, and responds in 1–2 lines instead of paragraphs.
+ClawCode is a plugin for Claude Code. Install it and Claude Code remembers you between sessions: your name, the agent's own name and personality, the notes you and the agent wrote together last week. It adds memory with bilingual recall (Spanish ↔ English), messaging through WhatsApp, Telegram, Discord, iMessage and Slack, a browser chat, nightly memory consolidation, and a background service for 24/7 runs. Everything lives inside Claude Code's plugin system.
+
+The agent remembers your dog's name, warns about allergies before suggesting food, and answers in 1 to 2 lines instead of paragraphs.
+
+## [Why it exists](#why-it-exists)
+
+Claude Code is stateless by default. Open a new session and the agent starts from zero: no memory of what you were working on yesterday, no name, no feel for who it is. Good agents should not do that. That gap is what ClawCode fills.
+
+A harness is a runtime that wraps Claude's API with its own session, memory, and tool layer. OpenClaw is one. In April 2026, Anthropic restricted Claude subscriptions from being used with third-party harnesses, moving them onto pay-as-you-go API billing. ClawCode is not a harness: it runs as a plugin inside Claude Code itself, so a ClawCode user is simply a Claude Code user with an extra layer on top.
+
+The plugin path means ClawCode inherits what Claude Code already does well (its harness, tool system, skills, hooks, MCP plumbing) and adds only what a persistent agent needs on top.
+
+Coming from OpenClaw? `/agent:import` brings your agent's personality, memory, skills, and crons across.
 
 ## [Highlights](#highlights)
 
 - **[Persistent identity](#how-it-works)** — name, personality, emoji. The agent wakes up as itself on every session via lifecycle hooks that inject SOUL.md + IDENTITY.md at startup.
+- **[Messaging channels](#messaging-channels)** — WhatsApp, Telegram, Discord, iMessage, Slack via MCP plugins. Same agent, every channel, no conflicts.
 - **[Active memory](#memory)** — bilingual recall (ES ↔ EN) at the start of every turn. Ask "cómo se llama mi perro?" and it finds "Cookie" from English notes. Warns about allergies before suggesting food.
 - **[Lifecycle hooks](#hooks)** — SessionStart injects identity + auto-creates crons. PreCompact flushes memory before context compression. Stop writes session summaries. SessionEnd tracks dream events.
 - **[Dreaming](#dreaming)** — nightly 3-phase consolidation (Light → REM → Deep) with 6 weighted signals. Promotes important memories to long-term storage.
 - **[Language adaptation](#how-it-works)** — detects the user's language and responds in kind. Switch mid-conversation and the agent switches too. Commands, status cards, and errors all adapt.
 - **[Voice](#voice)** — TTS via sag, ElevenLabs, OpenAI, macOS `say`. STT via local Whisper or OpenAI API.
 - **[WebChat](#webchat)** — browser chat UI with SSE real-time delivery. Conversation logs in JSONL + Markdown (same format as WhatsApp).
-- **[Messaging channels](#messaging-channels)** — WhatsApp, Telegram, Discord, iMessage, Slack via MCP plugins. No conflicts.
 - **[Slash commands everywhere](#messaging-channels)** — `/status`, `/help`, `/whoami`, `/new`, `/compact` work from CLI, WhatsApp, Telegram, Discord — same commands, formatting adapts per platform.
-- **[Smart import](#importing-agents)** — 3-tier classifier (GREEN/YELLOW/RED) for skills and crons. Step-by-step wizard with clickable options. Skipped items go to a backlog with recovery notes.
+- **[Smart import from OpenClaw](#importing-agents)** — 3-tier classifier (GREEN/YELLOW/RED) for skills and crons. Step-by-step wizard with clickable options. Skipped items go to a backlog with recovery notes.
 - **[Community skills](#community-skills)** — install from GitHub with `owner/repo@branch#subdir`. OS + dependency validation.
 - **[Always-on](#always-on-service)** — launchd / systemd service. Enables dreaming + heartbeat 24/7.
 - **[Webhooks](#webhooks)** — external systems (Cloudflare Workers, GitHub Actions, CI/CD, IoT) can POST events to the agent via HTTP. The agent processes them like any other message.
@@ -181,7 +194,7 @@ Full details: [`docs/channels.md`](docs/channels.md)
 
 ### [Importing agents](#importing-agents)
 
-`/agent:import` brings an existing agent into Claude Code with a step-by-step wizard (clickable options, one question at a time):
+Have an existing OpenClaw agent? `/agent:import` brings it into Claude Code with a step-by-step wizard (clickable options, one question at a time):
 
 1. **Bootstrap files** — copies SOUL.md, IDENTITY.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md
 2. **Memory** — imports MEMORY.md + recent daily logs (credentials are never copied)
@@ -255,6 +268,7 @@ Full details: [`docs/crons.md`](docs/crons.md)
 | `/agent:messaging` | Set up WhatsApp, Telegram, Discord, iMessage, Slack |
 | `/agent:crons` / `/agent:reminders` | Manage reminders: list, add, delete, pause, reconcile, import |
 | `/agent:heartbeat` | Memory consolidation and periodic checks |
+| `/agent:update` | Check for new Claude Code / ClawCode releases and print safe update commands |
 | `/agent:status` | Agent status dashboard |
 | `/agent:usage` | Resource usage |
 | `/agent:new` | Save session and prepare for `/clear` |
@@ -287,9 +301,13 @@ Run the agent as a background service (launchd on macOS, systemd on Linux):
 /agent:service logs
 ```
 
-Full details: [`docs/service.md`](docs/service.md)
+The service defaults are tuned for 24/7 daemon use: PTY wrap so lifecycle hooks survive graceful shutdown, crash-loop guard, persistent logs under `~/.clawcode/logs/`, a resume-on-restart wrapper so the agent rehydrates its last conversation after a restart, and a self-heal sidecar that recovers from stuck deferred-tool loops automatically. Full details in [`docs/service.md`](docs/service.md).
 
 Optional companion: [`docs/watchdog.md`](docs/watchdog.md) — opt-in external health probe + auto-restart for always-on services.
+
+### [Keeping up to date](#keeping-up-to-date)
+
+Run `/agent:update` to check whether Claude Code or ClawCode has a newer release available. The skill compares installed versions against npm and the upstream git tags, prints the safe update commands for each, and never applies them itself. The heartbeat cron does the same check once per UTC day with per-version dedupe, so a new release pings you once and then stays quiet.
 
 ### [Configuration](#configuration)
 
@@ -405,6 +423,14 @@ Run `/agent:doctor` first — it checks everything in one shot. Add `--fix` to a
 ## [Further reading](#further-reading)
 
 Per-feature documentation in [`docs/`](docs/INDEX.md).
+
+## [Philosophy](#philosophy)
+
+Build within Claude Code's limits. Use its plugin system, its hooks, its MCP servers. Don't patch Claude Code's internals; don't disable its features from the outside. If a feature needs restraint (the in-process auto-updater during daemon mode, for example), reach for the environment variable Claude Code itself documents, not a workaround. Respect the terms of service. The platform is where the agent lives, not something to work around.
+
+## [Thanks](#thanks)
+
+Most of v1.4.0 and v1.4.1 came from [@JD2005L](https://github.com/JD2005L), running ClawCode as a 24/7 systemd service and sending back a dozen PRs of fixes, hardening, and features from the front lines: the WORKSPACE resolution fix, the service crash-loop PTY wrap, the resume-on-restart wrapper, the hardening defaults, the `/agent:update` skill, cross-user import discovery, the reconcile fast-path, and the self-heal sidecar. Thank you.
 
 ## [Disclaimer](#disclaimer)
 
