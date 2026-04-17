@@ -1,0 +1,377 @@
+/**
+ * Smoke test for lib/service-generator.ts self-heal additions.
+ *
+ * Pure-function checks: plan assembly, generator output shape, and most
+ * importantly `bash -n` syntax checks on every shell script we emit, so
+ * a mistake in template interpolation surfaces before it gets copied onto
+ * a user's system.
+ *
+ * Run: `npx tsx tests/service-generator-smoke.test.ts`
+ * Exit code 0 = pass, 1 = fail.
+ */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import {
+  buildPlan,
+  generateResumeWrapper,
+  generateHealScript,
+  generateHealSystemdService,
+  generateHealSystemdTimer,
+  generateHealLaunchdPlist,
+  forceFreshFlagPath,
+  healScriptPath,
+  healServiceFilePath,
+  healTimerFilePath,
+  resumeWrapperPath,
+  HEAL_PATTERN,
+  HEAL_THRESHOLD,
+  HEAL_WINDOW_SECONDS,
+  HEAL_LOG_TAIL_LINES,
+} from "../lib/service-generator.ts";
+
+const results: Array<{ name: string; pass: boolean; msg?: string }> = [];
+
+function check(name: string, fn: () => void) {
+  try {
+    fn();
+    results.push({ name, pass: true });
+  } catch (err) {
+    results.push({ name, pass: false, msg: (err as Error).message });
+  }
+}
+
+function assert(cond: unknown, msg: string): asserts cond {
+  if (!cond) throw new Error(msg);
+}
+
+function bashSyntaxCheck(script: string, label: string) {
+  const tmp = path.join(os.tmpdir(), `clawcode-smoke-${label}-${Date.now()}.sh`);
+  fs.writeFileSync(tmp, script, { mode: 0o755 });
+  try {
+    const r = spawnSync("bash", ["-n", tmp], { encoding: "utf-8" });
+    if (r.status !== 0) {
+      throw new Error(`bash -n failed on ${label}: ${r.stderr || r.stdout}`);
+    }
+  } finally {
+    fs.unlinkSync(tmp);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fixtures, shared across checks
+// ---------------------------------------------------------------------------
+const linuxOpts = {
+  workspace: "/home/tester/my-agent",
+  claudeBin: "/usr/local/bin/claude",
+  platform: "linux" as const,
+};
+const macOpts = {
+  workspace: "/Users/tester/my-agent",
+  claudeBin: "/usr/local/bin/claude",
+  platform: "darwin" as const,
+};
+const slug = "my-agent";
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+check("constants sanity", () => {
+  assert(HEAL_PATTERN.includes("No deferred tool marker"), "pattern missing deferred-tool string");
+  assert(HEAL_PATTERN.includes("Input must be provided"), "pattern missing input-required string");
+  assert(HEAL_THRESHOLD >= 5 && HEAL_THRESHOLD <= 50, "threshold out of reasonable range");
+  assert(HEAL_WINDOW_SECONDS >= 60 && HEAL_WINDOW_SECONDS <= 3600, "window out of reasonable range");
+  assert(HEAL_LOG_TAIL_LINES >= 50 && HEAL_LOG_TAIL_LINES <= 1000, "tail lines out of reasonable range");
+});
+
+check("path helpers return absolute paths under ~/.clawcode", () => {
+  const home = os.homedir();
+  assert(forceFreshFlagPath(slug).startsWith(home), "flag path not under home");
+  assert(healScriptPath(slug).startsWith(home), "script path not under home");
+  assert(resumeWrapperPath(slug).startsWith(home), "wrapper path not under home");
+  assert(healServiceFilePath("linux", slug).endsWith(`.service`), "linux heal unit not .service");
+  assert(healTimerFilePath("linux", slug).endsWith(`.timer`), "linux heal timer not .timer");
+  assert(healServiceFilePath("darwin", slug).endsWith(`.plist`), "mac heal unit not .plist");
+  assert(healTimerFilePath("darwin", slug) === "", "mac has no timer file");
+});
+
+check("resume wrapper: bash syntax OK + includes self-heal checks", () => {
+  const script = generateResumeWrapper({
+    claudeBin: "/usr/local/bin/claude",
+    workspace: "/home/tester/my-agent",
+    logPath: "/home/tester/.clawcode/logs/my-agent.log",
+    forceFreshFlagPath: "/home/tester/.clawcode/service/my-agent.force-fresh",
+  });
+  bashSyntaxCheck(script, "resume-wrapper");
+
+  // The four pre-flight branches must all be present.
+  assert(script.includes("FORCE_FRESH_FLAG"), "wrapper missing flag check");
+  assert(script.includes("force-fresh flag present"), "wrapper missing flag skip_reason");
+  assert(script.includes("no prior session jsonl"), "wrapper missing no-jsonl skip_reason");
+  assert(script.includes("RESUME_STALE_DAYS=7"), "wrapper missing stale-days");
+  assert(script.includes("HEAL_PATTERN"), "wrapper missing heal pattern");
+  assert(script.includes("grep -Ec"), "wrapper missing grep -Ec");
+  assert(script.includes("skipping --continue"), "wrapper missing breadcrumb log line");
+
+  // The flag must be deleted BEFORE the decision, not after, so a crashed
+  // start doesn't cause a perpetual fresh-start loop.
+  const flagDeleteIdx = script.indexOf("rm -f \"$FORCE_FRESH_FLAG\"");
+  const flagSkipIdx = script.indexOf("force-fresh flag present");
+  assert(flagDeleteIdx > 0, "wrapper never deletes the flag");
+  assert(flagDeleteIdx < flagSkipIdx, "wrapper sets skip_reason before deleting flag");
+});
+
+check("heal script linux: bash syntax OK + correct restart command", () => {
+  const script = generateHealScript({
+    serviceLabel: "clawcode-my-agent",
+    logPath: "/home/tester/.clawcode/logs/my-agent.log",
+    forceFreshFlagPath: "/home/tester/.clawcode/service/my-agent.force-fresh",
+    platform: "linux",
+    slug,
+  });
+  bashSyntaxCheck(script, "heal-linux");
+  assert(script.includes("systemctl --user restart clawcode-my-agent"), "missing linux restart cmd");
+  assert(!script.includes("launchctl"), "linux heal script leaked launchctl");
+  assert(script.includes("touch \"$FORCE_FRESH_FLAG\""), "heal does not drop flag");
+  assert(script.includes("HEAL_COOLDOWN_SECONDS="), "heal has no cooldown");
+});
+
+check("heal script mac: bash syntax OK + correct kickstart command", () => {
+  const script = generateHealScript({
+    serviceLabel: "com.clawcode.my-agent",
+    logPath: "/Users/tester/.clawcode/logs/my-agent.log",
+    forceFreshFlagPath: "/Users/tester/.clawcode/service/my-agent.force-fresh",
+    platform: "darwin",
+    slug,
+  });
+  bashSyntaxCheck(script, "heal-mac");
+  assert(script.includes("launchctl kickstart -k"), "missing mac kickstart cmd");
+  assert(!script.includes("systemctl"), "mac heal script leaked systemctl");
+});
+
+check("heal systemd unit is oneshot + declares success-exit codes", () => {
+  const unit = generateHealSystemdService({
+    slug,
+    healScriptPath: "/home/tester/.clawcode/service/my-agent-heal.sh",
+    workspace: "/home/tester/my-agent",
+  });
+  assert(unit.includes("Type=oneshot"), "heal unit not oneshot");
+  assert(unit.includes("SuccessExitStatus=0 1 2"), "heal unit missing success exit codes");
+  assert(unit.includes("After=clawcode-my-agent.service"), "heal unit missing After= main service");
+});
+
+check("heal systemd timer fires every minute with boot offset", () => {
+  const timer = generateHealSystemdTimer({ slug });
+  assert(timer.includes("OnBootSec=2min"), "timer missing boot delay");
+  assert(timer.includes("OnUnitActiveSec=1min"), "timer missing 1min cadence");
+  assert(timer.includes(`Unit=clawcode-heal-${slug}.service`), "timer not linked to heal unit");
+  assert(timer.includes("WantedBy=timers.target"), "timer missing install target");
+});
+
+check("heal launchd plist has 60s StartInterval", () => {
+  const plist = generateHealLaunchdPlist({
+    slug,
+    healScriptPath: "/Users/tester/.clawcode/service/my-agent-heal.sh",
+    workspace: "/Users/tester/my-agent",
+    healLogPath: "/Users/tester/.clawcode/logs/my-agent-heal.log",
+  });
+  assert(plist.includes("<key>StartInterval</key>"), "plist missing StartInterval");
+  assert(plist.includes("<integer>60</integer>"), "plist StartInterval not 60s");
+  assert(plist.includes(`com.clawcode.heal.${slug}`), "plist wrong label");
+  assert(!plist.includes("<key>KeepAlive</key>"), "heal plist should not KeepAlive (it's one-shot)");
+});
+
+check("buildPlan install (linux, default) includes wrapper + heal sidecar", () => {
+  const plan = buildPlan("install", linuxOpts);
+  const files = plan.extraFiles ?? [];
+  const filePaths = files.map((f) => f.path);
+  assert(filePaths.includes(resumeWrapperPath(slug)), "missing resume wrapper");
+  assert(filePaths.includes(healScriptPath(slug)), "missing heal script");
+  assert(filePaths.includes(healServiceFilePath("linux", slug)), "missing heal service unit");
+  assert(filePaths.includes(healTimerFilePath("linux", slug)), "missing heal timer unit");
+
+  const cmds = plan.commands.map((c) => c.cmd).join("\n");
+  assert(cmds.includes("clawcode-my-agent.service"), "install missing main service enable");
+  assert(cmds.includes("clawcode-heal-my-agent.timer"), "install missing heal timer enable");
+});
+
+check("buildPlan install (darwin, default) includes plist for heal sidecar", () => {
+  const plan = buildPlan("install", macOpts);
+  const files = plan.extraFiles ?? [];
+  const filePaths = files.map((f) => f.path);
+  assert(filePaths.includes(healServiceFilePath("darwin", slug)), "missing heal plist");
+  assert(!filePaths.includes(healTimerFilePath("darwin", slug)), "mac should not emit a timer");
+
+  const cmds = plan.commands.map((c) => c.cmd).join("\n");
+  assert(cmds.includes("com.clawcode.heal.my-agent"), "install missing heal plist load");
+});
+
+check("buildPlan install (resumeOnRestart=false) disables sidecar by default", () => {
+  const plan = buildPlan("install", { ...linuxOpts, resumeOnRestart: false });
+  const filePaths = (plan.extraFiles ?? []).map((f) => f.path);
+  assert(!filePaths.includes(healScriptPath(slug)), "sidecar should not install when no resume");
+  assert(!filePaths.includes(resumeWrapperPath(slug)), "wrapper should not install when disabled");
+});
+
+check("buildPlan install (selfHeal=false explicit) suppresses sidecar", () => {
+  const plan = buildPlan("install", { ...linuxOpts, selfHeal: false });
+  const filePaths = (plan.extraFiles ?? []).map((f) => f.path);
+  assert(filePaths.includes(resumeWrapperPath(slug)), "wrapper still there when selfHeal=false");
+  assert(!filePaths.includes(healScriptPath(slug)), "sidecar explicitly disabled but present");
+});
+
+check("buildPlan uninstall cleans up the sidecar artifacts", () => {
+  const plan = buildPlan("uninstall", linuxOpts);
+  const cmds = plan.commands.map((c) => c.cmd).join("\n");
+  assert(cmds.includes(`clawcode-heal-${slug}.timer`), "uninstall does not stop heal timer");
+  assert(cmds.includes(healScriptPath(slug)), "uninstall does not remove heal script");
+  assert(cmds.includes(forceFreshFlagPath(slug)), "uninstall does not remove flag file");
+
+  // Sidecar must stop BEFORE the main service, otherwise the sidecar can
+  // race by restarting the service we just stopped.
+  const healStopIdx = cmds.indexOf(`clawcode-heal-${slug}.timer`);
+  const mainStopIdx = cmds.indexOf(`disable --now clawcode-${slug}.service`);
+  assert(healStopIdx < mainStopIdx, "uninstall stops main service before heal sidecar");
+});
+
+check("buildPlan uninstall (darwin) stops heal plist before main plist", () => {
+  const plan = buildPlan("uninstall", macOpts);
+  const cmds = plan.commands.map((c) => c.cmd).join("\n");
+  const healIdx = cmds.indexOf(healServiceFilePath("darwin", slug));
+  const mainIdx = cmds.indexOf("LaunchAgents/com.clawcode.my-agent.plist");
+  assert(healIdx > 0 && mainIdx > 0, "one of the plists missing from uninstall");
+  assert(healIdx < mainIdx, "mac uninstall stops heal before main");
+});
+
+check("systemd main unit tightened StartLimitBurst=3", () => {
+  const plan = buildPlan("install", linuxOpts);
+  assert(plan.fileContent.includes("StartLimitBurst=3"), "main unit not tightened to 3");
+  assert(!plan.fileContent.includes("StartLimitBurst=5"), "main unit still has old 5");
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end bash-level simulation of the wrapper's log pre-flight
+// ---------------------------------------------------------------------------
+check("wrapper preflight trips on synthetic log spam", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawcode-smoke-"));
+  const logPath = path.join(tmpDir, "svc.log");
+  const flagPath = path.join(tmpDir, "flag");
+  const wrapperPath = path.join(tmpDir, "wrapper.sh");
+  const fakeClaudePath = path.join(tmpDir, "fake-claude.sh");
+
+  // Build a wrapper targeting our synthetic log.
+  const wrapper = generateResumeWrapper({
+    claudeBin: fakeClaudePath,
+    workspace: tmpDir,
+    logPath,
+    forceFreshFlagPath: flagPath,
+  });
+  fs.writeFileSync(wrapperPath, wrapper, { mode: 0o755 });
+
+  // Fake claude: echoes whether --continue was passed, then exits 0.
+  fs.writeFileSync(
+    fakeClaudePath,
+    `#!/bin/bash
+if [[ " $* " == *" --continue "* ]]; then
+  echo CONTINUE_ATTACHED
+else
+  echo FRESH_START
+fi
+`,
+    { mode: 0o755 }
+  );
+
+  // Write a log full of the error pattern.
+  const spam = Array.from({ length: 30 }, () => "Error: No deferred tool marker found").join("\n");
+  fs.writeFileSync(logPath, spam);
+
+  // Need the sessions dir to exist + contain a recent jsonl, otherwise the
+  // earlier "no prior session jsonl" check fires and we can't isolate the
+  // log-preflight branch.
+  const sessionsDir = path.join(tmpDir, ".claude", "projects", "-" + tmpDir.replace(/^\/+/, "").replace(/\//g, "-"));
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  fs.writeFileSync(path.join(sessionsDir, "fake.jsonl"), "{}\n");
+
+  const run = spawnSync("bash", [wrapperPath], { encoding: "utf-8" });
+  assert(run.status === 0, `wrapper exited non-zero: ${run.stderr}`);
+  assert(run.stdout.includes("FRESH_START"), `expected fresh start under spam; got: ${run.stdout}`);
+  assert(
+    fs.readFileSync(logPath, "utf-8").includes("stale resume"),
+    "wrapper did not write skip breadcrumb"
+  );
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+check("heal script drops flag + invokes restart on synthetic log spam", () => {
+  // The heal script's cooldown state file lives at ~/.clawcode/service/<slug>.heal-state
+  // (shared across runs by design, it's a real restart cooldown). Purge
+  // it before exercising the trip path so a prior run's state doesn't
+  // put us inside cooldown.
+  const stateFile = path.join(os.homedir(), ".clawcode", "service", `${slug}.heal-state`);
+  try { fs.unlinkSync(stateFile); } catch {}
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawcode-smoke-heal-"));
+  const logPath = path.join(tmpDir, "svc.log");
+  const flagPath = path.join(tmpDir, "flag");
+  const healPath = path.join(tmpDir, "heal.sh");
+
+  const heal = generateHealScript({
+    serviceLabel: "clawcode-my-agent",
+    logPath,
+    forceFreshFlagPath: flagPath,
+    platform: "linux",
+    slug,
+  });
+  // Swap out the real systemctl with a no-op so we can exercise the code
+  // path without actually touching the host's services.
+  const patched = heal.replace(
+    "systemctl --user restart clawcode-my-agent",
+    "echo RESTART_CALLED"
+  );
+  fs.writeFileSync(healPath, patched, { mode: 0o755 });
+
+  const spam = Array.from({ length: 20 }, () => "Error: Input must be provided either").join("\n");
+  fs.writeFileSync(logPath, spam);
+
+  const run = spawnSync("bash", [healPath], { encoding: "utf-8" });
+  assert(run.status === 1, `heal should exit 1 on trip; got ${run.status}. stderr: ${run.stderr}`);
+  assert(fs.existsSync(flagPath), "heal did not drop force-fresh flag");
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+check("heal script is quiet when log is clean", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawcode-smoke-heal-clean-"));
+  const logPath = path.join(tmpDir, "svc.log");
+  const flagPath = path.join(tmpDir, "flag");
+  const healPath = path.join(tmpDir, "heal.sh");
+
+  fs.writeFileSync(healPath, generateHealScript({
+    serviceLabel: "clawcode-my-agent",
+    logPath,
+    forceFreshFlagPath: flagPath,
+    platform: "linux",
+    slug,
+  }), { mode: 0o755 });
+
+  fs.writeFileSync(logPath, "all good\nnothing to see here\n");
+
+  const run = spawnSync("bash", [healPath], { encoding: "utf-8" });
+  assert(run.status === 0, `healthy log should exit 0; got ${run.status}`);
+  assert(!fs.existsSync(flagPath), "heal dropped flag on healthy log");
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// Report
+// ---------------------------------------------------------------------------
+const failed = results.filter((r) => !r.pass);
+for (const r of results) {
+  console.log(`${r.pass ? "PASS" : "FAIL"}  ${r.name}${r.msg ? ": " + r.msg : ""}`);
+}
+console.log(`\n${results.length - failed.length}/${results.length} passed`);
+process.exit(failed.length === 0 ? 0 : 1);

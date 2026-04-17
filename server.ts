@@ -749,6 +749,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "Override default log path (default: /tmp/clawcode-<slug>.log)",
           },
+          resumeOnRestart: {
+            type: "boolean",
+            description: "Emit a wrapper that runs `claude --continue` so the service rehydrates the prior session on restart. Default: true. Set false for a plain `claude` invocation with no context preservation.",
+          },
+          selfHeal: {
+            type: "boolean",
+            description: "Install the heal sidecar (timer + script) alongside the main service. The sidecar polls the log and restarts with a force-fresh flag if a stuck deferred-tool resume loop is detected. Default: true when resumeOnRestart is true; false otherwise. Set explicit false when using an external watchdog (recipes/watchdog) for recovery.",
+          },
         },
         required: ["action"],
       },
@@ -1348,12 +1356,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       ? params.extraArgs.map(String)
       : undefined;
     const logPath = params.logPath ? String(params.logPath) : undefined;
+    const resumeOnRestart =
+      typeof params.resumeOnRestart === "boolean" ? params.resumeOnRestart : undefined;
+    const selfHeal =
+      typeof params.selfHeal === "boolean" ? params.selfHeal : undefined;
 
     const plan = buildServicePlan(action, {
       workspace: WORKSPACE,
       claudeBin,
       extraArgs,
       logPath,
+      resumeOnRestart,
+      selfHeal,
     });
 
     return {

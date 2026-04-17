@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "npm install --silent >/dev/null 2>&1; exec npx tsx server.ts"
+    "start": "npm install --silent >/dev/null 2>&1; exec npx tsx server.ts",
+    "test": "npx tsx tests/service-generator-smoke.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

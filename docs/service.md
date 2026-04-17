@@ -111,7 +111,7 @@ ExecStart=/usr/local/bin/claude --dangerously-skip-permissions
 Restart=always
 RestartSec=10
 StartLimitIntervalSec=300
-StartLimitBurst=5
+StartLimitBurst=3
 StandardOutput=append:/home/you/.clawcode/logs/my-agent.log
 StandardError=append:/home/you/.clawcode/logs/my-agent.log
 
@@ -160,19 +160,66 @@ Opt out by passing `resumeOnRestart: false` to `service_plan`. You'll get the pr
 
 The wrapper is regenerated every time `install` is run, so safe to re-run after changing `extraArgs` or `claudeBin`. `uninstall` removes it.
 
+## Automatic self-heal for stuck resume loops
+
+`claude --continue` can land back inside a session with a stale deferred-tool marker. In that state the process keeps running (it does not crash), but every tick it logs `No deferred tool marker found in the resumed session` or `Input must be provided either through stdin or as a prompt argument when using --print`. Because it doesn't exit, `StartLimitBurst` never fires, so systemd's normal crash-loop guard can't help. A manual service reboot used to be the only exit.
+
+Since v1.5, `/agent:service install` ships three layered defenses by default, all automatic:
+
+**Layer 1, wrapper pre-flight.** Before the resume wrapper execs `claude --continue`, it checks four signals:
+
+1. A `~/.clawcode/service/<slug>.force-fresh` flag file (set by Layer 2).
+2. Whether a session jsonl exists at all.
+3. Whether the last session is older than `RESUME_STALE_DAYS` (7 days).
+4. Whether the tail of the service log contains 10 or more occurrences of the stuck-resume error pattern in the last ~200 lines.
+
+Any of those signals makes the wrapper drop `--continue` and start the agent fresh. A one-line breadcrumb goes into the service log naming the reason. The force-fresh flag is deleted *before* the decision, so a crashed start doesn't leave the flag armed for perpetual fresh starts.
+
+**Layer 2, heal sidecar.** A tiny companion service (`clawcode-heal-<slug>.timer`/`.service` on Linux, `com.clawcode.heal.<slug>` plist on macOS) fires every 60 seconds, scans the service log for the same error pattern, and when the threshold trips:
+
+1. Writes the force-fresh flag.
+2. Triggers `systemctl --user restart clawcode-<slug>` (Linux) or `launchctl kickstart -k` (macOS).
+3. Observes a cooldown (2x the detection window, default 10 min) before trying again, so a slow recovery doesn't get bounced repeatedly.
+
+The sidecar has zero runtime dependencies beyond `bash`, `tail`, and `grep`. It logs its own decisions to `~/.clawcode/logs/<slug>-heal.log`. First boot is delayed 2 minutes to give the main service time to settle.
+
+This layer is what catches the case the wrapper pre-flight can't: when the service is *currently* inside the bad state and no restart is coming.
+
+**Layer 3, tighter crash-loop guard.** `StartLimitBurst` is now `3` (was `5`). Fast-crash loops trip the systemd guard sooner. The slow-spam loop is Layer 2's job, so the extra headroom isn't needed anymore.
+
+### Opting out
+
+Pass `selfHeal: false` to `service_plan({ action: "install", selfHeal: false })` when an external watchdog (`recipes/watchdog/`) is already configured to handle recovery. Keep one recovery mechanism active, not two. They don't fight, but they also don't talk to each other. The heal sidecar is also silently disabled when `resumeOnRestart: false`, since without `--continue` there's no resume loop to heal.
+
+### Tuning
+
+The thresholds are exported constants in `lib/service-generator.ts`:
+
+| Constant | Default | Meaning |
+|---|---|---|
+| `HEAL_PATTERN` | `(No deferred tool marker\|Input must be provided)` | Egrep regex scanned against the service log |
+| `HEAL_THRESHOLD` | `10` | Minimum matches to trip recovery |
+| `HEAL_WINDOW_SECONDS` | `300` | Logical window; cooldown is 2x this |
+| `HEAL_LOG_TAIL_LINES` | `200` | How many lines of the log the scan inspects |
+
+Change them, re-run `/agent:service install`, and the wrapper + sidecar are regenerated. Don't hand-edit the scripts, since regeneration clobbers edits.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Service installed but WebChat / HTTP bridge never come up; logs empty or stuck before "listening" | Bypass Permissions startup dialog waiting for a "Do you accept?" that the daemon (launchd / systemd) cannot answer — no TTY | Add `"skipDangerousModePermissionPrompt": true` to `~/.claude/settings.json`, then restart the service. Only affects service mode; interactive `claude` is unaffected |
 | "service installed" but WebChat still unreachable | Service file is correct but `claude` not in PATH for launchd | Verify with `/agent:service status`; use absolute path to `claude` (`which claude` then pass as `claudeBin`) |
-| Service keeps crashing / restart loop | Config error (bad `agent-config.json`) or missing permission the `--dangerously-skip-permissions` flag can't cover | Check `~/.clawcode/logs/<slug>.log`; run `/agent:doctor` to see if config is valid. `StartLimitBurst=5` means systemd will stop retrying after 5 failures in 5 minutes — look for the last error there. |
+| Service keeps crashing / restart loop | Config error (bad `agent-config.json`) or missing permission the `--dangerously-skip-permissions` flag can't cover | Check `~/.clawcode/logs/<slug>.log`; run `/agent:doctor` to see if config is valid. `StartLimitBurst=3` means systemd will stop retrying after 3 failures in 5 minutes. Look for the last error there. |
+| Service shows "active" but log spams `No deferred tool marker found` | Stuck deferred-tool resume loop inside a `--continue`'d session | Automatic since v1.5: the heal sidecar bounces it within ~1 min. Confirm it's running with `systemctl --user status clawcode-heal-<slug>.timer`. Its decisions are at `~/.clawcode/logs/<slug>-heal.log`. |
 | On Linux: service dies when you log out | Lingering not enabled | `sudo loginctl enable-linger $USER` |
 | Uninstall didn't fully stop | systemd cache | `systemctl --user daemon-reload` then re-run uninstall |
 | Multiple agents conflicting | Same slug | Ensure workspace folder names are distinct |
 | Telegram / other channel suddenly drops messages after a config edit | Editing `~/.claude/settings.json` while the service runs reloads MCPs; some plugins do not reconnect cleanly and stay dead | Restart the service after any manual edit (`/agent:service uninstall` + `/agent:service install`, or `systemctl --user restart clawcode-<slug>` / `launchctl kickstart -k gui/$(id -u)/com.clawcode.<slug>`). Reported by [@JD2005L](https://github.com/JD2005L) |
 
 ## Watchdog (optional)
+
+Separate from the built-in heal sidecar described above. The heal sidecar targets one specific fault (stuck deferred-tool resume loops) with zero dependencies and no configuration. The watchdog recipe is broader: plugin subprocess health, HTTP bridge reachability, MCP ping, and optional LLM end-to-end ping, with alerting to a channel of your choice. Use both when you want both kinds of protection, or set `selfHeal: false` and let the watchdog do everything.
 
 If you want an external probe to detect silent failures (plugin subprocess dies but systemd still reports "active", MCP stuck, etc.) and restart the service, there's an opt-in recipe at [`recipes/watchdog/`](../recipes/watchdog/). It installs a systemd user timer (Linux) or launchd StartInterval LaunchAgent (macOS) that runs every 5 minutes, does 4 tiered checks, and triggers a restart + alert on failure. Does not touch the running service during install — Claude stays up.
 
@@ -182,6 +229,7 @@ Full docs: [`docs/watchdog.md`](watchdog.md).
 
 | File | Role |
 |---|---|
-| `lib/service-generator.ts` | Pure platform detection, slug + label conventions, plist/unit content generators, plan builder |
+| `lib/service-generator.ts` | Pure platform detection, slug + label conventions, plist/unit content generators, plan builder, heal sidecar generators |
 | `server.ts` | `service_plan` MCP tool — planning only, no side effects |
 | `skills/service/SKILL.md` | UX layer: confirmation prompts, executes plan commands via `Bash` + `Write` |
+| `tests/service-generator-smoke.test.ts` | `npm test`. Parses every emitted shell script with `bash -n`, asserts plan shape, exercises wrapper pre-flight + heal sidecar against a synthetic log |
