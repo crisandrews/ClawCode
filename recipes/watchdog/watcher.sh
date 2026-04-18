@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ClawCode Watchdog — one-shot health probe.
 #
-# Runs up to 4 cheap tiered checks against a ClawCode service. If any check
-# fails and we are not in cooldown, triggers --on-fail (default: restart via
-# the service manager) and optionally --alert-cmd.
+# Runs up to 6 tiered checks against a ClawCode service. If any check fails
+# and we are not in cooldown, triggers --on-fail (default: restart via the
+# service manager) and optionally --alert-cmd.
 #
 # Designed to be invoked by a systemd user timer (Linux) or launchd
 # StartInterval (macOS) — NOT a long-running daemon. Each invocation lives
@@ -16,15 +16,22 @@
 # Usage:
 #   watcher.sh \
 #     --service-label=clawcode-myagent \
+#     --slug=myagent \
 #     --workspace=/home/me/myagent \
 #     --http-port=18790 \
 #     --http-token='' \
 #     --expected-plugins=telegram,whatsapp \
-#     --tier=1 --tier=2 --tier=3 --tier=4 \
+#     --tier=1 --tier=2 --tier=3 --tier=4 --tier=6 \
 #     --cooldown=300 \
 #     --on-fail='systemctl --user restart clawcode-myagent' \
 #     --alert-cmd='./alert-telegram.sh' \
 #     --log-path=/tmp/clawcode-watchdog-myagent.log
+#
+# Tier 6 (version drift) is opt-in: pass --tier=6 and --slug=<slug>. Detects
+# the "git pull but service not restarted" case by diffing the stamp file
+# the service writes at boot (see docs/service.md > Version stamp) against
+# the current HEAD of --workspace. On drift, triggers --on-fail like any
+# other tier failure; the restart causes the stamp to be rewritten.
 #
 # Exit codes:
 #   0 = all checks passed (or SKIP due to cooldown after a fresh restart)
@@ -35,6 +42,7 @@ set -o pipefail
 
 # ---------------- Defaults ----------------
 SERVICE_LABEL=""
+SLUG=""
 WORKSPACE=""
 TIERS=""
 HTTP_PORT="18790"
@@ -49,11 +57,15 @@ LOG_PATH=""
 LLM_PING_INTERVAL="3600"
 # Maximum wait inside the endpoint for the PONG response
 LLM_PING_TIMEOUT_MS="30000"
+# Tier 6 (version drift): explicit stamp path override, otherwise derived
+# from $SLUG + platform per versionStampPathExpr in lib/service-generator.ts.
+STAMP_FILE=""
 
 # ---------------- Parse args ----------------
 for arg in "$@"; do
   case "$arg" in
     --service-label=*)    SERVICE_LABEL="${arg#*=}" ;;
+    --slug=*)             SLUG="${arg#*=}" ;;
     --workspace=*)        WORKSPACE="${arg#*=}" ;;
     --tier=*)             TIERS="$TIERS ${arg#*=}" ;;
     --http-port=*)        HTTP_PORT="${arg#*=}" ;;
@@ -65,8 +77,9 @@ for arg in "$@"; do
     --log-path=*)         LOG_PATH="${arg#*=}" ;;
     --llm-ping-interval=*) LLM_PING_INTERVAL="${arg#*=}" ;;
     --llm-ping-timeout-ms=*) LLM_PING_TIMEOUT_MS="${arg#*=}" ;;
+    --stamp-file=*)       STAMP_FILE="${arg#*=}" ;;
     --help|-h)
-      sed -n '2,35p' "$0"; exit 0 ;;
+      sed -n '2,42p' "$0"; exit 0 ;;
     *)
       echo "watcher.sh: unknown argument: $arg" >&2
       echo "Run with --help for usage." >&2
@@ -248,6 +261,64 @@ check_tier5() {
   fi
 }
 
+# ---------------- Tier 6: version drift ----------------
+# Detects the "git pull but service not restarted" failure mode: the service
+# wrote its boot-time git HEAD to a stamp file at startup (via the
+# ExecStartPre on Linux, the sh -c wrapper on macOS — see
+# lib/service-generator.ts `versionStampPathExpr`). This check compares the
+# stamped SHA against the current on-disk HEAD of $WORKSPACE and fails when
+# they diverge, so the watcher's on-fail action (typically a service restart)
+# can pick up the pulled code.
+#
+# Missing stamp, missing git, non-git workspace → "skip" (never FAIL) — the
+# stamp is best-effort on the service side, so its absence is not a fault.
+resolve_stamp_path() {
+  if [[ -n "$STAMP_FILE" ]]; then
+    echo "$STAMP_FILE"
+    return
+  fi
+  [[ -z "$SLUG" ]] && return  # no slug → no derivable path
+  local os; os=$(detect_os)
+  if [[ "$os" == "mac" ]]; then
+    local tmp="${TMPDIR%/}"
+    [[ -z "$tmp" ]] && tmp="/tmp"
+    echo "${tmp}/clawcode-${SLUG}.version"
+  elif [[ "$os" == "linux" ]]; then
+    local xdg="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    echo "${xdg}/clawcode-${SLUG}.version"
+  fi
+}
+
+check_tier6() {
+  local stamp_path; stamp_path=$(resolve_stamp_path)
+  if [[ -z "$stamp_path" ]]; then
+    echo "skip(no-slug)"
+    return
+  fi
+  if [[ ! -r "$stamp_path" ]]; then
+    echo "skip(no-stamp)"
+    return
+  fi
+  if [[ -z "$WORKSPACE" || ! -d "$WORKSPACE/.git" ]]; then
+    echo "skip(no-git-workspace)"
+    return
+  fi
+  local stamped current
+  stamped=$(tr -d '[:space:]' < "$stamp_path" 2>/dev/null || echo "")
+  current=$(git -C "$WORKSPACE" rev-parse HEAD 2>/dev/null || echo "")
+  if [[ -z "$stamped" || -z "$current" ]]; then
+    echo "skip(empty-sha)"
+    return
+  fi
+  if [[ "$stamped" == "$current" ]]; then
+    echo "pass"
+  else
+    # Short SHAs in the message for readability, full SHAs are in the
+    # log diagnostic appended by tail_service_log on FAIL.
+    echo "FAIL(drift:${stamped:0:7}→${current:0:7})"
+  fi
+}
+
 # ---------------- Cooldown ----------------
 in_cooldown() {
   [[ -f "$STATE_FILE" ]] || return 1
@@ -291,6 +362,7 @@ for tier in $TIERS; do
     3) r=$(check_tier3) ;;
     4) r=$(check_tier4) ;;
     5) r=$(check_tier5) ;;
+    6) r=$(check_tier6) ;;
     *) r="skip" ;;
   esac
   results+=" tier${tier}:${r}"

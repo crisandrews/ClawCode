@@ -98,12 +98,17 @@ LOG_FILE="/tmp/${WATCHDOG_LABEL}.log"
 TIERS_ARGS=(--tier=1)
 [[ "$HTTP_ENABLED" == "true" ]] && TIERS_ARGS+=(--tier=2 --tier=3)
 [[ -n "$EXPECTED_PLUGINS" ]]    && TIERS_ARGS+=(--tier=4)
+# Tier 6 (version drift) auto-enables for git workspaces. Detects the
+# "git pull but service not restarted" case by diffing the boot-time
+# stamp against the current HEAD. Silently skipped on non-git workspaces.
+[[ -d "$WORKSPACE/.git" ]]      && TIERS_ARGS+=(--tier=6)
 
 # Build the ProgramArguments array as plist XML fragments
 ARGS_XML=""
 ARGS_XML+="    <string>/bin/bash</string>\n"
 ARGS_XML+="    <string>${RECIPE_DIR}/watcher.sh</string>\n"
 ARGS_XML+="    <string>--service-label=${SERVICE_LABEL}</string>\n"
+ARGS_XML+="    <string>--slug=${SLUG}</string>\n"
 ARGS_XML+="    <string>--workspace=${WORKSPACE}</string>\n"
 ARGS_XML+="    <string>--http-port=${HTTP_PORT}</string>\n"
 [[ -n "$HTTP_TOKEN" ]]       && ARGS_XML+="    <string>--http-token=${HTTP_TOKEN}</string>\n"

@@ -490,6 +490,157 @@ check("heal script is quiet when log is clean", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Watchdog tier 6 (version drift) — end-to-end bash tests against
+// recipes/watchdog/watcher.sh. Pairs with versionStampPathExpr on the
+// service side: the service writes a stamp at boot, the watchdog reads it.
+// ---------------------------------------------------------------------------
+const watcherPath = path.resolve(
+  path.dirname(new URL(import.meta.url).pathname),
+  "..",
+  "recipes",
+  "watchdog",
+  "watcher.sh"
+);
+
+/**
+ * Build a throwaway workspace + stamp file + minimal watcher invocation so
+ * we can exercise tier 6 in isolation without hitting the other tiers.
+ * The `stampSha` controls what's in the stamp file; pass `null` to skip
+ * creating the file (tests the no-stamp path).
+ */
+function runTier6(opts: {
+  stampSha: string | null;
+  workspaceHeadOverride?: string; // if set, create a fake workspace whose HEAD differs from stampSha
+  noGit?: boolean; // create a workspace without .git
+  slug?: string;
+}): { status: number; log: string } {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawcode-tier6-"));
+  const workspace = path.join(tmpDir, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+
+  if (!opts.noGit) {
+    spawnSync("git", ["init", "-q"], { cwd: workspace });
+    spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "init"], {
+      cwd: workspace,
+    });
+    if (opts.workspaceHeadOverride) {
+      // Force a second commit to change HEAD away from the stamp.
+      spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "drift"], {
+        cwd: workspace,
+      });
+    }
+  }
+
+  const slug = opts.slug ?? "test-agent";
+  const stampFile = path.join(tmpDir, `clawcode-${slug}.version`);
+  if (opts.stampSha !== null) {
+    fs.writeFileSync(stampFile, opts.stampSha);
+  }
+
+  const logPath = path.join(tmpDir, "watcher.log");
+  const args = [
+    watcherPath,
+    `--service-label=clawcode-${slug}`,
+    `--slug=${slug}`,
+    `--workspace=${workspace}`,
+    `--stamp-file=${stampFile}`,
+    "--tier=6",
+    "--cooldown=0",
+    `--log-path=${logPath}`,
+    // No --on-fail, so a drift result logs FAIL but does not try to restart.
+  ];
+  const r = spawnSync("bash", args, { encoding: "utf-8" });
+  const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf-8") : "";
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+  return { status: r.status ?? -1, log };
+}
+
+check("watcher tier 6: matching SHA → pass", () => {
+  // Use a workspace that git init'd, read its HEAD, write same to stamp.
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawcode-tier6-match-"));
+  const workspace = path.join(tmpDir, "ws");
+  fs.mkdirSync(workspace, { recursive: true });
+  spawnSync("git", ["init", "-q"], { cwd: workspace });
+  spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "init"], {
+    cwd: workspace,
+  });
+  const headOut = spawnSync("git", ["-C", workspace, "rev-parse", "HEAD"], { encoding: "utf-8" });
+  const head = headOut.stdout.trim();
+  assert(/^[0-9a-f]{40}$/.test(head), `expected SHA, got: ${head}`);
+
+  const stampFile = path.join(tmpDir, "clawcode-test-agent.version");
+  fs.writeFileSync(stampFile, head);
+
+  const logPath = path.join(tmpDir, "w.log");
+  const r = spawnSync("bash", [
+    watcherPath,
+    "--service-label=clawcode-test-agent",
+    "--slug=test-agent",
+    `--workspace=${workspace}`,
+    `--stamp-file=${stampFile}`,
+    "--tier=6",
+    "--cooldown=0",
+    `--log-path=${logPath}`,
+  ], { encoding: "utf-8" });
+
+  const log = fs.readFileSync(logPath, "utf-8");
+  assert(r.status === 0, `expected exit 0 on match; got ${r.status}. log: ${log}`);
+  assert(log.includes("tier6:pass"), `expected tier6:pass in log, got: ${log}`);
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+check("watcher tier 6: drift → FAIL(drift:…)", () => {
+  const { status, log } = runTier6({
+    stampSha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    workspaceHeadOverride: "force-different-head",
+  });
+  assert(status === 1, `expected exit 1 on drift; got ${status}. log: ${log}`);
+  assert(
+    /tier6:FAIL\(drift:/.test(log),
+    `expected tier6:FAIL(drift:...) in log, got: ${log}`
+  );
+});
+
+check("watcher tier 6: missing stamp → skip (does not fail)", () => {
+  const { status, log } = runTier6({ stampSha: null });
+  assert(status === 0, `missing stamp must not fail; got exit ${status}. log: ${log}`);
+  assert(log.includes("tier6:skip(no-stamp)"), `expected skip(no-stamp) in log, got: ${log}`);
+});
+
+check("watcher tier 6: non-git workspace → skip", () => {
+  const { status, log } = runTier6({
+    stampSha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    noGit: true,
+  });
+  assert(status === 0, `non-git workspace must not fail; got exit ${status}. log: ${log}`);
+  assert(
+    log.includes("tier6:skip(no-git-workspace)"),
+    `expected skip(no-git-workspace) in log, got: ${log}`
+  );
+});
+
+check("watcher tier 6: no --slug + no --stamp-file → skip (never errors)", () => {
+  // Omit slug AND stamp-file. resolve_stamp_path should return empty and the
+  // check should skip without touching the filesystem.
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawcode-tier6-noslug-"));
+  const logPath = path.join(tmpDir, "w.log");
+  const r = spawnSync("bash", [
+    watcherPath,
+    "--service-label=clawcode-x",
+    // no --slug, no --stamp-file
+    `--workspace=${tmpDir}`,
+    "--tier=6",
+    "--cooldown=0",
+    `--log-path=${logPath}`,
+  ], { encoding: "utf-8" });
+  const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf-8") : "";
+  assert(r.status === 0, `missing slug must not fail; got ${r.status}. log: ${log}`);
+  assert(log.includes("tier6:skip(no-slug)"), `expected skip(no-slug), got: ${log}`);
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
 const failed = results.filter((r) => !r.pass);

@@ -115,6 +115,10 @@ SERVICE_FILE="$SYSTEMD_DIR/${WATCHDOG_LABEL}.service"
 TIERS_FLAGS="--tier=1"
 [[ "$HTTP_ENABLED" == "true" ]] && TIERS_FLAGS="$TIERS_FLAGS --tier=2 --tier=3"
 [[ -n "$EXPECTED_PLUGINS" ]]    && TIERS_FLAGS="$TIERS_FLAGS --tier=4"
+# Tier 6 (version drift) auto-enables for git workspaces. Detects the
+# "git pull but service not restarted" case by diffing the boot-time
+# stamp against the current HEAD. Silently skipped on non-git workspaces.
+[[ -d "$WORKSPACE/.git" ]] && TIERS_FLAGS="$TIERS_FLAGS --tier=6"
 
 TOKEN_FLAG=""
 [[ -n "$HTTP_TOKEN" ]] && TOKEN_FLAG=" --http-token=$HTTP_TOKEN"
@@ -134,6 +138,7 @@ After=network.target
 Type=oneshot
 ExecStart=/bin/bash ${RECIPE_DIR}/watcher.sh \\
   --service-label=${SERVICE_LABEL} \\
+  --slug=${SLUG} \\
   --workspace=${WORKSPACE} \\
   --http-port=${HTTP_PORT}${TOKEN_FLAG}${PLUGINS_FLAG} \\
   ${TIERS_FLAGS} \\

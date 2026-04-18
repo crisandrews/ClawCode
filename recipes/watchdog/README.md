@@ -16,8 +16,12 @@ A short-lived `watcher.sh` runs every 5 minutes (via systemd timer on Linux, `St
 | 2 | `GET /health` (curl) | HTTP bridge + Node event loop responsive | Yes |
 | 3 | `GET /watchdog/mcp-ping` | ClawCode MCP dispatch works | Yes |
 | 4 | `pgrep -P <main-pid>` vs expected plugin list | Plugin subprocesses (Telegram, WhatsApp, etc.) alive | No |
+| 6 | Boot-time git HEAD stamp vs on-disk HEAD | Service is running current code (catches `git pull` without restart) | No |
 
 First failing tier short-circuits the rest. If any tier fails and we're past the cooldown, it runs `--on-fail` (default: restart via the service manager) and optionally `--alert-cmd`.
+
+> Tier 5 (LLM end-to-end ping) is off by default — it costs tokens. Enable with `--tier=5` if you want it.
+> Tier 6 (version drift) auto-enables when the installer detects a git workspace. The service writes its boot-time SHA to a reboot-clean stamp (see [`docs/service.md`](../../docs/service.md#version-stamp)); the watchdog diffs the stamp against the current HEAD and treats a mismatch as "stale code → restart". Silently skipped on non-git workspaces.
 
 ## Install
 
