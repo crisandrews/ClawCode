@@ -18,10 +18,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/anthropics/claude-plugins-community"><img src="https://img.shields.io/badge/Listed%20on-Anthropic's%20claude--plugins--community-FF6B35?style=for-the-badge" alt="Listed on Anthropic's claude-plugins-community"></a>
-</p>
-
-<p align="center">
   <a href="#quick-setup">Quick Setup</a> ·
   <a href="#why-it-exists">Why</a> ·
   <a href="#features">Features</a> ·
@@ -29,6 +25,10 @@
   <a href="#going-further">Going further</a> ·
   <a href="#troubleshooting">Troubleshooting</a> ·
   <a href="https://github.com/crisandrews/ClawCode/issues">Issues</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/anthropics/claude-plugins-community"><img src="https://img.shields.io/badge/Listed%20on-Anthropic's%20claude--plugins--community-FF6B35?style=for-the-badge" alt="Listed on Anthropic's claude-plugins-community"></a>
 </p>
 
 ---
@@ -84,10 +84,15 @@ claude
 
 **2. Install the plugin.**
 
-Inside Claude Code, add Anthropic's official community marketplace and install:
+Inside Claude Code, add Anthropic's official community marketplace:
 
 ```
 /plugin marketplace add anthropics/claude-plugins-community
+```
+
+Then install the plugin:
+
+```
 /plugin install clawcode@claude-community
 ```
 
@@ -99,10 +104,13 @@ Then reload plugins so the skills become available:
 /reload-plugins
 ```
 
-> **Bleeding-edge alternative.** The community marketplace syncs nightly from Anthropic's review pipeline, so brand-new fixes can take up to ~24h to land. If you want the absolute latest commit, install from this repo's marketplace instead — same plugin, different identifier:
+> **Bleeding-edge alternative.** The community marketplace syncs nightly from Anthropic's review pipeline, so brand-new fixes can take up to ~24h to land. If you want the absolute latest commit, install from this repo's marketplace instead — same plugin, different identifier. Run them one at a time:
 >
 > ```
 > /plugin marketplace add crisandrews/ClawCode
+> ```
+>
+> ```
 > /plugin install agent@clawcode
 > ```
 
@@ -330,13 +338,19 @@ Full details: [`docs/config-reload.md`](docs/config-reload.md)
 
 ## [Updating, uninstalling, and cache](#updating-uninstalling-and-cache)
 
-**Update to the latest version.** Use the command set that matches how you installed.
+**Update to the latest version.** Use the command set that matches how you installed. Run each line one at a time — Claude Code's slash commands don't batch.
 
 If you installed from the community marketplace (`clawcode@claude-community`):
 
 ```
 /plugin marketplace update anthropics/claude-plugins-community
+```
+
+```
 /plugin update clawcode@claude-community
+```
+
+```
 /reload-plugins
 ```
 
@@ -344,7 +358,13 @@ If you installed from this repo's marketplace (`agent@clawcode`):
 
 ```
 /plugin marketplace update crisandrews/ClawCode
+```
+
+```
 /plugin update agent@clawcode
+```
+
+```
 /reload-plugins
 ```
 
