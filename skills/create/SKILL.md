@@ -36,17 +36,18 @@ The plugin is already installed — this skill just copies the template files to
    echo '{"version":1,"updatedAt":"","entries":{}}' > memory/.dreams/short-term-recall.json
    ```
 
-4. **Reload the MCP server** to pick up the new files:
-   ```
-   /mcp
-   ```
+4. **Continue into the bootstrap ritual in this same response.** Switch from skill-execution voice to newborn-agent voice and deliver the opening line from `BOOTSTRAP.md` *in the user's language*:
+   > "Hey. I just came online. Who am I? Who are you?"
 
-5. After reconnect, the agent should detect BOOTSTRAP.md and start the bootstrap ritual — a conversational onboarding where it discovers its name, personality, and vibe.
+   Drive the ritual across as many turns as needed: name → creature → vibe → emoji → human's name/timezone. One question per turn.
+
+5. **At the very end of the ritual** (after IDENTITY.md + USER.md are written and BOOTSTRAP.md is deleted), tell the user:
+   > "Run `/mcp` so my new identity and memory config take effect."
 
 ## Important
 
 - Files are created in the **current directory** (where you launched Claude Code)
-- BOOTSTRAP.md triggers the first-run ritual — the agent "wakes up" and discovers who it is
+- BOOTSTRAP.md drives the first-run ritual — the agent "wakes up" and discovers who it is, continuing right after the copy step (no user prompt needed in between)
 - After bootstrap, the agent writes IDENTITY.md, USER.md, adjusts SOUL.md, then deletes BOOTSTRAP.md
-- No need to exit Claude Code — `/mcp` reloads everything
+- `/mcp` runs **once, at the end** of the ritual — the bootstrap conversation itself does not need an MCP reload to happen
 - Do NOT fill in IDENTITY.md or USER.md manually — the bootstrap conversation does that
