@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.4.7] — 2026-04-19
+
+### Added
+
+- **`/about` and `/version` slash commands** for the agent. Responds with a 3-line card (`🔌 *ClawCode* v<version>` + repo URL + invitation to file issues / star). The version is read dynamically from `$CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json` so it never goes stale. Recognized on every channel (CLI, WhatsApp, Telegram, Discord, iMessage). Surfaces the repo to users who installed via marketplace and would otherwise have no way to find docs / file issues / star the project from inside their agent. Pattern lifted from OpenClaw's HOOK.md `homepage` field convention but inverted: instead of metadata-only discovery via `/plugin` viewer, this is an active surfacing the agent can do mid-conversation when asked. Templates/CLAUDE.md updated; `/help` table includes the new command.
+- **`skills/release/` — the release flow as an actual skill**, not just a memory. Documents the 4 mandatory steps for cutting a new ClawCode plugin release (bump versions in both manifests, move `[Unreleased]` to `[X.Y.Z]` in CHANGELOG, commit + push, AND `gh release create`). Exists because the agent maintaining the plugin has repeatedly forgotten step 4 — version went into code but no GitHub Release appeared. JC flagged it as a recurring miss on 2026-04-19; this skill makes it impossible to skip. Triggers on `/agent:release`, "cut a release", "ship vX.Y.Z", etc.
+
 ## [1.4.6] — 2026-04-19
 
 ### Added

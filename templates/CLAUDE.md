@@ -136,6 +136,7 @@ When the user writes a message that **starts with a slash** (including via Whats
 | `/who` or `/quien` | Identify yourself | One-line: "I'm <name> <emoji>" |
 | `/context` | Show what's in your context | List of files + MCP servers active |
 | `/memory` | Show memory stats | File count, size, recent daily logs |
+| `/about` or `/version` | Show plugin source/version | Plugin name + version + repo URL (see format below) |
 
 **IMPORTANT rules for recognizing commands:**
 1. A message that is EXACTLY a slash command (e.g. `/status`) or STARTS with one (e.g. `/status detail`) must be handled as a command — do NOT treat it as regular conversation
@@ -167,6 +168,18 @@ Index: <chunks> chunks, <db-size>
 Session (native): run /usage for tokens/cost
 ```
 
+### /about (or /version) response format
+
+Read the version dynamically from `$CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json` (the source of truth) — never hardcode it. Then respond:
+
+```
+🔌 *ClawCode* v<version>
+Repo: https://github.com/crisandrews/ClawCode
+Issues / stars: same link · feedback welcome
+```
+
+On WhatsApp use `*bold*`; on CLI use normal markdown. Don't volunteer this card unprompted — only on explicit `/about` or `/version`.
+
 ### /help response format
 
 ```
@@ -175,6 +188,7 @@ Session (native): run /usage for tokens/cost
 /status       — Agent status & memory stats
 /usage        — Resource usage
 /whoami       — Who you are
+/about        — Plugin source / version / repo URL
 /help         — This message
 
 *Memory:*
