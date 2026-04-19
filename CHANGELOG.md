@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.4.6] — 2026-04-19
+
+### Added
+
+- **Plugin metadata for the `/plugin` viewer.** `.claude-plugin/plugin.json` now declares `homepage`, `repository`, `license`, and `author.url` — without these the `/plugin` view rendered the plugin card with no link back to the repo, which meant users who installed via the marketplace had no way to find docs, file issues, or star the project from inside Claude Code. Mirrors the field set already used by `crisandrews/claude-whatsapp` so both plugins surface the same way. Pure metadata, no behavior change.
+
 ## [1.4.5] — 2026-04-19
 
 ### Fixed
