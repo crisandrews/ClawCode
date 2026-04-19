@@ -140,11 +140,20 @@ export class AutogenesisOrchestrator {
       return JSON.stringify({ error: "autogenesis-engine.py not found" });
     }
 
-    return execFileSync(
-      "python3",
-      [engineScript, "--memory-dir", memoryDir, "--skill-dir", skillDir],
-      { timeout: 30_000, encoding: "utf-8" }
-    );
+    // Prefer PYTHON env var, then "python", then "python3" as last resort
+    const pythonBin = process.env.PYTHON ?? "python";
+
+    try {
+      return execFileSync(
+        pythonBin,
+        [engineScript, "--memory-dir", memoryDir, "--skill-dir", skillDir],
+        { timeout: 30_000, encoding: "utf-8" }
+      );
+    } catch (err) {
+      return JSON.stringify({
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -175,6 +184,14 @@ export class AutogenesisOrchestrator {
     }
     if (!fs.existsSync(proposal.skill_path)) {
       return { success: false, error: `Skill file not found: ${proposal.skill_path}` };
+    }
+
+    // Guard: skill_path must resolve inside pluginRoot/skills/ to prevent
+    // a tampered pending.json from writing outside the skills directory.
+    const resolvedPath = path.resolve(proposal.skill_path);
+    const skillsRoot = path.resolve(this.pluginRoot, "skills");
+    if (!resolvedPath.startsWith(skillsRoot + path.sep)) {
+      return { success: false, error: "skill_path escapes skills directory — proposal rejected" };
     }
 
     const currentContent = fs.readFileSync(proposal.skill_path, "utf-8");

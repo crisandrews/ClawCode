@@ -37,7 +37,6 @@ EVENT_SKILL_MAP: dict[str, list[str]] = {
     "domain_expiry":    ["heartbeat"],
     "service_down":     ["heartbeat"],
     "payment_overdue":  ["heartbeat"],
-    "X":                ["heartbeat"],
 }
 
 # ---------------------------------------------------------------------------
@@ -87,7 +86,7 @@ def _build_hypothesis(event_type: str, rate: float, stats: dict) -> str:
     n = stats.get("notified_count_30d", 0)
     templates = {
         "CI_failure": (
-            f"CI failures are notified but Pablo responds only {pct} of the time "
+            f"CI failures are notified but the user responds only {pct} of the time "
             f"({n} notifications). The alert may lack enough context "
             f"(which repo, which job, how to fix) or the urgency score "
             f"is not high enough during typical CI failure hours."
@@ -104,8 +103,8 @@ def _build_hypothesis(event_type: str, rate: float, stats: dict) -> str:
         ),
         "payment_overdue": (
             f"Payment overdue alerts have {pct} response rate ({n} notifications). "
-            f"These may get lost in briefing noise. Consider elevating to iMessage "
-            f"with a direct payment link and daily re-alerts until paid."
+            f"These may get lost in briefing noise. Consider elevating to a "
+            f"high-priority channel with a direct payment link and daily re-alerts."
         ),
     }
     return templates.get(event_type, (
@@ -172,7 +171,7 @@ def _build_improvement(event_type: str, hyp: dict) -> str:
             f"- Commit hash and author of the breaking change\n"
             f"- Last passing run (for comparison)\n\n"
             f"**Urgency escalation rules:**\n"
-            f"- ≥3 consecutive failures on `main` → send iMessage immediately (do not queue)\n"
+            f"- ≥3 consecutive failures on `main` → notify via high-priority channel immediately\n"
             f"- Failures persisting >2h → create incident ticket and mention in next briefing\n\n"
             f"**Suggested fixes to include:**\n"
             f"- Dependency update? Check lock file diff\n"
@@ -187,9 +186,9 @@ def _build_improvement(event_type: str, hyp: dict) -> str:
             f"- Current registrar name and direct renewal URL\n"
             f"- Transfer steps if switching registrar (nameservers, auth code)\n\n"
             f"**Urgency escalation rules:**\n"
-            f"- ≤10 days → include in morning briefing AND iMessage\n"
-            f"- ≤5 days  → send iMessage every 24h until resolved\n"
-            f"- ≤2 days  → send iMessage and call Pablo via ElevenLabs\n\n"
+            f"- ≤10 days → include in daily briefing AND high-priority channel\n"
+            f"- ≤5 days  → re-alert every 24h until resolved\n"
+            f"- ≤2 days  → escalate to highest-priority notification channel\n\n"
             f"**Do not notify only once** — re-alert every 24h if no action taken.\n"
         ),
         "service_down": (
@@ -201,9 +200,9 @@ def _build_improvement(event_type: str, hyp: dict) -> str:
             f"- Last known healthy timestamp\n"
             f"- Restart command or runbook link\n\n"
             f"**Urgency escalation rules:**\n"
-            f"- Any service_down → send iMessage immediately (never just log)\n"
-            f"- Down >1h → create incident ticket in Paperclip\n"
-            f"- Down >4h → call Pablo via ElevenLabs\n\n"
+            f"- Any service_down → notify via high-priority channel (never just log)\n"
+            f"- Down >1h → create incident ticket\n"
+            f"- Down >4h → escalate to highest-priority notification channel\n\n"
             f"**Do not mark as resolved** until the health check confirms HTTP 200.\n"
         ),
         "payment_overdue": (
@@ -214,9 +213,9 @@ def _build_improvement(event_type: str, hyp: dict) -> str:
             f"- Service at risk and consequence of non-payment (cutoff date)\n"
             f"- Direct payment URL or account login\n\n"
             f"**Urgency escalation rules:**\n"
-            f"- Amount >$100 USD → send iMessage immediately\n"
-            f"- Overdue >7 days  → include in EVERY morning briefing until paid\n"
-            f"- Overdue >14 days → call Pablo via ElevenLabs\n\n"
+            f"- Large amounts → notify via high-priority channel immediately\n"
+            f"- Overdue >7 days  → include in EVERY daily briefing until paid\n"
+            f"- Overdue >14 days → escalate to highest-priority notification channel\n\n"
             f"**Re-alert daily** (not weekly) until payment is confirmed.\n"
         ),
     }
@@ -226,7 +225,7 @@ def _build_improvement(event_type: str, hyp: dict) -> str:
         f"Response rate for this event type is low. Improvements:\n"
         f"- Include specific action items (not just descriptions)\n"
         f"- Add direct links to resolve the underlying issue\n"
-        f"- Send iMessage for HIGH urgency events (do not queue)\n"
+        f"- Use high-priority channel for HIGH urgency events (do not queue)\n"
         f"- Re-alert every 24h if no action is taken\n"
     ))
 

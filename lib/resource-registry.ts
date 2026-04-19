@@ -75,6 +75,7 @@ export class ResourceRegistry {
   register(
     record: Omit<ResourceRecord, "currentVersion" | "createdAt" | "updatedAt">
   ): void {
+    this.assertSafe(record.name, "name");
     if (this.data.resources[record.name]) return;
 
     const content = fs.existsSync(record.path)
@@ -130,6 +131,8 @@ export class ResourceRegistry {
    * Restore file to a previous version. Returns true on success.
    */
   rollback(name: string, toVersion: string): boolean {
+    this.assertSafe(name, "name");
+    this.assertSafe(toVersion, "version");
     const resource = this.data.resources[name];
     if (!resource) return false;
 
@@ -146,6 +149,7 @@ export class ResourceRegistry {
 
   /** Full version history for a resource. */
   getHistory(name: string): VersionEntry[] {
+    this.assertSafe(name, "name");
     const metaPath = path.join(this.versionsDir, name, "history.json");
     if (!fs.existsSync(metaPath)) return [];
     try {
@@ -167,6 +171,13 @@ export class ResourceRegistry {
   // Private helpers
   // ---------------------------------------------------------------------------
 
+  /** Reject names/versions that could escape the versions directory. */
+  private assertSafe(value: string, field: string): void {
+    if (!/^[A-Za-z0-9._-]+$/.test(value)) {
+      throw new Error(`Invalid ${field}: "${value}" — only [A-Za-z0-9._-] allowed`);
+    }
+  }
+
   private load(): RegistryData {
     if (fs.existsSync(this.registryPath)) {
       try {
@@ -184,7 +195,10 @@ export class ResourceRegistry {
   }
 
   private bumpPatch(version: string): string {
-    const parts = version.split(".").map(Number);
+    const parts = version.split(".").map((s) => {
+      const n = Number(s);
+      return Number.isFinite(n) ? n : 0;
+    });
     while (parts.length < 3) parts.push(0);
     parts[2] += 1;
     return parts.join(".");
