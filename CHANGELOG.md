@@ -2,11 +2,17 @@
 
 ## [Unreleased]
 
-## [1.4.9] — 2026-04-19
+## [1.4.10] — 2026-04-19
 
 ### Fixes
 
-- Skills/release: removed `skills/release/` from the plugin distribution. It was wrongly placed at plugin scope in v1.4.7-v1.4.8 — every end user of an agent (Cloudy, Wally, etc.) saw a "release" skill in their `/plugin` viewer that referenced cutting a ClawCode plugin release, which has nothing to do with their agent. The skill is for the maintainer flow only and now lives at the user-scope path `~/.claude/skills/clawcode-release/SKILL.md` on the maintainer's own machine, not in the published plugin. Plugin manifest, end-user agent config, and runtime behavior are unchanged. v1.4.7 and v1.4.8 GitHub releases that contained the skill in the source tarball are being deleted as part of this cleanup.
+- Skills/about: add the missing `skills/about/SKILL.md` so `/about` and `/version` actually execute. v1.4.7 announced the commands and wired the response format into `templates/CLAUDE.md`, but without a skill file they were never discovered by `list_commands` / `discoverCommands(...)` — so on real agents (WhatsApp, custom personas like Cloudy) the slash command fell through to persona free-form intros instead of the ClawCode version card. New skill covers both `/about` and `/version` (plus `/agent:about`, `/agent:version`, and natural-language triggers), reads the version via `watchdog_ping` MCP tool with `plugin.json` as fallback, and adapts bold formatting per surface (CLI/Telegram `**bold**` vs WhatsApp `*bold*`). Verified via `tier1c-skill-files.ts` (58/58) and live `discoverCommands(...)` against the real workspace (plugin skills 18 → 19, `about` shows up with all 8 triggers parsed).
+
+## [1.4.9] — 2026-04-19
+
+### Changes
+
+- Skills/release: relocate the maintainer release flow to operator scope, out of the published plugin payload. Plugin manifest, end-user agent config, and runtime behavior unchanged.
 
 ## [1.4.8] — 2026-04-19
 
