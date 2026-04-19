@@ -1,7 +1,7 @@
 {
   "name": "agent",
   "description": "Turn Claude Code into a persistent agent — memory, personality, voice, messaging, and more.",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "author": {
     "name": "Juan Cristobal Andrews"
   },
@@ -14,6 +14,5 @@
     "dreaming",
     "clawcode"
   ],
-  "hooks": "./hooks/hooks.json",
   "mcpServers": "./.mcp.json"
 }

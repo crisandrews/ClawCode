@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.4.4] — 2026-04-19
+
+### Fixed
+
+- **Plugin no longer fails to load on Claude Code ≥ 2.1.114 with "Duplicate hooks file detected".** `.claude-plugin/plugin.json` declared `"hooks": "./hooks/hooks.json"` since v1.0.0, but Claude Code auto-loads `hooks/hooks.json` from the standard plugin path — the explicit declaration was redundant. Recent Claude Code versions added a duplicate-detection guard that rejects the redundant declaration and skips loading every hook (SessionStart reconcile, PostToolUse cron capture, PreCompact memory flush, Stop summary prompt, SessionEnd dreams event). Removed the line; the hooks now load via auto-load, same file, same behavior. Zero impact on older Claude Code: auto-load has always been the documented default, and `manifest.hooks` is spec'd only for *additional* hook files beyond the standard path. New `dev-tests/tier1n-plugin-manifest.ts` regression guard asserts the field stays absent.
+
 ## [1.4.3] — 2026-04-18
 
 ### Thanks
