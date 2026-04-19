@@ -14,17 +14,46 @@ The registry + reconcile pattern solves this: every cron the user creates is tra
 
 ## User commands
 
-All via `/agent:crons` (aliases: `/agent:reminders`, `list reminders`, `show crons`, `recordatorios`):
+All via `/agent:crons` — but the skill **also auto-loads on natural-language requests** for any future-time commitment, in any conversation language and on any channel (CLI, WhatsApp, Telegram, etc.):
+
+- "recordame en 5 minutos comprar pan" / "remind me in 5 minutes to buy bread"
+- "avísame mañana a las 9" / "wake me up tomorrow at 9"
+- "todos los lunes a las 8 hazme acordar X" / "every Monday at 8 remind me X"
+- "cada 30 minutos chequeá Y" / "every 30 minutes check Y"
 
 | Command | What it does |
 |---|---|
 | `/agent:crons list` | Show all reminders with status (✅ alive, ⚠️ missing, ⏸ paused). |
-| `/agent:crons add "<cron>" "<prompt>"` | Create a reminder. Persists across sessions. |
+| `/agent:crons add` (or natural language) | Create a reminder. Persists across sessions. The agent calls `bin/cron-from.sh` for time math; never invents the cron expression. |
 | `/agent:crons delete <key|N>` | Remove with `AskUserQuestion` confirmation. |
 | `/agent:crons pause <key>` | Stop without deleting (registry entry kept). |
 | `/agent:crons resume <key>` | Re-enable a paused reminder. |
 | `/agent:crons reconcile` | Force a manual sync (same as SessionStart does automatically). |
 | `/agent:crons import` | Import OpenClaw crons from `~/.openclaw/cron/jobs.json`. |
+
+## Time arithmetic — `bin/cron-from.sh`
+
+Reminders coming from natural language ("in 3 minutes", "tomorrow at 9am", "every Monday") need to be turned into a 5-field cron expression. **The agent never does this math itself.** LLMs miscompute timezones inconsistently (sometimes UTC, sometimes local), and the cron daemon interprets expressions in the host's LOCAL time — a mismatch silently fires reminders 4+ hours late or never.
+
+The `bin/cron-from.sh` helper is the single source of truth. It:
+- Reads the host clock as epoch seconds (timezone-independent)
+- Reformats into cron fields using the host's local timezone
+- Returns single-line JSON: `{"cron": "...", "human_local": "...", "iso_local": "...", "epoch": ..., "recurring": ..., "kind": "..."}`
+
+| User intent | Helper call | Example output cron |
+|---|---|---|
+| "in 3 minutes" | `cron-from.sh relative 3 minutes` | `25 13 19 4 *` |
+| "in 2 hours" | `cron-from.sh relative 2 hours` | `25 15 19 4 *` |
+| "at 14:30" today | `cron-from.sh absolute "14:30"` | `30 14 19 4 *` (rolls to tomorrow if past) |
+| "tomorrow at 9am" | `cron-from.sh absolute "09:00" tomorrow` | `0 9 20 4 *` |
+| "every day at 8am" | `cron-from.sh recurring daily "08:00"` | `0 8 * * *` |
+| "every Monday at 9am" | `cron-from.sh recurring weekly mon "09:00"` | `0 9 * * 1` |
+| "every 30 minutes" | `cron-from.sh recurring every 30 minutes` | `*/30 * * * *` |
+| "every 2 hours" | `cron-from.sh recurring every 2 hours` | `0 */2 * * *` |
+
+The skill (`skills/crons/SKILL.md`) instructs the agent to map user intent to one of these calls and pass the helper's `.cron` output verbatim to `CronCreate`. The `.human_local` field is used for the user-facing confirmation, so the time the agent shows always matches what the daemon will actually fire.
+
+The helper supports BSD `date` (macOS) and GNU `date` (Linux) — detected at runtime. DST transitions are handled by the system tzdata.
 
 ## Registry schema
 
@@ -73,10 +102,11 @@ All via `/agent:crons` (aliases: `/agent:reminders`, `list reminders`, `show cro
 
 ### Components
 
-- **`skills/crons/writeback.sh`** — the sole writer. Subcommands: `seed-defaults`, `upsert`, `tombstone`, `set-alive`, `adopt-unknown`, `pause`, `resume`, `migration-mark`. Atomic write (tmp-file + mv), lockfile-protected (`memory/.crons-lock/`).
+- **`bin/cron-from.sh`** — deterministic cron expression generator (see "Time arithmetic" above). Pure bash + jq; no LLM math. Single source of truth for converting natural-language times into cron expressions in host-local TZ.
+- **`skills/crons/writeback.sh`** — the sole writer to the registry. Subcommands: `seed-defaults`, `upsert`, `tombstone`, `set-alive`, `adopt-unknown`, `pause`, `resume`, `migration-mark`. Atomic write (tmp-file + mv), lockfile-protected (`memory/.crons-lock/`).
 - **`hooks/reconcile-crons.sh`** — SessionStart. Seeds defaults, cleans legacy `.crons-created`, detects migration need, emits a reconcile envelope for the agent to execute.
-- **`hooks/cron-posttool.sh`** — PostToolUse. Captures ad-hoc `CronCreate` (as `source: ad-hoc`) and tombstones on `CronDelete`. Suppressed when `memory/.reconciling` marker is present (prevents duplicates during reconcile / import batches).
-- **`skills/crons/SKILL.md`** — agent-facing dispatcher. Routes subcommand phrasings to the right flow and calls `writeback.sh` / `CronCreate` / `CronDelete` as needed.
+- **`hooks/cron-posttool.sh`** — PostToolUse. Captures ad-hoc `CronCreate` (as `source: ad-hoc`) and tombstones on `CronDelete`. Tolerant of v2.1.114 and legacy harness response formats. Suppressed when `memory/.reconciling` marker is present (prevents duplicates during reconcile / import batches).
+- **`skills/crons/SKILL.md`** — agent-facing dispatcher. Routes subcommand phrasings (and natural-language requests) to the right flow, calls `bin/cron-from.sh` for time math, then `CronCreate` / `CronDelete` as needed.
 
 ### Session-start flow
 

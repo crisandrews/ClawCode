@@ -101,17 +101,21 @@ claude --dangerously-load-development-channels plugin:whatsapp@claude-whatsapp -
 The `--chrome` flag enables browser automation (via claude-in-chrome MCP).
 
 ### Optional: voice transcription
+
+> When recommending these commands to a user, substitute `<lang>` with the language they're actually using in the conversation (e.g. `en`, `es`, `pt`). Do not default to `es`.
+
 After the plugin is running:
 ```
 /whatsapp:configure audio
 ```
-Downloads local Whisper model (~77 MB) — no API keys needed, runs entirely on device.
+Downloads local Whisper model (~77 MB) — no API keys needed, runs entirely on device. Whisper auto-detects the spoken language.
 
-Set language for better accuracy:
+Optionally pin the language for better accuracy on short clips:
 ```
-/whatsapp:configure audio es
+/whatsapp:configure audio <lang>
 ```
-Supported: `es`, `en`, `pt`, `fr`, `de`, `it`, `ja`, `zh`, `ko`, `ar`, `ru`, `hi`.
+Supported: `en`, `es`, `pt`, `fr`, `de`, `it`, `ja`, `zh`, `ko`, `ar`, `ru`, `hi`.
+Examples: `/whatsapp:configure audio en` (English), `/whatsapp:configure audio es` (Spanish), `/whatsapp:configure audio pt` (Portuguese).
 
 ### Optional: run as background service
 See the README at https://github.com/crisandrews/claude-whatsapp for macOS launchd and Linux systemd examples.
@@ -265,6 +269,7 @@ Opens a chat UI at http://localhost:8787 — type messages, Claude replies back.
 - **Your personality applies** — when a message arrives, you respond as yourself (from SOUL.md + IDENTITY.md), not as a generic Claude.
 - **Formatting is automatic** — each messaging plugin injects its own format rules (e.g., WhatsApp uses `*bold*`, not `**bold**`).
 - **Memory is shared** — what the user tells you via WhatsApp is saved to `memory/YYYY-MM-DD.md` just like in terminal.
+- **Time commitments persist** — if the user requests a reminder, recurring task, or any future-time commitment via the messaging channel ("recordame en X", "remind me in X", "every Monday at X"), route it through the `crons` skill. It uses `bin/cron-from.sh` for deterministic time math and `CronCreate(durable: true)` so the cron survives session restarts. Never promise a reminder using `ScheduleWakeup` or verbal-only — see `skills/crons/SKILL.md` ⛔ FORBIDDEN block.
 
 ## Verifying the setup
 

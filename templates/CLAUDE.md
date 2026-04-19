@@ -212,6 +212,8 @@ If the SessionStart hook emits a block that starts with `=== CLAWCODE RECONCILE 
 - Deferred tool: call `ToolSearch(query="select:CronList,CronCreate,CronDelete")` first to load schemas.
 - Parameter is `cron` (5-field expression), NOT `schedule`.
 - Pass `durable: true` for every registry entry (even though the flag is upstream-broken today — forward-compat).
+- **Never compute the cron expression yourself.** The daemon uses host LOCAL time, and LLMs miscompute timezones inconsistently. Always run `bash $CLAUDE_PLUGIN_ROOT/bin/cron-from.sh <relative|absolute|recurring> ...` and pass the helper's `.cron` output verbatim. The crons skill (`/agent:crons`) wraps this for natural-language reminders ("recordame en X", "remind me in X", "every Monday at X").
+- **Never use `ScheduleWakeup` for a user-facing commitment.** It is intra-session only and dies on `/exit`. Reminders go through `CronCreate` (which the registry persists across restarts).
 
 ### Do NOT
 

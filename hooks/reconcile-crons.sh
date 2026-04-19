@@ -90,31 +90,28 @@ if [[ -f "$IMPORT_BACKLOG" && -f "$OPENCLAW_CRON" ]]; then
   fi
 fi
 
-# --- 6b. FAST-PATH CHECK ---
-# Skip the reconcile envelope when the registry is already fully bootstrapped
-# (every active entry has a live harnessTaskId) AND there's no pending
-# migration offer. This keeps the first user-facing turn cheap on steady-state
-# sessions; any drift that occurs after bootstrap is picked up by the
-# heartbeat skill's reconcile check within 30 minutes.
+# --- 6b. FAST-PATH CHECK (DISABLED) ---
+# This used to skip the envelope when every active entry already had a
+# `harnessTaskId`. The assumption was: harnessTaskId means the cron is alive
+# in the harness, so no need to recreate.
 #
-# On the very first boot the registry has no harnessTaskId values yet, so this
-# check falls through to the full envelope below and the agent creates the
-# crons exactly as it did in prior versions. Same story after upgrading from
-# an older version — the first session after upgrade runs the envelope once
-# to populate harnessTaskId, subsequent sessions take the fast path.
+# BUG (verified empirically 2026-04-19 on Claude Code v2.1.114): harness
+# `durable: true` is broken — every CronCreate response says "durable":false
+# regardless of input. Crons die on /exit. The registry keeps the stale
+# harnessTaskId from the dead session, so the fast-path mistakenly believes
+# everything is bootstrapped and never re-emits the envelope. Crons never
+# fire after restart even though the registry "knows" about them.
 #
-# If a cron is externally deleted (e.g. `CronDelete` on an adopted entry),
-# writeback marks its registry harnessTaskId as stale and the next
-# SessionStart re-emits the envelope to reconcile. No silent drift.
-if [[ $MIGRATION_NEEDED -eq 0 && -f "$REGISTRY" ]]; then
-  UNBOOTSTRAPPED=$(jq '[.entries[]
-      | select(.paused == false and .tombstone == null
-               and (.harnessTaskId == null or .harnessTaskId == ""))]
-      | length' "$REGISTRY" 2>/dev/null || echo 1)
-  if [[ "$UNBOOTSTRAPPED" == "0" ]]; then
-    exit 0
-  fi
-fi
+# Until upstream durable is fixed, the bash hook cannot distinguish "alive"
+# from "stale" harness IDs (CronList is an agent tool, not callable here).
+# So we always emit the envelope and let the agent's CronList check decide
+# what to recreate. Cost: 1 extra CronList + at most N CronCreates per
+# SessionStart, all of which are cheap and idempotent. Worth it to guarantee
+# persistence works.
+#
+# When upstream durable lands, this fast-path can be re-enabled with a
+# different staleness signal (e.g. comparing the registry's lastSeenAlive to
+# the session start time, or a writeback-stamped sessionId).
 
 # --- 7. BUILD EXPECTED SET ---
 EXPECTED_LINES=""

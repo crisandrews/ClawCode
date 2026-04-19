@@ -54,16 +54,22 @@ if [[ "$TOOL_NAME" == "CronCreate" ]]; then
   CRON=$(printf '%s' "$PAYLOAD"       | jq -r '.tool_input.cron // empty'      2>/dev/null || true)
   PROMPT=$(printf '%s' "$PAYLOAD"     | jq -r '.tool_input.prompt // empty'    2>/dev/null || true)
   RECURRING=$(printf '%s' "$PAYLOAD"  | jq -r '.tool_input.recurring // true'  2>/dev/null || echo "true")
-  RESPONSE=$(printf '%s' "$PAYLOAD"   | jq -r '.tool_response // empty'        2>/dev/null || true)
 
-  [[ -z "$CRON" || -z "$PROMPT" || -z "$RESPONSE" ]] && exit 0
+  [[ -z "$CRON" || -z "$PROMPT" ]] && exit 0
 
-  # Extract 8hex task_id from the CronCreate response text.
-  if [[ "$RESPONSE" =~ Scheduled\ (recurring|one-shot)\ job\ ([0-9a-f]{8}) ]]; then
-    TASK_ID="${BASH_REMATCH[2]}"
-  else
-    exit 0  # No task_id found → tool may have failed; do nothing.
+  # Extract 8hex task_id. The harness response shape changed across versions:
+  #   v2.1.114+: tool_response is an object: {"id":"abc12345","humanSchedule":...,"durable":false}
+  #   v2.1.113-: tool_response is a string: "Scheduled <id> (<cron>)" or
+  #              "Scheduled recurring|one-shot job <id> ..."
+  # Try object form first (modern), fall back to string regex (legacy).
+  TASK_ID=$(printf '%s' "$PAYLOAD" | jq -r '.tool_response.id // empty' 2>/dev/null || true)
+  if [[ -z "$TASK_ID" ]]; then
+    RESPONSE=$(printf '%s' "$PAYLOAD" | jq -r '.tool_response // empty' 2>/dev/null || true)
+    if [[ "$RESPONSE" =~ Scheduled[[:space:]]+((recurring|one-shot)[[:space:]]+job[[:space:]]+)?([0-9a-f]{8}) ]]; then
+      TASK_ID="${BASH_REMATCH[3]}"
+    fi
   fi
+  [[ -z "$TASK_ID" ]] && exit 0  # No task_id found → tool may have failed; do nothing.
 
   # Idempotency check: skip if harnessTaskId already tracked under any key.
   if [[ -f "$REGISTRY" ]]; then
@@ -88,16 +94,20 @@ if [[ "$TOOL_NAME" == "CronCreate" ]]; then
     --recurring "$RECURRING" >/dev/null 2>&1 || exit 0
 
 elif [[ "$TOOL_NAME" == "CronDelete" ]]; then
-  TASK_ID=$(printf '%s' "$PAYLOAD"  | jq -r '.tool_input.id // empty' 2>/dev/null || true)
-  RESPONSE=$(printf '%s' "$PAYLOAD" | jq -r '.tool_response // empty' 2>/dev/null || true)
-
+  TASK_ID=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.id // empty' 2>/dev/null || true)
   [[ -z "$TASK_ID" ]] && exit 0
 
-  # Tombstone only on successful delete.
-  case "$RESPONSE" in
-    *Cancelled*) ;;
-    *) exit 0 ;;
-  esac
+  # Tombstone only on successful delete. Same response-shape evolution as
+  # CronCreate: modern is object {"cancelled":true,...}, legacy is text
+  # containing the word "Cancelled". Accept either as success signal.
+  CANCELLED_FLAG=$(printf '%s' "$PAYLOAD" | jq -r '.tool_response.cancelled // false' 2>/dev/null || echo "false")
+  if [[ "$CANCELLED_FLAG" != "true" ]]; then
+    RESPONSE=$(printf '%s' "$PAYLOAD" | jq -r '.tool_response // empty' 2>/dev/null || true)
+    case "$RESPONSE" in
+      *Cancelled*) ;;
+      *) exit 0 ;;
+    esac
+  fi
 
   bash "$WRITEBACK" tombstone --harness-task-id "$TASK_ID" >/dev/null 2>&1 || exit 0
 fi
