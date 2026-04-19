@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.4.8] — 2026-04-19
+
+### Changes
+
+- Skills/release: adopt OpenClaw's release-notes format as the canonical style for both CHANGELOG entries and `gh release` bodies. Two groups only (`### Changes` / `### Fixes`, no Added/Removed/Changed sprawl), bullets prefixed with `Area/subarea:` scope, one-line narrative + outcome, optional `(#PR) Thanks @user.` suffix, link back to CHANGELOG at the end. Mirrors the conventions used by `openclaw/openclaw` (~360k stars) so anyone landing on the ClawCode releases page reads them the same way they read OpenClaw's. Concrete worked example added to the skill body.
+
 ## [1.4.7] — 2026-04-19
 
 ### Added

@@ -100,11 +100,30 @@ Title style (see existing releases):
 - `vX.Y.Z — Short user-facing description` (em-dash `—`, not hyphen)
 - Examples: `v1.4.4 — Plugin hook load fix`, `v1.4.5 — Reminders persist across /exit on Claude Code v2.1.114`, `v1.4.6 — Plugin metadata for /plugin viewer (repo link)`
 
-Body style:
-- Brief intro grouped by `### Fixed` / `### Added` / `### Changed` headers
-- One bullet per change, conversational, points at the human-impact outcome
-- Don't reproduce the full CHANGELOG entry — link to it
-- See `feedback_release_notes_style.md` memory for full guidance
+Body style — **mirror OpenClaw's release notes format** (`openclaw/openclaw` — 360k stars, conventions tested at scale):
+
+- **Two groups only**: `### Changes` (additions, behavior changes, refactors) and `### Fixes` (bug fixes). Don't introduce `### Added` / `### Changed` / `### Removed` / etc. — collapse them all into Changes vs Fixes. Empty groups are dropped.
+- **One bullet per change, prefixed with scope**: `- Area/subarea: <one-line narrative explaining what changed and why-it-matters>. (#PR) Thanks @user.`
+- **Scope examples**: `Hooks/cron-posttool`, `Skills/crons`, `Templates/SOUL`, `Docs/crons`, `Plugin/manifest`, `Agents/messaging`. Use the file/area path, not invented marketing categories.
+- **Narrative is one chunky sentence or two short ones** — describes both the change AND the user-visible outcome. OpenClaw bullets are dense but still single-bullet, never multi-paragraph.
+- **PR + thanks at the end** when applicable: `(#67303) Thanks @username.`. For solo commits without a PR, omit the `(#N)` but keep the period.
+- **Tone**: technical, specific, no marketing fluff. "Bumped X" is not enough — say what it fixes or enables.
+- **Don't reproduce the full CHANGELOG entry** — link to it at the bottom: `Full changelog: [CHANGELOG.md](https://github.com/crisandrews/ClawCode/blob/main/CHANGELOG.md#xyz--yyyy-mm-dd).`
+
+Concrete OpenClaw-style example (one Change, one Fix):
+```markdown
+### Changes
+
+- Skills/crons: add `bin/cron-from.sh`, a deterministic helper for cron expression generation (BSD- and GNU-`date`-aware). Skill ADD subflow now mandates calling it before every `CronCreate` so the agent stops miscomputing timezones. Verified on a live WhatsApp agent — same agent in same session previously produced both correct and 4-hour-shifted crons depending on whether it skipped the helper.
+
+### Fixes
+
+- Hooks/cron-posttool: parse `tool_response.id` from the v2.1.114 object shape in addition to the legacy `Scheduled <id>` string. Same fallback for `CronDelete` (`tool_response.cancelled`). Without this, every ad-hoc cron the agent created was silently dropped from the registry, so `/exit` + relaunch lost the reminder.
+
+Full changelog: [CHANGELOG.md](https://github.com/crisandrews/ClawCode/blob/main/CHANGELOG.md#xyz--yyyy-mm-dd).
+```
+
+CHANGELOG.md follows the same Changes/Fixes structure (don't keep two separate styles — release body = condensed CHANGELOG entry). See `feedback_release_notes_style.md` memory for additional context.
 
 ## Self-check after publishing
 
