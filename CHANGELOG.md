@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.4.9] — 2026-04-19
+
+### Fixes
+
+- Skills/release: removed `skills/release/` from the plugin distribution. It was wrongly placed at plugin scope in v1.4.7-v1.4.8 — every end user of an agent (Cloudy, Wally, etc.) saw a "release" skill in their `/plugin` viewer that referenced cutting a ClawCode plugin release, which has nothing to do with their agent. The skill is for the maintainer flow only and now lives at the user-scope path `~/.claude/skills/clawcode-release/SKILL.md` on the maintainer's own machine, not in the published plugin. Plugin manifest, end-user agent config, and runtime behavior are unchanged. v1.4.7 and v1.4.8 GitHub releases that contained the skill in the source tarball are being deleted as part of this cleanup.
+
 ## [1.4.8] — 2026-04-19
 
 ### Changes
