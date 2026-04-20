@@ -449,6 +449,7 @@ Run `/agent:doctor` first — it checks everything in one shot. Add `--fix` to a
 - **Config change didn't take effect** — Non-critical settings apply live. Critical ones need `/mcp`. The agent tells you which.
 - **Messaging channels** — Run `/agent:channels status` for installed/authenticated/active status.
 - **Crons don't persist across restarts** — Known limitation: `durable: true` is currently session-only in Claude Code. Crons are recreated automatically at each session start via the SessionStart hook (default heartbeat + dreaming). For 24/7, use `/agent:service install`.
+- **`/plugin update clawcode@agent` stays silent for minutes** — Not hung. Claude Code is downloading and installing the new version in the background; no progress indicator is shown during the fetch. Wait; a status line should appear when it's ready (can take a few minutes on the first update). Once it finishes, `/plugins-reload` is a good follow-up to make sure the running session picks up the new cache before the next turn.
 
 ## [Important](#important)
 

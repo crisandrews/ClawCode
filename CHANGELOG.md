@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.4.12] — 2026-04-19
+
+### Fixes
+
+- Docs/readme: add a Troubleshooting bullet explaining that `/plugin update clawcode@agent` can stay silent for several minutes (Claude Code downloads and installs the new version in the background with no progress indicator) and that `/plugins-reload` is a useful follow-up to make sure the running session picks up the new cache before the next turn. Surfaced after v1.4.11 shipped — Cloudy paused for a few minutes on update and looked hung when it wasn't.
+
+- Skills/about: reorder the "Format per surface" section so the tail-line language rule appears first and the EN default is the visual template on every surface (CLI/WebChat, WhatsApp, Telegram). The `<tail-line-in-user-language>` placeholder replaces the inlined example, with explicit EN/ES/PT translations listed once under the rule. Behavior unchanged — agents still adapt to the user's conversation language — but the old layout showed the ES tail inside the WhatsApp template, which could induce a wrong ES default for no-signal sessions.
+
 ## [1.4.11] — 2026-04-19
 
 ### Fixes

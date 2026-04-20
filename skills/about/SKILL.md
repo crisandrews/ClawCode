@@ -37,23 +37,35 @@ Issues / stars: same link · feedback welcome
 
 ## Format per surface
 
+**Tail-line language:** the "Issues / stars …" line adapts to the user's conversation language. **Default to EN** if there's no clear signal. Known translations:
+
+- `en` → `Issues / stars: same link · feedback welcome`
+- `es` → `Issues / stars: mismo link · feedback bienvenido`
+- `pt` → `Issues / stars: mesmo link · feedback bem-vindo`
+
+For other languages, keep the structure and translate the tail naturally.
+
 ### CLI / WebChat
+
 ```
 🔌 **ClawCode** v<version>
 Repo: https://github.com/crisandrews/ClawCode
-Issues / stars: same link · feedback welcome
+<tail-line-in-user-language>
 ```
 
 ### WhatsApp
+
 ```
 🔌 *ClawCode* v<version>
 Repo: https://github.com/crisandrews/ClawCode
-Issues / stars: mismo link · feedback bienvenido
+<tail-line-in-user-language>
 ```
-Use the user's conversation language for the tail line (ES/EN). Default EN if no signal.
+
+Bold uses single `*` on WhatsApp (no markdown headers).
 
 ### Telegram
-Same as CLI.
+
+Same as CLI/WebChat.
 
 ## Important
 
