@@ -18,13 +18,13 @@ All writes to the registry go through one script: `bash ${CLAUDE_PLUGIN_ROOT}/sk
 
 These rules are non-negotiable. Violating any of them silently breaks reminders for the user.
 
-1. **Never compute cron expressions yourself.** LLMs miscompute timezones inconsistently (sometimes UTC, sometimes local — verified empirically). Claude Code's cron daemon uses the **host's LOCAL time**. The only correct way to produce a cron expression is to call `bash $CLAUDE_PLUGIN_ROOT/bin/cron-from.sh ...`. The helper does deterministic epoch arithmetic and returns cron + human-readable confirmation in the host's TZ.
+1. **Never compute cron expressions yourself.** LLMs miscompute timezones inconsistently (sometimes UTC, sometimes local — verified empirically). Claude Code's cron daemon uses the **host's LOCAL time**. The only correct way to produce a cron expression is to call `bash $CLAUDE_PLUGIN_ROOT/bin/cron-from.sh ...`. The helper does deterministic epoch arithmetic and returns cron + human-readable confirmation in the host's TZ. *(Enforced: a PreToolUse hook blocks `CronCreate` with exit 2 unless the cron expression matches a cron-from.sh output from the last 120s. If the mode you need isn't covered by `relative`/`absolute`/`recurring`, use `cron-from.sh passthrough "<cron>"` as an escape hatch.)*
 
 2. **Never use `ScheduleWakeup` for user-facing commitments.** `ScheduleWakeup` is intra-session only (dies on `/exit`). Any reminder, alert, or recurring task the user requests via chat MUST go through `CronCreate(durable: true)`. The reconcile hook keeps it alive across restarts.
 
 3. **Never tell the user the reminder is "session-only", "may not arrive", or any equivalent degraded-persistence phrasing in any language.** With this skill, every commitment is durable. If you genuinely cannot create the cron (e.g. helper failed), surface the error to the user — don't silently degrade to a verbal-only promise.
 
-4. **Never call `writeback.sh upsert` after a `CronCreate` for an ad-hoc reminder.** The PostToolUse hook captures it automatically with `source: ad-hoc`. Manual upsert would duplicate.
+4. **Never call `writeback.sh upsert` after a `CronCreate` for an ad-hoc reminder.** The PostToolUse hook captures it automatically with `source: ad-hoc`. Manual upsert would duplicate. *(Enforced: `writeback.sh upsert` refuses with exit 5 if an active entry with the same cron + prompt already exists under a different key. If you see that error, the hook already did its job — drop your manual upsert call.)*
 
 ### Common failure pattern (verified 2026-04-19)
 

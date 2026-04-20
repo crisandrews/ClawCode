@@ -52,8 +52,14 @@ export interface ChannelRegistryEntry {
 
 interface AuthProbePath {
   kind: "path";
-  /** One or more path patterns relative to HOME (use `~` or absolute). First hit wins. */
-  paths: string[];
+  /** Static path patterns (use `~/` or absolute). First hit wins. */
+  paths?: string[];
+  /**
+   * Dynamic paths computed from (home, cwd). Used for plugins whose state
+   * dir depends on install scope / project (e.g. claude-whatsapp).
+   * When present, takes precedence over `paths`.
+   */
+  dynamicPaths?: (home: string, cwd: string) => string[];
 }
 interface AuthProbeEnv {
   kind: "env";
@@ -78,7 +84,21 @@ export const CHANNEL_REGISTRY: ChannelRegistryEntry[] = [
     cacheMarkers: ["claude-whatsapp", "whatsapp"],
     authProbe: {
       kind: "path",
-      paths: ["~/.whatsapp/auth", "~/.claude/channels/whatsapp/auth"],
+      // Probe `status.json` — part of claude-whatsapp's public state contract
+      // (README → "State contract for companion plugins"). It is only written
+      // by the plugin after a real connection event, so its presence is a
+      // reliable proxy for "paired and connected at least once".
+      // Checking `auth/` (a directory) would false-positive because the plugin
+      // creates it empty at startup before any pairing.
+      dynamicPaths: (home, cwd) => {
+        const out: string[] = [];
+        const projectDir = detectWhatsappProjectDir(home, cwd);
+        if (projectDir) {
+          out.push(path.join(projectDir, ".whatsapp", "status.json"));
+        }
+        out.push(path.join(home, ".claude", "channels", "whatsapp", "status.json"));
+        return out;
+      },
     },
     setupHint: "/agent:messaging whatsapp → /whatsapp:configure (scan QR)",
   },
@@ -180,6 +200,8 @@ export interface ChannelStatus {
 export interface DetectionOptions {
   /** Override home (for tests). */
   home?: string;
+  /** Override cwd (for tests; defaults to `process.cwd()`). */
+  cwd?: string;
   /** Override OS (for tests). */
   platform?: NodeJS.Platform;
   /** Override env (for tests). */
@@ -192,6 +214,7 @@ export interface DetectionOptions {
 
 export function detectChannels(opts: DetectionOptions = {}): ChannelStatus[] {
   const home = opts.home ?? os.homedir();
+  const cwd = opts.cwd ?? process.cwd();
   const platform = opts.platform ?? process.platform;
   const env = opts.env ?? process.env;
 
@@ -204,7 +227,7 @@ export function detectChannels(opts: DetectionOptions = {}): ChannelStatus[] {
   } catch {}
 
   return CHANNEL_REGISTRY.map((entry) =>
-    statusFor(entry, cacheEntries, home, platform, env)
+    statusFor(entry, cacheEntries, home, cwd, platform, env)
   );
 }
 
@@ -212,6 +235,7 @@ export function statusFor(
   entry: ChannelRegistryEntry,
   cacheEntries: string[],
   home: string,
+  cwd: string,
   platform: NodeJS.Platform,
   env: Record<string, string | undefined>
 ): ChannelStatus {
@@ -254,7 +278,9 @@ export function statusFor(
         authDetail = `env not set: ${probe.vars.join(" / ")}`;
       }
     } else if (probe.kind === "path") {
-      const resolved = probe.paths.map((p) => resolveHome(p, home));
+      const resolved = probe.dynamicPaths
+        ? probe.dynamicPaths(home, cwd)
+        : (probe.paths ?? []).map((p) => resolveHome(p, home));
       const hit = resolved.find((p) => {
         try {
           return fs.existsSync(p);
@@ -307,6 +333,40 @@ function resolveHome(p: string, home: string): string {
   if (p.startsWith("~/")) return path.join(home, p.slice(2));
   if (p === "~") return home;
   return p;
+}
+
+/**
+ * Mirrors `detectProjectDir()` from claude-whatsapp's `server.ts`. Reads
+ * `~/.claude/plugins/installed_plugins.json` to find the local-scope
+ * projectPath the plugin will use as its state dir root. Returns undefined
+ * when the plugin isn't installed locally anywhere (→ caller should fall
+ * back to the global channel dir).
+ *
+ * Exported so `detectWhatsappAudio` in `lib/voice.ts` can resolve the
+ * same path without duplicating the logic.
+ */
+export function detectWhatsappProjectDir(
+  home: string,
+  cwd: string
+): string | undefined {
+  try {
+    const f = path.join(home, ".claude", "plugins", "installed_plugins.json");
+    const data = JSON.parse(fs.readFileSync(f, "utf8"));
+    const entries = (data?.plugins?.["whatsapp@claude-whatsapp"] ?? []) as Array<{
+      scope?: string;
+      projectPath?: string;
+    }>;
+    const exact = entries.find(
+      (e) => e.scope === "local" && e.projectPath === cwd
+    );
+    if (exact?.projectPath) return exact.projectPath;
+    const firstLocal = entries.find(
+      (e) => e.scope === "local" && e.projectPath
+    );
+    return firstLocal?.projectPath;
+  } catch {
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------

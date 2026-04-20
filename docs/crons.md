@@ -106,6 +106,7 @@ The helper supports BSD `date` (macOS) and GNU `date` (Linux) — detected at ru
 - **`skills/crons/writeback.sh`** — the sole writer to the registry. Subcommands: `seed-defaults`, `upsert`, `tombstone`, `set-alive`, `adopt-unknown`, `pause`, `resume`, `migration-mark`. Atomic write (tmp-file + mv), lockfile-protected (`memory/.crons-lock/`).
 - **`hooks/reconcile-crons.sh`** — SessionStart. Seeds defaults, cleans legacy `.crons-created`, detects migration need, emits a reconcile envelope for the agent to execute.
 - **`hooks/cron-posttool.sh`** — PostToolUse. Captures ad-hoc `CronCreate` (as `source: ad-hoc`) and tombstones on `CronDelete`. Tolerant of v2.1.114 and legacy harness response formats. Suppressed when `memory/.reconciling` marker is present (prevents duplicates during reconcile / import batches).
+- **`hooks/cron-pretool.sh`** — PreToolUse. Gates `CronCreate` so the cron expression must come from a recent `bin/cron-from.sh` invocation. Reads `memory/.cron-last-stamp` (written by the helper), exits 2 with a pedagogical stderr message if the stamp is missing, stale (>120s), or its cron doesn't match `tool_input.cron`. Same `.reconciling` bypass as the posttool hook — SessionStart reconcile replays crons from the registry and must not be gated.
 - **`skills/crons/SKILL.md`** — agent-facing dispatcher. Routes subcommand phrasings (and natural-language requests) to the right flow, calls `bin/cron-from.sh` for time math, then `CronCreate` / `CronDelete` as needed.
 
 ### Session-start flow
@@ -144,6 +145,8 @@ User: "remind me in 4 hours to exercise"
 | Hook itself errors | Exit 0 with a warning. Session start is never blocked. |
 | `CronList` format changes upstream | Regex parser aborts loudly (`harness shape drift`). |
 | Two sessions on same workspace | Lock (`memory/.crons-lock/`) prevents race; second session skips its reconcile. |
+| Same cron + prompt re-inserted under a different key | `writeback.sh upsert` refuses with exit 5 and a pedagogical message pointing at the existing entry. Prevents the "hook captured as `harness-<id>` then manual upsert with custom key" duplicate pattern. `--source openclaw-import` is exempt (batch imports may carry repeated payloads). |
+| `CronCreate` called without a fresh `cron-from.sh` stamp | `hooks/cron-pretool.sh` blocks with exit 2 and a stderr message instructing the agent to run the helper. Covers the three failure modes of skipping the helper: no stamp at all, stamp stale (>120s), or stamp cron doesn't match `tool_input.cron`. Bypassed only when `memory/.reconciling` marker is fresh (<10 min). |
 
 ## Harness assumptions (verified empirically 2026-04-13)
 

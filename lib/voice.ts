@@ -19,6 +19,8 @@ import { createRequire } from "module";
 import os from "os";
 import path from "path";
 
+import { detectWhatsappProjectDir } from "./channel-detector.ts";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -638,33 +640,57 @@ export interface WhatsappAudioState {
 }
 
 export function detectWhatsappAudio(
-  opts: { home?: string } = {}
+  opts: { home?: string; cwd?: string } = {}
 ): WhatsappAudioState {
   const home = opts.home ?? os.homedir();
-  const configPath = path.join(home, ".whatsapp", "config.json");
+  const cwd = opts.cwd ?? process.cwd();
+
+  // Mirror the plugin's channel-dir resolution exactly: read
+  // installed_plugins.json to find its local-scope projectPath, then fall
+  // back to the global channel dir. Documented in claude-whatsapp's README
+  // under "State contract for companion plugins".
+  const candidates: string[] = [];
+  const projectDir = detectWhatsappProjectDir(home, cwd);
+  if (projectDir) {
+    candidates.push(path.join(projectDir, ".whatsapp", "config.json"));
+  }
+  candidates.push(
+    path.join(home, ".claude", "channels", "whatsapp", "config.json")
+  );
+
+  let raw: string | null = null;
+  let configPath = candidates[0];
+  let lastError: string | undefined;
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue;
+    try {
+      raw = fs.readFileSync(candidate, "utf-8");
+      configPath = candidate;
+      break;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
   const state: WhatsappAudioState = {
     pluginConfigured: false,
     audioEnabled: false,
     configPath,
   };
 
-  if (!fs.existsSync(configPath)) return state;
+  if (raw === null) {
+    if (lastError) state.error = lastError;
+    return state;
+  }
   state.pluginConfigured = true;
 
   try {
-    const raw = fs.readFileSync(configPath, "utf-8");
     const parsed = JSON.parse(raw) as any;
-    // Accept several possible shapes: audio: { enabled }, audio: "on"|"off", audio: true, etc.
-    const audio = parsed.audio;
-    if (audio === true || audio === "on" || audio === "enabled") {
-      state.audioEnabled = true;
-    } else if (audio && typeof audio === "object") {
-      if (audio.enabled === true || audio.enabled === "on") {
-        state.audioEnabled = true;
-      }
-      if (typeof audio.language === "string") {
-        state.audioLanguage = audio.language;
-      }
+    // Top-level schema from claude-whatsapp v1.x (README → State contract):
+    // `audioTranscription` (boolean) + `audioLanguage` (ISO code or null).
+    if (parsed.audioTranscription === true) state.audioEnabled = true;
+    if (typeof parsed.audioLanguage === "string" && parsed.audioLanguage) {
+      state.audioLanguage = parsed.audioLanguage;
     }
   } catch (err) {
     state.error = err instanceof Error ? err.message : String(err);
@@ -745,7 +771,9 @@ export function formatVoiceStatus(status: VoiceStatus): string {
       );
     }
   } else {
-    lines.push(`WhatsApp plugin: not configured (no ~/.whatsapp/config.json)`);
+    lines.push(
+      `WhatsApp plugin: not configured (no config.json in <project>/.whatsapp/ or ~/.claude/channels/whatsapp/)`
+    );
   }
 
   return lines.join("\n");

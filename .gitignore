@@ -18,6 +18,7 @@ memory/.memory.sqlite-shm
 memory/.dreams/
 memory/.crons-lock/
 memory/.reconciling
+memory/.cron-last-stamp
 memory/crons-errors.jsonl
 memory/crons-pending.jsonl
 memory/crons.json.corrupt-*

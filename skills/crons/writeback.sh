@@ -175,6 +175,30 @@ cmd_upsert() {
   acquire_lock
   _ensure_registry
 
+  # Duplicate guard: reject if an active (tombstone=null) entry with the
+  # same cron + prompt already exists under a different key. Blocks the
+  # "PostToolUse hook captured as harness-<id>, then manual upsert with a
+  # custom key" pattern that silently creates double-firing reminders.
+  # openclaw-import is exempt — legitimate imports may carry repeated
+  # payloads across agents during a one-shot batch.
+  if [[ "$source" != "openclaw-import" ]]; then
+    local existing_key
+    existing_key=$(jq -r --arg cron "$cron" --arg prompt "$prompt" --arg key "$key" '
+      .entries
+      | map(select(.tombstone == null and .cron == $cron and .prompt == $prompt and .key != $key))
+      | first
+      | .key // empty
+    ' "$REGISTRY")
+
+    if [[ -n "$existing_key" ]]; then
+      log_error "duplicate: same cron+prompt already present as '$existing_key'"
+      echo "writeback.sh upsert: refused — an active entry with the same cron+prompt already exists as '$existing_key'." >&2
+      echo "  • If this is a stale entry, tombstone it first: writeback.sh tombstone --key '$existing_key'" >&2
+      echo "  • If you intended to register an ad-hoc CronCreate, the PostToolUse hook already captured it automatically — remove this manual upsert call (see skills/crons/SKILL.md ⛔ rule #4)." >&2
+      exit 5
+    fi
+  fi
+
   local now
   now=$(iso_now)
 

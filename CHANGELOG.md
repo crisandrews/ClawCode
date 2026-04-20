@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.4.11] — 2026-04-19
+
+### Fixes
+
+- Skills/crons: `writeback.sh upsert` now refuses (exit 5) if an active entry with the same `cron` + `prompt` already exists under a different key, turning ⛔ rule #4 from doctrine into an enforced invariant. Blocks the "PostToolUse hook captured the CronCreate as `harness-<id>`, agent also ran a manual `upsert` with a custom key" pattern that silently created double-firing reminders (observed 2026-04-19: one reminder dispatched two live harness jobs and left an accidental recurring-true entry firing annually forever). `--source openclaw-import` is exempt because legitimate batch imports may carry repeated payloads. Tombstoned entries are ignored by the guard so re-created crons register cleanly. See `docs/crons.md` failure-modes table.
+
+- Hooks/cron-pretool: new `PreToolUse` hook that gates `CronCreate` on a recent `bin/cron-from.sh` stamp, turning ⛔ rule #1 ("never compute cron expressions yourself") from doctrine into an enforced invariant. Blocks with exit 2 and a stderr message if no stamp exists, the stamp is older than 120s, or its cron doesn't match `tool_input.cron`. The helper now writes `memory/.cron-last-stamp` after every successful invocation. New `cron-from.sh passthrough "<cron>"` mode covers arbitrary 5-field expressions (e.g. `"0 0 * * 0-3"`) that don't fit `relative`/`absolute`/`recurring`. Reconcile retains the existing `.reconciling`-marker bypass so SessionStart replays are never gated. Justified by a second empirical repro of the same mental-math violation on the same day: even with rule #1 in SKILL.md, Cloudy skipped the helper and fell back to `date`+arithmetic — doctrine alone was not enough.
+
+- Detect/whatsapp: align `channel-detector` and `voice` with the `claude-whatsapp` v1.x public state contract. The auth probe now checks `<project>/.whatsapp/status.json` (written only after a real pairing event) instead of the `auth/` directory, which the plugin creates empty at startup — that caused `/agent:channels` to report "authenticated" on installs that had never scanned a QR. The voice audio detector reads the new top-level `audioTranscription` / `audioLanguage` fields the plugin now writes, replacing the legacy nested-object fallback. Both detectors resolve the plugin's project-local install path via `~/.claude/plugins/installed_plugins.json`, so the multi-agent layout (plugin installed in Project A, agent running from Project B) now resolves to Project A's state correctly instead of silently falling back to the global dir.
+
 ## [1.4.10] — 2026-04-19
 
 ### Fixes

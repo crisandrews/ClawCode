@@ -17,6 +17,7 @@
 #   bin/cron-from.sh recurring daily "HH:MM"
 #   bin/cron-from.sh recurring weekly <dow> "HH:MM"   # dow: mon|tue|...|sun or 0..6 (0=sun)
 #   bin/cron-from.sh recurring every <N> <minutes|hours>
+#   bin/cron-from.sh passthrough "<raw 5-field cron>"  # escape hatch for custom expressions
 #
 # Output (stdout, single line JSON):
 #   {"cron":"52 12 19 4 *","human_local":"12:52 (dom 19 abr)",
@@ -25,6 +26,10 @@
 #
 # For recurring outputs: epoch and iso_local are null, human_local describes
 # the schedule ("daily at 09:00", "weekly on mon at 08:00", "every 30 minutes").
+#
+# Side effect: every successful call writes $CLAUDE_PROJECT_DIR/memory/.cron-last-stamp
+# with two lines: the cron expression and current epoch seconds. This stamp is
+# the proof-of-helper-use that hooks/cron-pretool.sh consumes to gate CronCreate.
 #
 # Exit codes:
 #   0 — success
@@ -79,6 +84,19 @@ fail_date() { echo "cron-from.sh: date arithmetic failed: $1" >&2; exit 3; }
 
 is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
 
+# Write the "proof of helper use" stamp consumed by hooks/cron-pretool.sh.
+# Two-line format: cron expression, then current epoch seconds. Best-effort:
+# if the workspace dir is unwritable we silently skip (helper output is still
+# correct; the pretool hook will block until the user fixes the workspace).
+write_stamp() {
+  local cron="$1"
+  local agent_root="${CLAUDE_PROJECT_DIR:-$PWD}"
+  local stamp_dir="$agent_root/memory"
+  local stamp_file="$stamp_dir/.cron-last-stamp"
+  mkdir -p "$stamp_dir" 2>/dev/null || return 0
+  printf '%s\n%s\n' "$cron" "$(date +%s)" > "$stamp_file" 2>/dev/null || return 0
+}
+
 # Validate HH:MM form, return "HH MM" with leading zeros stripped (for cron).
 parse_hhmm() {
   local hhmm="$1"
@@ -118,6 +136,7 @@ emit_oneshot() {
   local human iso
   human=$(epoch_fmt "$epoch" "%H:%M (%a %d %b)")
   iso=$(epoch_fmt "$epoch" "%Y-%m-%dT%H:%M:%S%z")
+  write_stamp "$cron"
   jq -nc \
     --arg cron "$cron" \
     --arg human "$human" \
@@ -130,6 +149,7 @@ emit_oneshot() {
 # Emit a recurring output JSON.
 emit_recurring() {
   local cron="$1" human="$2" kind="$3"
+  write_stamp "$cron"
   jq -nc \
     --arg cron "$cron" \
     --arg human "$human" \
@@ -179,6 +199,29 @@ cmd_absolute() {
     epoch_target=$(parse_local_to_epoch "$ymd $hh:$mm") || fail_date "parse rollover $hh:$mm"
   fi
   emit_oneshot "$epoch_target" "absolute"
+}
+
+cmd_passthrough() {
+  local raw="$1"
+  [[ -n "$raw" ]] || fail_args "passthrough requires a 5-field cron expression"
+  # Split on whitespace and validate shape. Each field must match the
+  # permissive-but-structured cron token grammar: numbers, '*', ',', '-', '/'.
+  # Step values like */5 and ranges like 0-3 are common; names (jan, mon) are
+  # not accepted (harness uses numeric dow/month).
+  local field_pattern='^[0-9*/,\-]+$'
+  # Split on whitespace without glob expansion — `*` is a valid cron token.
+  local fields
+  read -ra fields <<<"$raw"
+  [[ ${#fields[@]} -eq 5 ]] || fail_args "passthrough: cron must have exactly 5 space-separated fields (got ${#fields[@]}: '$raw')"
+  local f
+  for f in "${fields[@]}"; do
+    [[ "$f" =~ $field_pattern ]] || fail_args "passthrough: invalid field '$f' in cron expression '$raw'"
+  done
+  local normalized="${fields[0]} ${fields[1]} ${fields[2]} ${fields[3]} ${fields[4]}"
+  write_stamp "$normalized"
+  jq -nc \
+    --arg cron "$normalized" \
+    '{cron:$cron, human_local:("custom cron: "+$cron), iso_local:null, epoch:null, recurring:true, kind:"passthrough"}'
 }
 
 cmd_recurring() {
@@ -238,7 +281,11 @@ main() {
       [[ $# -ge 1 ]] || fail_args "recurring requires subcommand (daily|weekly|every)"
       cmd_recurring "$@"
       ;;
-    *) fail_args "unknown command '$cmd' (expected relative|absolute|recurring)" ;;
+    passthrough)
+      [[ $# -eq 1 ]] || fail_args "passthrough requires a single quoted cron expression"
+      cmd_passthrough "$1"
+      ;;
+    *) fail_args "unknown command '$cmd' (expected relative|absolute|recurring|passthrough)" ;;
   esac
 }
 
