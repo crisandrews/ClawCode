@@ -32,6 +32,29 @@ fallback_warn() {
   exit 0
 }
 
+# --- 0. SESSION BANNER (every session, English, additive) ---
+# Emits a 4-line header so the agent knows which ClawCode version it is
+# running and where to find docs / issues. Version is read at runtime
+# from plugin.json; never hardcoded (same pattern as skills/about/SKILL.md).
+# Wording is purely functional support copy — no engagement asks — to
+# stay clear of Anthropic's Software Directory Policy §4.C on
+# promotional content.
+CLAWCODE_VERSION=""
+if command -v jq >/dev/null 2>&1; then
+  CLAWCODE_VERSION=$(jq -r '.version // empty' "$PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null || true)
+fi
+if [[ -z "$CLAWCODE_VERSION" ]]; then
+  CLAWCODE_VERSION=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1)
+fi
+CLAWCODE_VERSION="${CLAWCODE_VERSION:-unknown}"
+cat <<BANNER
+=== CLAWCODE v${CLAWCODE_VERSION} · MIT License ===
+Docs + advanced config: https://github.com/crisandrews/ClawCode
+If something misbehaves: run /agent:doctor.
+Report issues or share feedback at the same link.
+
+BANNER
+
 # --- 1. BOOTSTRAP path (first run, no identity files yet) ---
 if [[ -f "$AGENT_ROOT/BOOTSTRAP.md" ]]; then
   echo '[clawcode] BOOTSTRAP.md detected — this is a first run. Follow the BOOTSTRAP.md instructions to discover your identity.'

@@ -1,7 +1,7 @@
 {
   "name": "agent",
   "description": "Turn Claude Code into a persistent agent — memory, personality, voice, messaging, and more.",
-  "version": "1.4.12",
+  "version": "1.4.13",
   "author": {
     "name": "Juan Cristobal Andrews",
     "url": "https://github.com/crisandrews"

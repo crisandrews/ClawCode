@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.4.13] — 2026-04-19
+
+### Changes
+
+- Hooks/reconcile: emit a 4-line session banner at the top of every SessionStart — `=== CLAWCODE v<version> · MIT License ===`, docs/config link, an `/agent:doctor` tip, and a neutral issues/feedback invite. Version is read at runtime from `plugin.json` (jq with a `sed` fallback for jq-missing environments), so it never drifts from the manifest. Additive only: identity injection, the cron reconcile envelope, the `BOOTSTRAP.md` early-exit, and the jq-missing degraded path are all unchanged. Wording kept to functional support copy (no engagement asks like "star us") to stay clear of Anthropic's Software Directory Policy §4.C on promotional content. Gives users who installed from either marketplace an in-context pointer to the docs/repo on every session, matching the professional-CLI convention (psql, node REPL, Rails console).
+
 ## [1.4.12] — 2026-04-19
 
 ### Fixes
