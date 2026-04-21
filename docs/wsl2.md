@@ -1,6 +1,19 @@
 # Run ClawCode on Windows via WSL2
 
-ClawCode is a Claude Code plugin. Claude Code runs in a Unix shell. WSL2 gives you a real Linux shell inside Windows, so from ClawCode's point of view it's just "on Linux" — there are no ClawCode-specific Windows steps. Install WSL2, drop into the Ubuntu shell, and follow the normal README from there.
+ClawCode is a Claude Code plugin. Its Linux code paths (systemd service, memory DB, voice, messaging, hooks) expect a real Unix shell, so ClawCode needs Claude Code running **inside a WSL2 Linux distro** — not Claude Code running natively on Windows in PowerShell or cmd.
+
+If you already have Claude Code on native Windows you don't have to uninstall it. The two installs (native + WSL2) coexist fine; ClawCode just lives in the WSL2 one.
+
+## Where is your Claude Code running right now?
+
+In the terminal where you launched `claude`, run:
+
+```sh
+uname -a
+```
+
+- **Output contains `Linux … microsoft … WSL2`** → you're already inside WSL2. Your deps and Claude Code install in WSL2 may already be fine — skim steps 2-3 to verify, then go straight to step 4.
+- **`uname` not found, or output looks like Windows version info** → your Claude Code is running on native Windows. Follow steps 1-4 to set up a second Claude Code install inside WSL2.
 
 ## 1. Install WSL2 + Ubuntu
 
@@ -30,11 +43,29 @@ From the Ubuntu shell:
 sudo apt update && sudo apt install -y nodejs npm jq git
 ```
 
-Node must be ≥ 18. If `node --version` reports older, install a current LTS from [NodeSource](https://github.com/nodesource/distributions).
+Node must be ≥ 18. If `node --version` reports older, install a current LTS from [NodeSource](https://github.com/nodesource/distributions) or use [nvm](https://github.com/nvm-sh/nvm).
 
-## 3. Install Claude Code and ClawCode
+## 3. Install Claude Code inside WSL2
 
-From this point on, follow the main [README](../README.md#quick-setup) — nothing here is Windows-specific:
+Still in the Ubuntu shell:
+
+```sh
+npm install -g @anthropic-ai/claude-code
+```
+
+If you hit `EACCES` permission errors, either prefix with `sudo` or configure a user-global npm prefix: `npm config set prefix ~/.npm-global` and add `~/.npm-global/bin` to your `PATH`. `nvm`-managed Node installs don't need sudo.
+
+Confirm:
+
+```sh
+claude --version
+```
+
+This Claude Code install is independent from any you have on native Windows — they coexist.
+
+## 4. Install ClawCode
+
+From here the main [README](../README.md#quick-setup) applies unchanged:
 
 ```sh
 mkdir ~/my-agent && cd ~/my-agent
@@ -49,7 +80,7 @@ Inside Claude Code:
 /agent:create
 ```
 
-## 4. Always-on service
+## 5. Always-on service
 
 `/agent:service install` writes a systemd user unit at `~/.config/systemd/user/clawcode-<slug>.service`. Check it:
 
@@ -83,7 +114,7 @@ Everything core:
 
 ## Caveat: memory.extraPaths auto-indexing
 
-Same limitation as native Linux (not WSL2-specific): `fs.watch` does not recurse on Linux, so files added into nested subdirectories under a configured `memory.extraPaths` entry are not auto-indexed. Only top-level files trigger updates. See [memory.md — Live updates and the Linux caveat](memory.md#live-updates-and-the-linux-caveat).
+Same limitation as native Linux (not WSL2-specific): `fs.watch` does not recurse on Linux, so files added into nested subdirectories under a configured `memory.extraPaths` entry are not auto-indexed. Only top-level files trigger updates. See the `extraPaths` section of [memory.md](memory.md).
 
 Workaround: run `/agent:doctor --fix` after adding nested files to force a re-index.
 

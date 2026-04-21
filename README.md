@@ -70,7 +70,7 @@ Coming from OpenClaw? `/agent:import` brings your agent's personality, memory, s
 ## [Prerequisites](#prerequisites)
 
 - [Node.js](https://nodejs.org/) v18+
-- Windows users: run inside [WSL2](docs/wsl2.md).
+- Windows: Claude Code must be run from inside [WSL2](docs/wsl2.md) (not native PowerShell / cmd).
 
 ## [Quick Setup](#quick-setup)
 
