@@ -744,7 +744,7 @@ export function buildPlan(action: ServiceAction, opts: ServiceOptions): ServiceP
       fileContent: "",
       commands: [],
       error:
-        "Unsupported OS. /agent:service supports macOS (launchd) and Linux (systemd --user). On Windows, wrap Claude Code with Task Scheduler manually.",
+        "Unsupported OS. /agent:service supports macOS (launchd) and Linux (systemd --user). On Windows, install inside WSL2 (see docs/wsl2.md) — WSL2 is detected as Linux and uses the systemd path. Native Task Scheduler wrapping is also possible manually.",
     };
   }
 

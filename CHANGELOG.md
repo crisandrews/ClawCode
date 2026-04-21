@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [1.4.14] — 2026-04-21
+
+### Changes
+
+- Docs/wsl2: publish `docs/wsl2.md` — a Windows-via-WSL2 install guide that walks users from zero to a running agent: PowerShell `wsl --install -d Ubuntu-22.04`, Ubuntu deps (`nodejs npm jq git`), the standard ClawCode install from the main README, systemd user service with `loginctl enable-linger` for logout survival, and a "what works / what doesn't" section (iMessage is the one exclusion; `say` TTS auto-skips; `memory.extraPaths` inherits the native-Linux recursive-watch caveat, linked through to `docs/memory.md`). Closes the recurring "does this run on Windows?" question by documenting the existing Linux code path — nothing in the plugin needed to change architecturally because WSL2 reports `process.platform === "linux"` and every platform-gated path (`lib/service-generator.ts`, `lib/channel-detector.ts`, `lib/voice.ts`, hooks) already takes the Linux branch.
+
+- Docs/service: replace the "Windows / BSD / other — Not supported" row in the supported-platforms table with two rows — `Windows (via WSL2) → systemd (--user)` pointing at `docs/wsl2.md`, and a separate row for native Windows / BSD / other which remain unsupported. Reflects reality: the Linux systemd path already covers WSL2 end to end.
+
+- Plugin/readme: badge now advertises `macOS | Linux | WSL2`, and Prerequisites adds a one-liner directing Windows users to `docs/wsl2.md`.
+
+### Fixes
+
+- Lib/service-generator: the unsupported-OS error emitted by `/agent:service install` on native Windows used to send users straight to Task Scheduler; it now points them at WSL2 + `docs/wsl2.md` first (the path that actually works for the full plugin surface) and keeps Task Scheduler as the native-only fallback. User-visible string only, no behavior change — verified by the existing `tests/service-generator-smoke.test.ts` (28/28 pass) and `tests/whatsapp-detection.test.ts` (14/14 pass).
+
 ## [1.4.13] — 2026-04-19
 
 ### Changes

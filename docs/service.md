@@ -10,7 +10,8 @@ Optional feature. Off by default. Most users who just use Claude Code in a termi
 |---|---|---|
 | macOS | launchd | `~/Library/LaunchAgents/com.clawcode.<slug>.plist` |
 | Linux | systemd (`--user`) | `~/.config/systemd/user/clawcode-<slug>.service` |
-| Windows / BSD / other | Not supported | Use Task Scheduler or equivalent manually |
+| Windows (via WSL2) | systemd (`--user`) | `~/.config/systemd/user/clawcode-<slug>.service` — see [wsl2.md](wsl2.md) |
+| Native Windows / BSD / other | Not supported | Use Task Scheduler or equivalent manually |
 
 `<slug>` is derived from your workspace folder name (lowercased, non-alphanumeric collapsed to `-`). One service per agent folder — you can run several agents side by side.
 

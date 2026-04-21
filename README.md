@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/crisandrews/ClawCode/main/.github/clone-count.json&style=for-the-badge" alt="Clones">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A5%2018-blue?style=for-the-badge&logo=node.js&logoColor=white" alt="Node ≥ 18">
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue?style=for-the-badge" alt="Platform">
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL2-blue?style=for-the-badge" alt="Platform">
 </p>
 
 <p align="center">
@@ -70,6 +70,7 @@ Coming from OpenClaw? `/agent:import` brings your agent's personality, memory, s
 ## [Prerequisites](#prerequisites)
 
 - [Node.js](https://nodejs.org/) v18+
+- Windows users: run inside [WSL2](docs/wsl2.md).
 
 ## [Quick Setup](#quick-setup)
 
