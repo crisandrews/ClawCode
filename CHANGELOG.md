@@ -10,7 +10,7 @@
 
 - Docs/service: replace the "Windows / BSD / other — Not supported" row in the supported-platforms table with two rows — `Windows (via WSL2) → systemd (--user)` pointing at `docs/wsl2.md`, and a separate row for native Windows / BSD / other which remain unsupported. Reflects reality: the Linux systemd path already covers WSL2 end to end.
 
-- Plugin/readme: badge now advertises `macOS | Linux | WSL2`, and Prerequisites adds a one-liner directing Windows users to `docs/wsl2.md`.
+- Plugin/readme: badge now advertises `macOS | Linux | Windows (WSL2)` — "Windows" explicit so scanning users on Windows see their platform listed — and Prerequisites adds a one-liner directing Windows users to `docs/wsl2.md`.
 
 ### Fixes
 
