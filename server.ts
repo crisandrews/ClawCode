@@ -49,6 +49,7 @@ import {
 import { extractKeywords } from "./lib/keywords.ts";
 import { MemoryDB } from "./lib/memory-db.ts";
 import { QmdManager } from "./lib/qmd-manager.ts";
+import { TaskLedger } from "./lib/task-ledger.ts";
 import type { SearchResult } from "./lib/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -105,6 +106,9 @@ try {
 
 // Dream engine (always available — uses recall data from .dreams/)
 const dreamEngine = new DreamEngine(WORKSPACE);
+
+// Task ledger (always available — Stop hook reads the same file directly)
+const taskLedger = new TaskLedger(WORKSPACE);
 
 // Initialize QMD if configured (non-blocking, with full error isolation)
 let qmdManager: QmdManager | null = null;
@@ -501,6 +505,10 @@ const MCP_TOOL_DIRECTORY: Array<{ name: string; description: string }> = [
   { name: "chat_inbox_read", description: "Read pending WebChat messages." },
   { name: "webchat_reply", description: "Stream a reply to the open WebChat browser." },
   { name: "watchdog_ping", description: "Cheap liveness probe for external watchdogs — returns version + installed channel plugin names. No LLM, no side effects." },
+  { name: "task_open", description: "Open a tracked task with acceptance criteria. Stop hook will block termination until the task is closed." },
+  { name: "task_check", description: "Record evidence that an acceptance criterion of an open task is satisfied." },
+  { name: "task_close", description: "Close an open task. Refuses unless every criterion has evidence (use force=true to override)." },
+  { name: "task_list", description: "List currently open tasks with their satisfied/remaining criteria." },
 ];
 
 /**
@@ -950,6 +958,61 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: "watchdog_ping",
       description:
         "Cheap liveness probe for external watchdogs. Returns {ok, version, ts, plugins} where plugins is the list of installed channel plugin names (telegram, whatsapp, etc.). No LLM, no side effects, no network I/O. Used by the /watchdog/mcp-ping HTTP endpoint and available directly here for diagnostics.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {},
+      },
+    },
+    {
+      name: "task_open",
+      description:
+        "Open a tracked task with acceptance criteria. The Task Completion Guard Stop hook will re-prompt you each time you try to stop while this task is open and any criterion lacks evidence. Use this when the user assigns a non-trivial task you must finish in this session. Returns the new task id.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          goal: { type: "string", description: "Short statement of what 'done' looks like." },
+          criteria: {
+            type: "array",
+            items: { type: "string" },
+            description: "Concrete acceptance criteria. Each must be verifiable.",
+          },
+          source: { type: "string", description: "Optional — where the task came from (user, schedule, etc.)" },
+        },
+        required: ["goal", "criteria"],
+      },
+    },
+    {
+      name: "task_check",
+      description:
+        "Record evidence that an acceptance criterion of an open task is satisfied. The criterion string must match exactly one of the criteria provided to task_open. Evidence is free-form (a tool-call id, a file path, a test result, etc.).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          id: { type: "string", description: "Task id returned by task_open." },
+          criterion: { type: "string", description: "Exact criterion text from task_open." },
+          evidence: { type: "string", description: "How you verified it (path:line, test name, command output snippet, etc.)." },
+        },
+        required: ["id", "criterion", "evidence"],
+      },
+    },
+    {
+      name: "task_close",
+      description:
+        "Close an open task. Refuses to close unless every criterion has evidence recorded by task_check. Pass force=true to override (then the summary must explain why).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          id: { type: "string", description: "Task id returned by task_open." },
+          summary: { type: "string", description: "Brief outcome — what was delivered." },
+          force: { type: "boolean", description: "Override the missing-evidence check. Default false." },
+        },
+        required: ["id", "summary"],
+      },
+    },
+    {
+      name: "task_list",
+      description:
+        "List currently open tasks with their satisfied/remaining criteria. Use this at session start to see what was left unfinished, or before stopping to confirm everything is closed.",
       inputSchema: {
         type: "object" as const,
         properties: {},
@@ -1636,6 +1699,108 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         },
       ],
     };
+  }
+
+  if (name === "task_open") {
+    try {
+      const event = taskLedger.open(
+        String(params.goal || ""),
+        Array.isArray(params.criteria) ? params.criteria.map(String) : [],
+        params.source ? String(params.source) : undefined
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Task ${event.id} opened.\nGoal: ${event.goal}\nCriteria (${event.criteria.length}):\n` +
+              event.criteria.map((c) => `  - ${c}`).join("\n") +
+              `\n\nThe Task Completion Guard will block Stop until each criterion has evidence (task_check) and the task is closed (task_close).`,
+          },
+        ],
+      };
+    } catch (e: any) {
+      return {
+        content: [{ type: "text", text: `Error: ${e?.message || String(e)}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === "task_check") {
+    try {
+      const event = taskLedger.check(
+        String(params.id || ""),
+        String(params.criterion || ""),
+        String(params.evidence || "")
+      );
+      const active = taskLedger
+        .activeTasks()
+        .find((t) => t.id === event.id);
+      const remaining = active ? active.remaining : [];
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Recorded evidence for ${event.id}.\nCriterion: ${event.criterion}\nEvidence: ${event.evidence}\nRemaining: ${remaining.length}` +
+              (remaining.length > 0
+                ? "\n  - " + remaining.join("\n  - ")
+                : " — ready to task_close."),
+          },
+        ],
+      };
+    } catch (e: any) {
+      return {
+        content: [{ type: "text", text: `Error: ${e?.message || String(e)}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === "task_close") {
+    try {
+      const event = taskLedger.close(
+        String(params.id || ""),
+        String(params.summary || ""),
+        Boolean(params.force)
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Task ${event.id} closed${event.force ? " (forced)" : ""}.\n` +
+              `Summary: ${event.summary}`,
+          },
+        ],
+      };
+    } catch (e: any) {
+      return {
+        content: [{ type: "text", text: `Error: ${e?.message || String(e)}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === "task_list") {
+    const active = taskLedger.activeTasks();
+    if (active.length === 0) {
+      return {
+        content: [{ type: "text", text: "No open tasks." }],
+      };
+    }
+    const lines: string[] = [`${active.length} open task(s):`, ""];
+    for (const t of active) {
+      lines.push(`- ${t.id}: ${t.goal}`);
+      lines.push(`    opened: ${t.createdAt}${t.source ? ` (source: ${t.source})` : ""}`);
+      for (const c of t.criteria) {
+        const mark = t.evidence[c] ? "[x]" : "[ ]";
+        const ev = t.evidence[c] ? `  → ${t.evidence[c]}` : "";
+        lines.push(`    ${mark} ${c}${ev}`);
+      }
+    }
+    return { content: [{ type: "text", text: lines.join("\n") }] };
   }
 
   return {

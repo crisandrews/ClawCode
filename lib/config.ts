@@ -78,6 +78,19 @@ export interface AgentConfig {
     /** Timezone for dreaming cron */
     timezone?: string;
   };
+  /**
+   * Task Completion Guard — Stop-hook policy that re-prompts the agent while
+   * any task in memory/.tasks/active.jsonl still has unmet acceptance criteria.
+   */
+  taskGuard?: {
+    /** Master switch. Default: true (opt-out). */
+    enabled?: boolean;
+    /**
+     * Maximum consecutive Stop blocks before surrendering. Prevents infinite
+     * loops if the agent genuinely can't progress. Default: 5.
+     */
+    maxStopBlocks?: number;
+  };
   memory: {
     /** "builtin" = SQLite+FTS5 (default), "qmd" = QMD external tool */
     backend: "builtin" | "qmd";
@@ -160,6 +173,7 @@ export function loadConfig(pluginRoot: string): AgentConfig {
       memoryContext: parsed.memoryContext ? { ...parsed.memoryContext } : undefined,
       heartbeat: parsed.heartbeat ? { ...parsed.heartbeat } : undefined,
       dreaming: parsed.dreaming ? { ...parsed.dreaming } : undefined,
+      taskGuard: parsed.taskGuard ? { ...parsed.taskGuard } : undefined,
       memory: {
         ...DEFAULT_CONFIG.memory,
         ...parsed.memory,
