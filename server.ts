@@ -6,6 +6,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import fs from "fs";
 import path from "path";
+import { execFileSync } from "child_process";
 import { loadConfig, saveConfig } from "./lib/config.ts";
 import {
   getLiveConfig,
@@ -49,7 +50,9 @@ import {
 import { extractKeywords } from "./lib/keywords.ts";
 import { MemoryDB } from "./lib/memory-db.ts";
 import { QmdManager } from "./lib/qmd-manager.ts";
+import { PaperclipClient, resolvePaperclipConfig } from "./lib/paperclip-bridge.ts";
 import type { SearchResult } from "./lib/types.ts";
+import { AutogenesisOrchestrator } from "./lib/autogenesis.ts";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -105,6 +108,14 @@ try {
 
 // Dream engine (always available — uses recall data from .dreams/)
 const dreamEngine = new DreamEngine(WORKSPACE);
+
+// Autogenesis orchestrator — RSPL/SEPL self-evolution protocol
+const autogenesis = new AutogenesisOrchestrator(MEMORY_DIR, PLUGIN_ROOT);
+autogenesis.scanAndRegisterSkills();
+
+// Paperclip bridge (null if not configured — tools gracefully report this)
+const paperclipConfig = resolvePaperclipConfig(WORKSPACE);
+const paperclipClient = paperclipConfig ? new PaperclipClient(paperclipConfig) : null;
 
 // Initialize QMD if configured (non-blocking, with full error isolation)
 let qmdManager: QmdManager | null = null;
@@ -501,6 +512,11 @@ const MCP_TOOL_DIRECTORY: Array<{ name: string; description: string }> = [
   { name: "chat_inbox_read", description: "Read pending WebChat messages." },
   { name: "webchat_reply", description: "Stream a reply to the open WebChat browser." },
   { name: "watchdog_ping", description: "Cheap liveness probe for external watchdogs — returns version + installed channel plugin names. No LLM, no side effects." },
+  { name: "paperclip_inbox", description: "Get your Paperclip inbox — assigned issues and pending tasks." },
+  { name: "paperclip_issue", description: "Get, create, or update a Paperclip issue." },
+  { name: "paperclip_comment", description: "List or add comments on a Paperclip issue." },
+  { name: "paperclip_agents", description: "List agents or wake up a specific agent in Paperclip." },
+  { name: "autogenesis", description: "Self-evolving protocol — version skills, reflect on behavioral patterns, apply or rollback improvements. (AGP/SEPL)" },
 ];
 
 /**
@@ -955,6 +971,94 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {},
       },
     },
+    {
+      name: "paperclip_inbox",
+      description:
+        "Get your Paperclip inbox — assigned issues and pending work. Requires Paperclip credentials in env vars or agent-config.json.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {},
+      },
+    },
+    {
+      name: "paperclip_issue",
+      description:
+        "Interact with Paperclip issues. Actions: 'get' (by id/identifier), 'create' (new issue), 'update' (change status/title), 'list' (search), 'checkout' (assign to agent).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          action: {
+            type: "string",
+            enum: ["get", "create", "update", "list", "checkout"],
+            description: "Action to perform on the issue",
+          },
+          id: { type: "string", description: "Issue ID or identifier (for get/update/checkout)" },
+          title: { type: "string", description: "Issue title (for create)" },
+          description: { type: "string", description: "Issue description (for create/update)" },
+          status: { type: "string", description: "Issue status (for update/list filter)" },
+          agentId: { type: "string", description: "Agent ID (for checkout — defaults to self)" },
+          limit: { type: "number", description: "Max results (for list, default 10)" },
+        },
+        required: ["action"],
+      },
+    },
+    {
+      name: "paperclip_comment",
+      description:
+        "List or add comments on a Paperclip issue. Actions: 'list' (get comments), 'add' (post a comment).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          action: { type: "string", enum: ["list", "add"], description: "Action" },
+          issueId: { type: "string", description: "Issue ID" },
+          body: { type: "string", description: "Comment body (for add)" },
+          limit: { type: "number", description: "Max comments (for list, default 20)" },
+        },
+        required: ["action", "issueId"],
+      },
+    },
+    {
+      name: "paperclip_agents",
+      description:
+        "List agents in your Paperclip company or wake up (invoke heartbeat on) a specific agent. Actions: 'list', 'wakeup'.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          action: { type: "string", enum: ["list", "wakeup"], description: "Action" },
+          agentId: { type: "string", description: "Agent ID (for wakeup)" },
+          reason: { type: "string", description: "Wakeup reason (for wakeup)" },
+        },
+        required: ["action"],
+      },
+    },
+    {
+      name: "autogenesis",
+      description:
+        "Self-evolving agent protocol (AGP/SEPL). Manages skill versioning and a nightly Reflect/Select/Improve cycle. Actions: 'status' (registry overview), 'pending' (proposals awaiting review), 'apply' (apply a proposal by id), 'reject' (reject a proposal by id), 'rollback' (revert a skill to a previous version), 'history' (version history for a skill).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          action: {
+            type: "string",
+            enum: ["status", "pending", "apply", "reject", "rollback", "history"],
+            description: "Action to perform",
+          },
+          id: {
+            type: "string",
+            description: "Proposal ID (for apply/reject)",
+          },
+          skill: {
+            type: "string",
+            description: "Skill name (for rollback/history)",
+          },
+          version: {
+            type: "string",
+            description: "Version string to rollback to (for rollback, e.g. '1.0.0')",
+          },
+        },
+        required: ["action"],
+      },
+    },
   ],
 }));
 
@@ -1058,6 +1162,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const dryRun = action === "dry-run";
         const result = dreamEngine.runFullSweep({ dryRun });
 
+        // Run learning engine to update behavioral priors from memory signals
+        let learningOutput = "";
+        if (!dryRun) {
+          try {
+            const learningScript = path.join(PLUGIN_ROOT, "lib", "learning-engine.py");
+            const memoryDir = MEMORY_DIR;
+            learningOutput = execFileSync("python3", [learningScript, "--memory-dir", memoryDir], {
+              timeout: 30000,
+              encoding: "utf-8",
+            });
+          } catch (lerr) {
+            learningOutput = `Learning engine error: ${lerr instanceof Error ? lerr.message : String(lerr)}`;
+          }
+        }
+
+        // Run autogenesis reflect/select cycle — generates improvement proposals
+        let autogenesisOutput = "";
+        if (!dryRun) {
+          try {
+            autogenesisOutput = autogenesis.runReflectCycle(MEMORY_DIR);
+          } catch (aerr) {
+            autogenesisOutput = `Autogenesis error: ${aerr instanceof Error ? aerr.message : String(aerr)}`;
+          }
+        }
+
         return {
           content: [
             {
@@ -1093,6 +1222,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   : "",
                 "",
                 !dryRun ? "Dream diary written to DREAMS.md" : "",
+                learningOutput ? `\n### Learning Engine\n${learningOutput.trim()}` : "",
+                autogenesisOutput ? `\n### Autogenesis (SEPL Reflect)\n${autogenesisOutput.trim()}` : "",
               ]
                 .filter(Boolean)
                 .join("\n"),
@@ -1636,6 +1767,252 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         },
       ],
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Paperclip tools
+  // ---------------------------------------------------------------------------
+
+  const PAPERCLIP_NOT_CONFIGURED =
+    "Paperclip not configured. Set PAPERCLIP_API_URL, PAPERCLIP_API_KEY, and PAPERCLIP_COMPANY_ID as env vars, or add a 'paperclip' block to agent-config.json.";
+
+  if (name === "paperclip_inbox") {
+    if (!paperclipClient) {
+      return { content: [{ type: "text", text: PAPERCLIP_NOT_CONFIGURED }], isError: true };
+    }
+    try {
+      const inbox = await paperclipClient.inbox();
+      return { content: [{ type: "text", text: JSON.stringify(inbox, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === "paperclip_issue") {
+    if (!paperclipClient) {
+      return { content: [{ type: "text", text: PAPERCLIP_NOT_CONFIGURED }], isError: true };
+    }
+    const action = String(params.action || "");
+    try {
+      if (action === "get") {
+        const id = String(params.id || "");
+        if (!id) return { content: [{ type: "text", text: "Error: id is required" }], isError: true };
+        const issue = await paperclipClient.getIssue(id);
+        return { content: [{ type: "text", text: JSON.stringify(issue, null, 2) }] };
+      }
+      if (action === "list") {
+        const issues = await paperclipClient.listIssues({
+          status: params.status ? String(params.status) : undefined,
+          limit: Number(params.limit) || 10,
+        });
+        return { content: [{ type: "text", text: JSON.stringify(issues, null, 2) }] };
+      }
+      if (action === "create") {
+        const title = String(params.title || "").trim();
+        if (!title) return { content: [{ type: "text", text: "Error: title is required" }], isError: true };
+        const issue = await paperclipClient.createIssue({
+          title,
+          description: params.description ? String(params.description) : undefined,
+        });
+        return { content: [{ type: "text", text: `Issue created: ${JSON.stringify(issue, null, 2)}` }] };
+      }
+      if (action === "update") {
+        const id = String(params.id || "");
+        if (!id) return { content: [{ type: "text", text: "Error: id is required" }], isError: true };
+        const update: any = {};
+        if (params.title) update.title = String(params.title);
+        if (params.status) update.status = String(params.status);
+        if (params.description) update.description = String(params.description);
+        const issue = await paperclipClient.updateIssue(id, update);
+        return { content: [{ type: "text", text: `Issue updated: ${JSON.stringify(issue, null, 2)}` }] };
+      }
+      if (action === "checkout") {
+        const id = String(params.id || "");
+        if (!id) return { content: [{ type: "text", text: "Error: id is required" }], isError: true };
+        const result = await paperclipClient.checkoutIssue(id, params.agentId ? String(params.agentId) : undefined);
+        return { content: [{ type: "text", text: `Issue checked out: ${JSON.stringify(result, null, 2)}` }] };
+      }
+      return { content: [{ type: "text", text: 'Unknown action. Use: "get", "create", "update", "list", "checkout"' }], isError: true };
+    } catch (e: any) {
+      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === "paperclip_comment") {
+    if (!paperclipClient) {
+      return { content: [{ type: "text", text: PAPERCLIP_NOT_CONFIGURED }], isError: true };
+    }
+    const action = String(params.action || "");
+    const issueId = String(params.issueId || "");
+    if (!issueId) return { content: [{ type: "text", text: "Error: issueId is required" }], isError: true };
+    try {
+      if (action === "list") {
+        const comments = await paperclipClient.listComments(issueId, Number(params.limit) || 20);
+        return { content: [{ type: "text", text: JSON.stringify(comments, null, 2) }] };
+      }
+      if (action === "add") {
+        const body = String(params.body || "").trim();
+        if (!body) return { content: [{ type: "text", text: "Error: body is required" }], isError: true };
+        const comment = await paperclipClient.addComment(issueId, body);
+        return { content: [{ type: "text", text: `Comment added: ${JSON.stringify(comment, null, 2)}` }] };
+      }
+      return { content: [{ type: "text", text: 'Unknown action. Use: "list" or "add"' }], isError: true };
+    } catch (e: any) {
+      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === "paperclip_agents") {
+    if (!paperclipClient) {
+      return { content: [{ type: "text", text: PAPERCLIP_NOT_CONFIGURED }], isError: true };
+    }
+    const action = String(params.action || "");
+    try {
+      if (action === "list") {
+        const agents = await paperclipClient.listAgents();
+        return { content: [{ type: "text", text: JSON.stringify(agents, null, 2) }] };
+      }
+      if (action === "wakeup") {
+        const agentId = String(params.agentId || "");
+        if (!agentId) return { content: [{ type: "text", text: "Error: agentId is required" }], isError: true };
+        const result = await paperclipClient.wakeupAgent(agentId, params.reason ? String(params.reason) : undefined);
+        return { content: [{ type: "text", text: `Agent wakeup requested: ${JSON.stringify(result, null, 2)}` }] };
+      }
+      return { content: [{ type: "text", text: 'Unknown action. Use: "list" or "wakeup"' }], isError: true };
+    } catch (e: any) {
+      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === "autogenesis") {
+    const action = String(params.action || "status");
+
+    try {
+      if (action === "status") {
+        const status = autogenesis.getStatus();
+        const lines = [
+          "## Autogenesis Status (AGP/SEPL)",
+          "",
+          `Registered skills: ${status.registeredResources}`,
+          `Pending proposals: ${status.pendingProposals}`,
+          `Applied proposals: ${status.appliedProposals}`,
+          "",
+          "### Registered Resources",
+          ...status.resources.map(
+            (r) =>
+              `- **${r.name}** (${r.type}) — v${r.currentVersion} | trainable: ${r.trainable} | updated: ${r.updatedAt.slice(0, 10)}`
+          ),
+        ];
+        if (status.recentReports.length > 0) {
+          lines.push("", "### Recent Reports", ...status.recentReports.map((r) => `- ${r}`));
+        }
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      }
+
+      if (action === "pending") {
+        const proposals = autogenesis.getPendingProposals();
+        if (proposals.length === 0) {
+          return { content: [{ type: "text", text: "No pending proposals. Run `dream(action='run')` to generate new ones." }] };
+        }
+        const lines = [
+          `## Pending Autogenesis Proposals (${proposals.length})`,
+          "",
+          "Use `autogenesis(action='apply', id='...')` to apply or `autogenesis(action='reject', id='...')` to dismiss.",
+          "",
+          ...proposals.map((p) =>
+            [
+              `### ${p.id}`,
+              `Skill: **${p.skill_name}** | Event: \`${p.hypothesis.event_type}\` | Response rate: ${(p.hypothesis.response_rate * 100).toFixed(0)}% | Severity: ${p.hypothesis.severity}`,
+              `Hypothesis: ${p.hypothesis.hypothesis}`,
+              `Proposed addition (${p.proposed_addition.length} chars):`,
+              "```",
+              p.proposed_addition.trim().slice(0, 600) + (p.proposed_addition.length > 600 ? "\n…" : ""),
+              "```",
+              `Created: ${p.created_at}`,
+            ].join("\n")
+          ),
+        ];
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      }
+
+      if (action === "apply") {
+        const id = String(params.id || "");
+        if (!id) {
+          return { content: [{ type: "text", text: "Error: id is required for apply" }], isError: true };
+        }
+        const result = autogenesis.applyProposal(id);
+        if (!result.success) {
+          return { content: [{ type: "text", text: `Error: ${result.error}` }], isError: true };
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: [
+                `✅ Proposal applied successfully.`,
+                `Skill: **${result.skillName}** → new version **${result.version}**`,
+                ``,
+                `To rollback: \`autogenesis(action='rollback', skill='${result.skillName}', version='<previous>')\``,
+              ].join("\n"),
+            },
+          ],
+        };
+      }
+
+      if (action === "reject") {
+        const id = String(params.id || "");
+        if (!id) {
+          return { content: [{ type: "text", text: "Error: id is required for reject" }], isError: true };
+        }
+        const ok = autogenesis.rejectProposal(id);
+        return {
+          content: [{ type: "text", text: ok ? `Proposal '${id}' rejected.` : `Proposal '${id}' not found or already processed.` }],
+        };
+      }
+
+      if (action === "rollback") {
+        const skill = String(params.skill || "");
+        const version = String(params.version || "");
+        if (!skill || !version) {
+          return { content: [{ type: "text", text: "Error: skill and version are required for rollback" }], isError: true };
+        }
+        const ok = autogenesis.rollback(skill, version);
+        return {
+          content: [{ type: "text", text: ok ? `✅ Rolled back '${skill}' to version ${version}.` : `Error: could not rollback '${skill}' to ${version} (version not found in registry)` }],
+          isError: !ok,
+        };
+      }
+
+      if (action === "history") {
+        const skill = String(params.skill || "");
+        if (!skill) {
+          return { content: [{ type: "text", text: "Error: skill is required for history" }], isError: true };
+        }
+        const history = autogenesis.getHistory(skill);
+        if (history.length === 0) {
+          return { content: [{ type: "text", text: `No version history for skill '${skill}'.` }] };
+        }
+        const lines = [
+          `## Version History: ${skill}`,
+          "",
+          ...history.map(
+            (v) =>
+              `- **${v.version}** | ${v.ts.slice(0, 16)} | ${v.reason} | hash: \`${v.contentHash}\`${v.parentVersion ? ` | parent: ${v.parentVersion}` : ""}`
+          ),
+        ];
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      }
+
+      return {
+        content: [{ type: "text", text: `Unknown autogenesis action: ${action}` }],
+        isError: true,
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Autogenesis error: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
   }
 
   return {
