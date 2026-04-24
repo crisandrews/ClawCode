@@ -49,6 +49,7 @@ import {
 import { extractKeywords } from "./lib/keywords.ts";
 import { MemoryDB } from "./lib/memory-db.ts";
 import { QmdManager } from "./lib/qmd-manager.ts";
+import { GapTracker, ResearchEngine, mergeAutoResearchConfig } from "./lib/autoresearch.ts";
 import type { SearchResult } from "./lib/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -105,6 +106,9 @@ try {
 
 // Dream engine (always available — uses recall data from .dreams/)
 const dreamEngine = new DreamEngine(WORKSPACE);
+
+// Gap tracker (always active — records low-quality searches for autoresearch)
+const gapTracker = new GapTracker(DREAMS_DIR);
 
 // Initialize QMD if configured (non-blocking, with full error isolation)
 let qmdManager: QmdManager | null = null;
@@ -471,6 +475,12 @@ function trackRecall(
 
     recall.updatedAt = now;
     fs.writeFileSync(recallPath, JSON.stringify(recall, null, 2));
+
+    // Track knowledge gaps — searches with poor results feed the autoresearch loop
+    const maxScore = results.length > 0
+      ? Math.max(...results.map((r) => r.score))
+      : 0;
+    gapTracker.recordGap(query, results.length, maxScore);
   } catch {
     // Dream tracking is best-effort
   }
@@ -484,7 +494,8 @@ function trackRecall(
 const MCP_TOOL_DIRECTORY: Array<{ name: string; description: string }> = [
   { name: "memory_search", description: "Search memory with BM25, temporal decay, MMR." },
   { name: "memory_get", description: "Read specific lines from a memory file." },
-  { name: "dream", description: "Run memory consolidation (status / run / dry-run)." },
+  { name: "dream", description: "Run memory consolidation (status / run / dry-run). AutoResearch runs during REM if enabled." },
+  { name: "knowledge_gaps", description: "List detected knowledge gaps from low-quality searches, or manually add a gap for autoresearch to investigate." },
   { name: "agent_config", description: "View or update agent settings." },
   { name: "agent_status", description: "Show identity, memory stats, dreaming state." },
   { name: "memory_context", description: "Active-memory turn-start reflex — digest relevant context." },
@@ -623,6 +634,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             enum: ["status", "run", "dry-run"],
             description: "Action: 'status' (check state), 'run' (full sweep + promote), 'dry-run' (preview without writing)",
+          },
+        },
+        required: ["action"],
+      },
+    },
+    {
+      name: "knowledge_gaps",
+      description:
+        "View or add knowledge gaps detected from low-quality memory searches. Gaps feed the autoresearch loop during dreaming. Use action='list' to see current gaps, action='add' to manually register a gap you want researched.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          action: {
+            type: "string",
+            enum: ["list", "add"],
+            description: "'list' to view gaps, 'add' to register a new gap for research",
+          },
+          query: {
+            type: "string",
+            description: "For action='add': the query/topic you want researched",
+          },
+          limit: {
+            type: "number",
+            description: "For action='list': max gaps to return (default: 10)",
           },
         },
         required: ["action"],
@@ -1058,6 +1093,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const dryRun = action === "dry-run";
         const result = dreamEngine.runFullSweep({ dryRun });
 
+        // AutoResearch — run during REM if enabled
+        const arConfig = mergeAutoResearchConfig(
+          (loadConfig(WORKSPACE) as any).dreaming?.autoresearch
+        );
+        let arSection = "";
+        if (arConfig.enabled && !dryRun) {
+          const engine = new ResearchEngine(WORKSPACE, arConfig);
+          const arResult = engine.runResearchLoop(
+            (q, max) => searchMemory(q, max || 6)
+          );
+          if (arResult.gapsInvestigated > 0) {
+            arSection = [
+              "",
+              "### AutoResearch (REM)",
+              `Gaps investigated: ${arResult.gapsInvestigated}`,
+              `Kept: ${arResult.kept.length} | Discarded: ${arResult.discarded.length}`,
+              arResult.kept.length > 0
+                ? arResult.kept
+                    .map(
+                      (c) =>
+                        `- ✅ "${c.query}" (${c.confidenceScore.toFixed(2)}, ${c.validationMethod})`
+                    )
+                    .join("\n")
+                : "",
+              arResult.discarded.length > 0
+                ? arResult.discarded
+                    .map(
+                      (c) =>
+                        `- ❌ "${c.query}" — ${c.discardReason}`
+                    )
+                    .join("\n")
+                : "",
+            ]
+              .filter(Boolean)
+              .join("\n");
+          }
+        } else if (arConfig.enabled && dryRun) {
+          const gaps = gapTracker.topGaps(arConfig.maxGapsPerNight);
+          arSection =
+            gaps.length > 0
+              ? `\n### AutoResearch (would investigate ${gaps.length} gaps)\n` +
+                gaps.map((g) => `- "${g.query}" (${g.occurrences}x, ${g.gapType})`).join("\n")
+              : "";
+        }
+
         return {
           content: [
             {
@@ -1072,6 +1152,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 result.themes.length > 0
                   ? `Themes found: ${result.themes.join(", ")}`
                   : "No recurring themes yet.",
+                arSection,
                 "",
                 "### Deep Phase",
                 `Total candidates: ${result.candidates.length}`,
@@ -1111,6 +1192,68 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return {
         content: [
           { type: "text", text: `Dreaming error: ${err instanceof Error ? err.message : String(err)}` },
+        ],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === "knowledge_gaps") {
+    const action = String(params.action || "list");
+    try {
+      if (action === "list") {
+        const limit = Number(params.limit) || 10;
+        const gaps = gapTracker.topGaps(limit);
+        if (gaps.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "No knowledge gaps detected yet. Gaps are recorded automatically when memory_search returns poor results.",
+              },
+            ],
+          };
+        }
+        const lines = [
+          `## Knowledge Gaps (${gaps.length})`,
+          "",
+          ...gaps.map(
+            (g, i) =>
+              `${i + 1}. "${g.query}" — ${g.gapType}, ${g.occurrences}x (last: ${g.lastSeen.slice(0, 10)})`
+          ),
+          "",
+          'Enable `dreaming.autoresearch.enabled: true` in agent-config.json to research these during the dream cycle.',
+        ];
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      }
+
+      if (action === "add") {
+        const query = String(params.query || "").trim();
+        if (!query) {
+          return {
+            content: [{ type: "text", text: "Error: query is required for action='add'" }],
+            isError: true,
+          };
+        }
+        gapTracker.recordGap(query, 0, 0);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Knowledge gap registered: "${query}". It will be investigated during the next dream cycle (if autoresearch is enabled).`,
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [{ type: "text", text: 'Unknown action. Use: "list" or "add"' }],
+        isError: true,
+      };
+    } catch (err) {
+      return {
+        content: [
+          { type: "text", text: `Knowledge gaps error: ${err instanceof Error ? err.message : String(err)}` },
         ],
         isError: true,
       };
