@@ -49,6 +49,7 @@ import {
 import { extractKeywords } from "./lib/keywords.ts";
 import { MemoryDB } from "./lib/memory-db.ts";
 import { QmdManager } from "./lib/qmd-manager.ts";
+import { WacliBridge, resolveWacliConfig } from "./lib/wacli-bridge.ts";
 import type { SearchResult } from "./lib/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -105,6 +106,10 @@ try {
 
 // Dream engine (always available — uses recall data from .dreams/)
 const dreamEngine = new DreamEngine(WORKSPACE);
+
+// wacli bridge (read-only WhatsApp access — null if wacli not installed)
+const wacliConfig = resolveWacliConfig(WORKSPACE);
+const wacliBridge = wacliConfig ? new WacliBridge(wacliConfig) : null;
 
 // Initialize QMD if configured (non-blocking, with full error isolation)
 let qmdManager: QmdManager | null = null;
@@ -501,6 +506,7 @@ const MCP_TOOL_DIRECTORY: Array<{ name: string; description: string }> = [
   { name: "chat_inbox_read", description: "Read pending WebChat messages." },
   { name: "webchat_reply", description: "Stream a reply to the open WebChat browser." },
   { name: "watchdog_ping", description: "Cheap liveness probe for external watchdogs — returns version + installed channel plugin names. No LLM, no side effects." },
+  { name: "whatsapp_read", description: "Read WhatsApp conversations via wacli (read-only). List chats, read messages, search. NEVER sends messages." },
 ];
 
 /**
@@ -953,6 +959,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object" as const,
         properties: {},
+      },
+    },
+    {
+      name: "whatsapp_read",
+      description:
+        "Read-only access to WhatsApp conversations via wacli. NEVER sends messages. Actions: 'stores' (list available stores), 'chats' (list chats), 'messages' (read messages from a chat), 'search' (full-text search across conversations).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          action: {
+            type: "string",
+            enum: ["stores", "chats", "messages", "search"],
+            description: "Action to perform",
+          },
+          store: { type: "string", description: "Store name (personal, aidtogrow, business). Omit for all." },
+          chat: { type: "string", description: "Chat JID (for messages action)" },
+          query: { type: "string", description: "Search query (for search action)" },
+          limit: { type: "number", description: "Max results (default 20)" },
+          after: { type: "string", description: "Only messages after date (YYYY-MM-DD)" },
+          before: { type: "string", description: "Only messages before date (YYYY-MM-DD)" },
+        },
+        required: ["action"],
       },
     },
   ],
@@ -1636,6 +1664,101 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         },
       ],
     };
+  }
+
+  if (name === "whatsapp_read") {
+    if (!wacliBridge) {
+      return {
+        content: [{
+          type: "text",
+          text: "wacli not configured. Install wacli and ensure WhatsApp stores exist at ~/.wacli, or add a 'wacli' block to agent-config.json.",
+        }],
+        isError: true,
+      };
+    }
+    if (!wacliBridge.isAvailable()) {
+      return {
+        content: [{ type: "text", text: "wacli binary not found in PATH. Install it first." }],
+        isError: true,
+      };
+    }
+
+    const action = String(params.action || "");
+    try {
+      if (action === "stores") {
+        const stores = wacliBridge.listStores();
+        const lines = stores.map(
+          (s) => `- ${s.name}: ${s.available ? `${s.chatCount} chats` : "unavailable"} (${s.path})`
+        );
+        return { content: [{ type: "text", text: `## WhatsApp Stores\n\n${lines.join("\n")}` }] };
+      }
+
+      if (action === "chats") {
+        const chats = wacliBridge.listChats(params.store ? String(params.store) : undefined);
+        const limit = Number(params.limit) || 30;
+        const display = chats.slice(0, limit);
+        const lines = display.map(
+          (c) => `- ${c.Name || c.JID} (${c.Kind}) — last: ${c.LastMessageTS?.slice(0, 10) || "?"}`
+        );
+        return {
+          content: [{
+            type: "text",
+            text: `## WhatsApp Chats (${display.length}/${chats.length})\n\n${lines.join("\n")}`,
+          }],
+        };
+      }
+
+      if (action === "messages") {
+        const chatJID = String(params.chat || "");
+        if (!chatJID) {
+          return { content: [{ type: "text", text: "Error: chat JID is required for messages action" }], isError: true };
+        }
+        const messages = wacliBridge.listMessages(chatJID, {
+          storeName: params.store ? String(params.store) : undefined,
+          limit: Number(params.limit) || 20,
+          after: params.after ? String(params.after) : undefined,
+          before: params.before ? String(params.before) : undefined,
+        });
+        const formatted = wacliBridge.formatAsContext(messages);
+        return {
+          content: [{
+            type: "text",
+            text: `## Messages (${messages.length})\n\n${formatted}`,
+          }],
+        };
+      }
+
+      if (action === "search") {
+        const query = String(params.query || "").trim();
+        if (!query) {
+          return { content: [{ type: "text", text: "Error: query is required for search action" }], isError: true };
+        }
+        const results = wacliBridge.searchMessages(query, {
+          storeName: params.store ? String(params.store) : undefined,
+          chatJID: params.chat ? String(params.chat) : undefined,
+          limit: Number(params.limit) || 20,
+          after: params.after ? String(params.after) : undefined,
+          before: params.before ? String(params.before) : undefined,
+        });
+        const formatted = wacliBridge.formatAsContext(results);
+        return {
+          content: [{
+            type: "text",
+            text: `## Search: "${query}" (${results.length} results)\n\n${formatted}`,
+          }],
+        };
+      }
+
+      return {
+        content: [{ type: "text", text: 'Unknown action. Use: "stores", "chats", "messages", "search"' }],
+        isError: true,
+      };
+    } catch (e: any) {
+      return {
+        content: [{ type: "text", text: `WhatsApp read error: ${e.message}` }],
+        isError: true,
+      };
+    }
   }
 
   return {
