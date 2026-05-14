@@ -196,9 +196,30 @@ To turn WebChat off without losing other HTTP features, just close the browser t
 
 Bind to `127.0.0.1` unless you know your network is safe. If you must expose the port (LAN, tunnel), always set a `token` — otherwise anyone who can reach the port can chat as you.
 
+## Channel scope (`scope.*`) — secondary access point
+
+The full UX for channel-scope is `/agent:scope wizard` (interactive). `/agent:settings` provides a read-only secondary view of the current `scope.*` config and pointers to the wizard for changes.
+
+To inspect:
+
+```bash
+node -e "const c=JSON.parse(require('fs').readFileSync('agent-config.json','utf-8'));console.log(JSON.stringify(c.scope||{},null,2));"
+```
+
+Display each configured channel:
+
+- `mode`: `off` (default — no filter) / `shadow` (log only) / `enforce` (filter)
+- `identity`: `auto` (default ceiling) / `owner` (sees all — requires out-of-band trust file) / `guest` (sees nothing channel-derived)
+- `background.identity`: `deny` (default — dreams don't see scoped chunks) / `system-owner` (dreams see as owner)
+
+**Cannot modify scope.* via `agent_config(action='set')`** — Codex 4th-pass CRITICAL: any key starting with `scope.` is on the security-sensitive blocklist. Use `/agent:scope wizard` or `/agent:scope enable <channel> [shadow|enforce]` instead — those routes go through `Bash` so the user gets a permission prompt for every scope-policy change.
+
+Full feature description: `docs/channel-scope-compat.md` · `PRIVACY.md#channel-scope-per-channel-opt-in`.
+
 ## Important
 
 - After any config change, the user must run `/mcp` to reload
 - The builtin backend is always available as fallback even when QMD is configured
 - QMD first run downloads embedding models (~100MB) — this is a one-time cost
 - Heartbeat active hours are enforced by the agent (instructions), not the cron system
+- Channel-scope (`scope.*`) keys are read-only via `agent_config` — use `/agent:scope wizard` for any changes (Codex 4th-pass CRITICAL)

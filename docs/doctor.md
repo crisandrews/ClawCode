@@ -33,6 +33,9 @@ The skill is the preferred surface for humans. The MCP tool exists so WebChat, H
 | `http` | HTTP bridge | Pings `/health` if `http.enabled: true` | `ok` / `error` (unreachable) / `off` |
 | `messaging` | Messaging | Detects installed channel plugins in `~/.claude/plugins/cache/` | `info` / `off` |
 | `dreaming` | Dreaming | Recall tracking state + DREAMS.md presence | `info` / `off` |
+| `scope-pre-enforce-audit` | Scope audit | Whether channel-derived content (logs from `memory.extraPaths`) has surfaced in shared memory ahead of any scope enforcement | `ok` (none found) / `warn` (signals present — see [channel-scope-compat.md](channel-scope-compat.md)) |
+| `scope-bypasses` | Scope bypasses | Always-present advisory: native `Read`/`Grep`/SQLite directos sobre channel logs no se filtran (intencional) | `info` |
+| `scope-quarantine-pending` | Scope quarantine | Counts archived snapshots under `~/.claude/agent/quarantine/` | `off` (none) / `info` (count + path) |
 
 ## Auto-fixes (safe only)
 

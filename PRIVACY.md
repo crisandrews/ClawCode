@@ -1,6 +1,6 @@
 # Privacy Policy
 
-_Last updated: 2026-04-14_
+_Last updated: 2026-04-28_
 
 ClawCode is a local-first plugin for [Claude Code](https://claude.com/claude-code). It runs entirely on the user's machine. This document explains what data the plugin handles, where it is stored, and which third-party services it may contact — but only when the user explicitly enables them.
 
@@ -19,12 +19,44 @@ Typical local artifacts:
 
 - `SOUL.md`, `IDENTITY.md`, `USER.md`, `AGENTS.md` — agent personality and user profile files authored by the user.
 - `memory/*.md` and `memory/MEMORY.md` — searchable notes written by the agent during conversations.
-- `memory.sqlite` — local SQLite database used for memory indexing and recall.
+- `memory/.memory.sqlite` — local SQLite database used for memory indexing and recall. Created with mode `0o600`; parent `memory/` directory created with mode `0o700`. **When channel-scope is armed (e.g. WhatsApp paired and `/agent:scope` enabled), this database also stores chat identifiers (JIDs) under `chunks.source_chat_id` so per-chat scope filters can run** — see "Channel-scope storage" below.
 - `HEARTBEAT.md` — local heartbeat log.
 - `logs/` and `conversations/` — optional local transcripts of CLI, WebChat, and messaging-channel sessions.
 - `.claude/settings.json`, `.claude/hooks.json`, cron definitions — local configuration.
+- `~/.claude/agent/scope-trust/<channel>-owner` — out-of-band trust marker created by the user via `/agent:scope wizard` (Bash-prompted). Empty file; presence + ownership = consent that this machine can act with owner privileges for the named channel. Created with mode `0o600`.
+
+### Channel-scope storage
+
+When the user opts into channel-scope for a paired channel (today: WhatsApp via `claude-whatsapp`), ClawCode reads upstream's `messages.db` read-only and indexes per-chat synthetic chunks into `memory/.memory.sqlite`. Concretely, two columns on `chunks` are populated:
+
+- `source_channel` — the channel name (e.g. `"whatsapp"`).
+- `source_chat_id` — the upstream chat identifier as a string (full WhatsApp JID, e.g. `<phone>@s.whatsapp.net` for DMs, `<group-id>@g.us` for groups).
+
+These identifiers are stored cleartext, mirroring upstream's own storage. They are **not** transmitted off the machine by ClawCode. They are needed locally so the scope filter can answer "does this chunk belong to a chat the current operator is allowed to see" — without them, the per-chat allowlist couldn't be enforced.
+
+The user can inspect or delete these rows directly via the SQLite CLI; removing `memory/.memory.sqlite` removes them with the rest of the index. ClawCode's cleanup sweep does not auto-remove synthetic chunks even when the underlying messages.db row is gone — re-indexing is incremental, by design.
 
 The user may inspect, edit, export, or delete any of these files at any time. Removing the project directory removes all ClawCode data.
+
+### Channel scope (per-channel opt-in)
+
+ClawCode ships an opt-in per-channel scope layer that, **when set to `mode: enforce` and armed**, filters MCP `memory_*` queries so the agent only sees chunks belonging to chats the current operator is allowed to see (mirroring upstream plugins' own access governance — today, claude-whatsapp's `historyScope`). The default is `mode: off` for every channel.
+
+Three modes per channel:
+
+- **`off`** (default) — no scope filtering for that channel; behavior identical to having no scope layer.
+- **`shadow`** — adapters compute filter decisions and emit stats / logs, but search results are NOT dropped and `memory_get` is NOT blocked. Useful for one-week observation before flipping to enforce. Shadow does NOT provide privacy guarantees on its own.
+- **`enforce`** — filter actively drops disallowed chunks at every MCP read surface.
+
+Activation goes through `/agent:scope wizard`, which writes both `agent-config.json: scope.<channel>` (via Bash, surfacing a permission prompt) and an out-of-band trust file (also via Bash). Both writes are required for owner-level unlock — config alone does not escalate.
+
+**Important — what scope does NOT cover**: even at `mode: enforce`, the filter operates at the MCP boundary. Native `Read`, `Grep`, and direct SQLite reads over channel log files always bypass the filter by design. If hard isolation is required, that lives at the OS / filesystem-permissions layer. Same-uid filesystem forging (any other process running as your user could plant or tamper with channel-state files, including the cross-plugin request envelope) is also out of scope — scope is a privacy/safety layer between MCP tool calls and the agent, not a defense against OS-level adversaries already running as you. See `docs/channel-scope-compat.md` and `docs/scope-envelope-contract.md` for the full design.
+
+### WebChat session model
+
+When the HTTP bridge (`http.enabled: true`) is on, every browser tab gets a UUID v4 `sessionId` (persisted in `localStorage`) that partitions per-session chat history and SSE-broadcast. Two browsers with the same `http.token` cannot see each other's chat history or live agent replies. `sessionId` is a privacy partition, NOT auth — `http.token` is the auth boundary. Same-profile tabs share `localStorage` and therefore share a session.
+
+**Known caveat — sessionId is not authentication**: anyone with the `http.token` who knows another user's `sessionId` (e.g. via a network trace, shared clipboard, or shoulder-surfing the URL) can read that session's history and impersonate it on `webchat_reply`. There is no enumeration endpoint, but a leaked UUID is sufficient to take over the session. If you tunnel the bridge to mutually untrusted users, set per-user tokens or run a separate bridge per user. See `docs/webchat.md`.
 
 ## 3. Data the plugin does **not** collect
 

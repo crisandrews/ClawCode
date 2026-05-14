@@ -91,7 +91,7 @@ The WhatsApp channel plugin uses reverse-engineered WhatsApp Web — there is no
 
 ## Security
 
-- **Localhost only.** All HTTP probes go to `127.0.0.1`. The `/watchdog/*` routes in the HTTP bridge refuse non-loopback connections at the middleware level, regardless of how `http.host` is configured. If you ever expose the bridge on a public interface by accident, the watchdog endpoints stay local.
+- **Loopback socket peer only.** All HTTP probes go to `127.0.0.1`. The `/watchdog/*` routes in the HTTP bridge refuse requests whose TCP peer is not `127.0.0.1`/`::1`/`::ffff:127.0.0.1` (`req.socket.remoteAddress`), regardless of how `http.host` is configured. **Caveat**: this is socket-peer enforcement, not origin enforcement — a local reverse proxy or tunnel can relay remote-origin traffic that appears loopback to the bridge. For tunneled deployments the practical boundary is the token (and the `/watchdog/llm-ping` 1/hour rate limit), not loopback. Don't put the bridge behind a reverse proxy and assume the watchdog endpoints stay private.
 - **Token inheritance.** If you've set `http.token` in `agent-config.json`, the installer reads it and passes it to the watcher. The Bearer requirement applies to `/watchdog/mcp-ping` the same way it applies to `/v1/*`.
 - **Alert scripts read tokens from environment.** Never hardcode `TELEGRAM_BOT_TOKEN` (or any other secret) into the alert scripts or timer/plist files — keep them in `~/.claude/channels/telegram/.env` (0600) or the service's environment.
 
@@ -139,7 +139,7 @@ State files at `/tmp/clawcode-watchdog-<label>.state` and the log file persist �
 | Telegram alerts never arrive | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` not in env | Add to `~/.claude/channels/telegram/.env` (the auto-source path) or export them in the watcher's environment |
 | After install, service stopped responding | Watchdog restart triggered on a false positive during install | Inspect the log; probably a race during the first few seconds. Either extend `--cooldown` or increase `OnBootSec` in the timer. |
 | `/watchdog/mcp-ping` returns 503 | HTTP bridge is running but `getWatchdogInfo` wasn't wired — check your ClawCode version. Should never happen on 1.2.3+ | Update ClawCode |
-| `curl /watchdog/mcp-ping` from LAN returns 403 | Loopback-only enforcement (working as designed) | Use a local curl; there's no way to probe over network — by design |
+| `curl /watchdog/mcp-ping` from LAN returns 403 | Loopback-socket-peer enforcement (working as designed) | Use a local curl. Direct LAN access is refused; a local reverse proxy or tunnel could relay external traffic and bypass this — set a strong `http.token` if you do that |
 
 ## Implementation
 

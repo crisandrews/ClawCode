@@ -11,6 +11,8 @@ import { spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import type { AgentConfig } from "./config.ts";
+import { deriveProvenance } from "./scope/provenance.ts";
+import { issueScopeToken } from "./scope/tokens.ts";
 import type { SearchResult } from "./types.ts";
 
 const DEFAULT_COMMAND = "qmd";
@@ -169,12 +171,23 @@ export class QmdManager {
           snippet = snippet.slice(0, MAX_SNIPPET_CHARS - 3) + "...";
         }
 
-        const filePath = item.path
-          ? path.relative(this.pluginRoot, item.path)
-          : item.file ?? "unknown";
+        // Codex P1 5b: when QMD returns an absolute path under one of
+        // our configured extraPaths, normalize it to `extra:<root>/<rel>`
+        // so deriveProvenance can attribute it to the right channel.
+        // Falling through to `path.relative(pluginRoot, ...)` produces
+        // a `../...` path that always derives as legacy and dropped
+        // channel attribution for QMD-routed hits.
+        const filePath = this.toLogicalPath(item.path, item.file);
         const startLine = item.start_line ?? item.startLine ?? 1;
         const endLine = item.end_line ?? item.endLine ?? startLine;
         const score = item.score ?? item.similarity ?? 0.5;
+
+        // Phase 2 — passive provenance metadata. QMD doesn't know
+        // about the chunks table, so we derive from the resolved
+        // file path. Channel attribution comes from path-pattern
+        // (extra:<channel>/...). No enforcement happens here.
+        const provenance = deriveProvenance(filePath);
+        const scopeToken = issueScopeToken(provenance);
 
         return {
           path: filePath,
@@ -183,12 +196,59 @@ export class QmdManager {
           snippet,
           score,
           citation: `${filePath}#L${startLine}-L${endLine}`,
+          provenance,
+          scopeToken,
         };
       });
     } catch (err) {
       // QMD failed — return empty (caller should fall back to builtin)
       return [];
     }
+  }
+
+  /**
+   * Map an absolute filesystem path returned by QMD back to the
+   * logical path used everywhere else (the same shape `MemoryDB`
+   * stores in `chunks.path`):
+   *   - Under `pluginRoot` → workspace-relative (e.g. `memory/x.md`)
+   *   - Under one of `extraPaths` → `extra:<basename>/<relative>`
+   *   - Anything else → fall back to plugin-relative or "unknown"
+   *
+   * Codex P1 5b: previously this used `path.relative(pluginRoot, …)`
+   * unconditionally, producing `../…` for paths that lived outside
+   * the workspace and stripping channel attribution from QMD hits.
+   */
+  private toLogicalPath(
+    absPath: string | undefined,
+    file: string | undefined
+  ): string {
+    if (!absPath) return file ?? "unknown";
+    const resolved = path.resolve(absPath);
+    // Workspace-relative — keep the existing behavior.
+    const inWorkspace = path.relative(this.pluginRoot, resolved);
+    if (!inWorkspace.startsWith("..") && !path.isAbsolute(inWorkspace)) {
+      return inWorkspace;
+    }
+    // Try every configured extraPath; longest root-prefix wins so
+    // nested roots resolve to the most specific one.
+    let best: { prefixLen: number; logical: string } | null = null;
+    for (const root of this.extraPaths) {
+      const realRoot = path.resolve(root);
+      if (
+        resolved === realRoot ||
+        resolved.startsWith(realRoot + path.sep)
+      ) {
+        const rel = path.relative(realRoot, resolved);
+        const logical = `extra:${path.basename(realRoot)}${rel ? "/" + rel : ""}`;
+        if (!best || realRoot.length > best.prefixLen) {
+          best = { prefixLen: realRoot.length, logical };
+        }
+      }
+    }
+    if (best) return best.logical;
+    // Fall back: return the workspace-relative form, even if it
+    // climbs out, so callers always get a stable string.
+    return inWorkspace || resolved;
   }
 
   /**

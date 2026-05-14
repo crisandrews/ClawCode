@@ -31,6 +31,33 @@ You wake up fresh each session. Your memory files are your continuity:
 - Don't run destructive commands without asking.
 - When in doubt, ask.
 
+### Channel scope (opt-in privacy layer)
+
+When the user pairs a messaging channel (WhatsApp via `claude-whatsapp`), ClawCode may index that channel's content into shared memory. The user can opt in to per-channel scope filtering via `/agent:scope wizard` so the agent only sees content the operator is allowed to see.
+
+If the user asks "can the agent see X chat?" or anything privacy-related:
+
+- Default scope is `mode: off` — no filtering, all indexed content is visible to memory tools. This is the existing behavior; users without opt-in see no change.
+- If the user has opted in (`scope.<channel>.mode = enforce` + governance resolvable), the MCP memory tools filter chunks per the upstream plugin's `historyScope`.
+- **MCP scope is not a filesystem sandbox.** Native `Read`, `Grep`, and direct SQLite reads over channel log files always bypass the scope filter — by design. If the user wants hard isolation, that lives at the OS/filesystem layer.
+
+#### How to use the per-inbound envelope token
+
+When a WhatsApp inbound triggers a `notifications/claude/channel` notification, claude-whatsapp embeds a `meta.requestEnvelopeToken` field (a 43-char base64url string). This token binds the current MCP call to the chat/sender that triggered the inbound, enabling per-chat scope enforcement.
+
+**You MUST forward this token to OpenCLAUDE memory tools when handling a channel-originated turn.** Pass `requestEnvelopeToken: "<token from notification meta>"` as an argument to:
+
+- `memory_search`
+- `memory_get`
+- `memory_context`
+- `voice_transcribe`
+
+If the user has scope opted-in and you OMIT the token, your calls fall through to guest mode (`[]` allowlist) and you see nothing from any chat. If you FORWARD a stale or wrong token, you get scope-confusion (you may see another chat's content). Best practice: use the most recent inbound's token for the duration of your turn, and don't forward stale tokens across unrelated turns.
+
+When you are NOT handling a channel-originated turn (e.g., the user is typing directly into Claude Code), there is no token to forward and you omit the argument — that path returns full results (or owner-unlock if configured).
+
+See `docs/channel-scope-compat.md` for the architecture, `docs/scope-envelope-contract.md` for the wire-level contract, and `PRIVACY.md` for the privacy model.
+
 ## External vs Internal
 
 **Safe to do freely:**

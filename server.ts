@@ -49,6 +49,25 @@ import {
 import { extractKeywords } from "./lib/keywords.ts";
 import { MemoryDB } from "./lib/memory-db.ts";
 import { QmdManager } from "./lib/qmd-manager.ts";
+import { classifyAgentConfigKey } from "./lib/scope/agent-config-guard.ts";
+import { makeForegroundContext } from "./lib/scope/context.ts";
+import {
+  ENVELOPE_TOKEN_REGEX,
+  loadEnvelope,
+} from "./lib/scope/envelope.ts";
+import { runMessagesDbIndexerTick } from "./lib/scope/messages-db-indexer.ts";
+import { resolveWhatsappChannelDir } from "./lib/scope/runtime.ts";
+import { getScopeAdapter } from "./lib/scope/index.ts";
+import {
+  assertCanReadPath,
+  buildSqlPreFilter,
+  filterScopedResults,
+  sanitizeDenied,
+  type ScopeFilterStats,
+} from "./lib/scope/filter.ts";
+import { mapAbsoluteToLogical } from "./lib/scope/provenance.ts";
+import { detectScopeRuntime } from "./lib/scope/runtime.ts";
+import { startLifecycleWatcher } from "./lib/scope/lifecycle.ts";
 import type { SearchResult } from "./lib/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -103,8 +122,11 @@ try {
   } as unknown as MemoryDB;
 }
 
-// Dream engine (always available — uses recall data from .dreams/)
-const dreamEngine = new DreamEngine(WORKSPACE);
+// Dream engine (always available — uses recall data from .dreams/).
+// Pass memoryDb so synthetic chunk paths can rehydrate via SQL when
+// the scoped lane (Phase 4a-3) routes channel candidates whose source
+// is `extra:claude-whatsapp/messages-db/...` (no on-disk file).
+const dreamEngine = new DreamEngine(WORKSPACE, memoryDB);
 
 // Initialize QMD if configured (non-blocking, with full error isolation)
 let qmdManager: QmdManager | null = null;
@@ -154,34 +176,207 @@ if (httpConfig.enabled) {
   });
 }
 
+// Phase 4a-2.5 v5 — Codex 4th-pass CRITICAL 1 + HIGH 1: classification
+// helper lives in lib/scope/agent-config-guard.ts so server.ts and
+// regression tests share one implementation (avoids the tautology
+// flagged in the 4th-pass review).
+
+/**
+ * Phase 4a-1 — render the scope-filter notice for memory_search /
+ * memory_context responses. Owner-equivalents see the count of
+ * dropped chunks; non-owners see only "Some results filtered" so
+ * the count itself doesn't leak whether something matched.
+ */
+function formatScopeNotice(stats: ScopeFilterStats): string {
+  // Codex 9th-pass LOW F6: SQL pre-filter or QMD-skip drops never
+  // reach the post-filter, so `dropped === 0` on a constrained query
+  // would have shown nothing. Treat `preFilteredOrSkipped` as an
+  // independent reason to surface the notice.
+  const visible = stats.evaluated && (stats.dropped > 0 || stats.preFilteredOrSkipped);
+  if (!visible) return "";
+  if (stats.operatorIsOwner && stats.dropped > 0) {
+    return `(scope: ${stats.dropped} hidden by enforcement)`;
+  }
+  return "(scope: some results filtered)";
+}
+
 /**
  * Unified search: uses QMD if available, falls back to builtin SQLite+FTS5.
+ *
+ * Phase 4a-1 — when scope is armed, the search:
+ *  1. resolves the current foreground context (request id, owner-bypass env)
+ *  2. asks the runtime for armed channels + adapters
+ *  3. emits a SQL pre-filter to drop denied channels before MMR
+ *  4. over-fetches `maxResults * 8` candidates so post-filter has slack
+ *  5. runs `filterScopedResults` and returns the trimmed list + stats
+ *
+ * When no channel is armed (default), all the above is bypassed and
+ * the function behaves exactly as it did pre-Phase-4a-1.
  */
-function searchMemory(query: string, maxResults?: number): SearchResult[] {
+/**
+ * Phase 6 envelope resolution helper. Extracts and validates the
+ * `requestEnvelopeToken` from MCP tool args, then loads + validates
+ * the envelope file. Returns null when:
+ *   - token is absent / not a string / fails regex
+ *   - WhatsApp scope is not configured (no channel dir to resolve)
+ *   - envelope file missing / expired / malformed / hardening rejects
+ *
+ * Independence: when WhatsApp is not configured at all (no scope block),
+ * we never look at the token — it's just data the agent forwarded.
+ * Callers that don't get an envelope back fall through to their
+ * existing context-construction path.
+ */
+function resolveEnvelopeFromArgs(
+  params: Record<string, unknown>
+): { chatId: string; senderId: string; ts: number } | null {
+  const rawToken = params.requestEnvelopeToken;
+  if (typeof rawToken !== "string" || rawToken.length === 0) return null;
+  if (!ENVELOPE_TOKEN_REGEX.test(rawToken)) return null;
+  // Codex round-1 MEDIUM 1: channel-dir resolution can throw when a
+  // misconfigured `scope.whatsapp.accessJsonPath` slips a non-string
+  // value past the type system. Catch unconditionally so the helper
+  // honors its contract (returns null on any unusable input) and the
+  // hot tool-call path can't take an unhandled rejection.
   try {
-    // Try QMD first
-    if (qmdManager) {
+    const live = getLiveConfig();
+    const channelDir = resolveWhatsappChannelDir(live, WORKSPACE);
+    if (!channelDir) return null;
+    const payload = loadEnvelope(channelDir, rawToken);
+    if (!payload) return null;
+    return {
+      chatId: payload.chatId,
+      senderId: payload.senderId,
+      ts: payload.ts,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function searchMemory(
+  query: string,
+  maxResults?: number,
+  options?: {
+    requestId?: string;
+    envelope?: { chatId: string; senderId: string; ts: number };
+  }
+): { results: SearchResult[]; stats: ScopeFilterStats } {
+  try {
+    const live = getLiveConfig();
+    const runtime = detectScopeRuntime(live, WORKSPACE);
+    const context = makeForegroundContext(
+      options?.requestId ?? `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      options?.envelope ? { envelope: options.envelope } : {}
+    );
+    const sqlPreFilter = buildSqlPreFilter(context, runtime, live.scope);
+    const overfetch =
+      runtime.anyArmed || runtime.anyEnforceConfigured ? 8 : 1;
+    const cap = maxResults ?? 6;
+
+    // Phase 4a-2.6 — when WhatsApp is armed, drain a bounded batch of
+    // synthetic chat-aware chunks from upstream's messages.db before
+    // search. The tick is bounded (BATCH_SIZE rows / call) so the
+    // search hot path stays fast; subsequent searches drain the rest.
+    // No-op when scope is off OR messages.db is missing/locked.
+    if (runtime.channels.whatsapp?.armed) {
+      const channelDir = resolveWhatsappChannelDir(live, WORKSPACE);
+      if (channelDir) {
+        // Fire-and-forget; failures are silently swallowed at the
+        // edge so a transient messages.db corruption can't surface as
+        // an unhandled rejection on the search hot path. Codex 9th-
+        // pass HIGH F2: explicit `.catch()` is required because the
+        // indexer can throw if upstream produces a row whose `ts`
+        // value is somehow valid at the reader level but causes
+        // downstream date math to fail.
+        runMessagesDbIndexerTick({
+          channelDir,
+          memoryDb: memoryDB,
+        }).catch(() => {
+          // intentional swallow — the next tick retries
+        });
+      }
+    }
+
+    // Phase 4a-2.6 — Codex 4a-2.6 pre-impl review F3: when WhatsApp
+    // scope is armed AND the adapter returns a partial allowlist
+    // (non-null, non-empty), QMD's path-only provenance can't honor
+    // the per-chat constraint (synthetic chunks live in our SQLite,
+    // not QMD's index). Skip QMD entirely in that case so the builtin
+    // search path serves the chat-aware chunks. Owner unlock (allowed
+    // === null) keeps QMD as the primary backend because there's no
+    // partial-list to honor.
+    const waAdapter = runtime.channels.whatsapp?.armed
+      ? getScopeAdapter("whatsapp")
+      : null;
+    const waAllowed = waAdapter ? waAdapter.allowedChatIds(context) : null;
+    // Phase 4a-2.6 v17 — Codex 17th-pass MEDIUM F2: only skip QMD in
+    // enforce mode. Shadow is supposed to observe without changing
+    // result shape; previously any partial/deny allowlist forced builtin
+    // search even in shadow, silently flipping ranking + results.
+    const skipQmd =
+      Boolean(waAdapter) &&
+      runtime.channels.whatsapp?.mode === "enforce" &&
+      Array.isArray(waAllowed); // partial OR deny-all → skip QMD; null (allow-all) → keep QMD
+
+    let raw: SearchResult[] = [];
+
+    // Try QMD first — it doesn't honor the SQL pre-filter (different
+    // backend), so for QMD we rely entirely on post-filter + over-fetch.
+    if (qmdManager && !skipQmd) {
       try {
-        const results = qmdManager.search(query, maxResults);
-        if (results.length > 0) return results;
+        // Ask QMD for `cap * overfetch` so post-filter has slack.
+        const qmdResults = qmdManager.search(query, cap * overfetch);
+        if (qmdResults.length > 0) raw = qmdResults;
       } catch {
         // QMD search failed — fall through to builtin
       }
     }
 
-    // Builtin SQLite + FTS5 — tuning knobs are read LIVE so config edits
-    // apply without /mcp.
-    const live = getLiveConfig();
-    return memoryDB.search(query, {
-      maxResults,
-      enableDecay: live.memory.builtin?.temporalDecay ?? true,
-      halfLifeDays: live.memory.builtin?.halfLifeDays ?? 30,
-      enableMMR: live.memory.builtin?.mmr ?? true,
-      mmrLambda: live.memory.builtin?.mmrLambda ?? 0.7,
-    });
+    if (raw.length === 0) {
+      raw = memoryDB.search(query, {
+        maxResults: cap,
+        enableDecay: live.memory.builtin?.temporalDecay ?? true,
+        halfLifeDays: live.memory.builtin?.halfLifeDays ?? 30,
+        enableMMR: live.memory.builtin?.mmr ?? true,
+        mmrLambda: live.memory.builtin?.mmrLambda ?? 0.7,
+        sqlPreFilter,
+        candidateOverfetch: overfetch,
+      });
+    }
+
+    // Phase 4a-1 — post-filter. No-op when runtime.anyArmed === false.
+    const { results: filtered, stats } = filterScopedResults(
+      raw,
+      context,
+      runtime,
+      { scope: live.scope }
+    );
+
+    // Phase 4a-2.6 v9 — Codex 9th-pass LOW F6: surface a notice when
+    // the result set was constrained upstream of the post-filter.
+    // `dropped` only counts post-filter rejections; if the SQL
+    // pre-filter dropped channel rows or we skipped QMD because of
+    // a partial allowlist, the user still deserves to know "scope is
+    // active" even if the post-filter happens to drop zero.
+    //
+    // Codex 10th-pass LOW F6: the previous `if (sqlPreFilter || skipQmd)`
+    // condition was always truthy — `buildSqlPreFilter` returns a
+    // `{whereSql:"", params:[]}` object (not null) when the runtime
+    // isn't armed or the adapter is allow-all, so the notice fired on
+    // every armed-but-unconstrained search. Check the actual emitted
+    // clause AND that QMD-skip was meaningful (i.e. there was a QMD
+    // backend to skip).
+    const sqlActuallyConstrained = Boolean(sqlPreFilter.whereSql);
+    const qmdSkipMeaningful = skipQmd && qmdManager !== null;
+    if (sqlActuallyConstrained || qmdSkipMeaningful) {
+      stats.preFilteredOrSkipped = true;
+    }
+
+    // Trim back to the requested maxResults after over-fetch.
+    return { results: filtered.slice(0, cap), stats };
   } catch {
     // Total search failure — return empty, never crash
-    return [];
+    return { results: [], stats: { evaluated: false, total: 0, kept: 0, notVisible: 0, dropped: 0, byChannel: {}, modes: {}, operatorIsOwner: true } };
   }
 }
 
@@ -307,6 +502,39 @@ function _loadBootstrapFilesInner(): string {
   sections.push("This is critical — without it, the next session has no context about what happened.");
   sections.push("Do this proactively when the conversation feels like it's wrapping up.");
   sections.push("");
+
+  // -- Channel scope (when scope is CONFIGURED at startup, regardless of armed state)
+  // Codex round 1 MEDIUM #3: the agent should always know the
+  // MCP-vs-filesystem caveat once the user has touched scope config —
+  // even mode=off, even shadow (which observes but doesn't filter).
+  // Live-config doesn't reload bootstrap instructions, so we'd have a
+  // stale-instruction window if we only injected when armed.
+  try {
+    const cfgForScope = loadConfig(WORKSPACE);
+    if (cfgForScope.scope !== undefined) {
+      const runtimeForScope = detectScopeRuntime(cfgForScope, WORKSPACE);
+      const armed = runtimeForScope.anyArmed;
+      sections.push("## Channel scope\n");
+      sections.push(
+        "Per-channel scope (per `agent-config.json: scope.*`) filters MCP `memory_search`, `memory_get`, `memory_context`, and the QMD path when a channel is `mode: enforce` AND armed. `mode: shadow` observes/logs but does NOT drop results. `mode: off` means no filtering for that channel."
+      );
+      sections.push(
+        "Crucially, scope does NOT cover native `Read`, `Grep`, or direct SQLite reads over channel log files — those bypass scope by design. It's MCP-level filtering, not a filesystem sandbox."
+      );
+      if (armed) {
+        sections.push(
+          "At startup, at least one channel was armed. If the user asks whether their private chats are protected, answer accurately: scope filters tool outputs you generate via MCP; it doesn't stop a determined direct file read."
+        );
+      } else {
+        sections.push(
+          "At startup, no channel was armed (scope is configured but every channel is mode=off, or governance is unresolvable). Run `/agent:doctor` to see the live `scope-status` row."
+        );
+      }
+      sections.push("");
+    }
+  } catch {
+    // Non-fatal — agent still works without the note.
+  }
 
   // -- WebChat (only when HTTP bridge is on)
   if (httpBridge) {
@@ -538,8 +766,12 @@ function readPluginVersion(): string {
 function buildWatchdogPing(): WatchdogPingResponse {
   let plugins: string[] = [];
   try {
+    // Codex Phase 5 round-1 LOW #5: ChannelStatus.installed is the
+    // tri-state string `"yes" | "no" | "unknown" | "na"`, NOT a
+    // boolean — the prior `=== true` always returned false so the
+    // plugins list was silently empty.
     plugins = detectChannels()
-      .filter((c) => c.installed === true)
+      .filter((c) => c.installed === "yes")
       .map((c) => c.name);
   } catch {
     // Never fail the probe because of a detection error
@@ -584,6 +816,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "number",
             description: "Maximum results to return (default: 6)",
           },
+          requestEnvelopeToken: {
+            type: "string",
+            description:
+              "Phase 6 cross-plugin scope binding. When the current inbound came via claude-whatsapp, forward the `meta.requestEnvelopeToken` value from the inbound notification here so memory_search scopes results to the chat that triggered the call. Optional; omit for terminal / non-channel queries.",
+          },
         },
         required: ["query"],
       },
@@ -607,6 +844,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           lines: {
             type: "number",
             description: "Number of lines to read (default: 50)",
+          },
+          requestEnvelopeToken: {
+            type: "string",
+            description:
+              "Phase 6 cross-plugin scope binding (same as memory_search). Forward the token from the inbound notification when reading channel-derived paths under scope.",
           },
         },
         required: ["path"],
@@ -676,6 +918,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             enum: ["digest", "json"],
             description: "'digest' (default) returns a markdown block ready to drop into context. 'json' returns the structured result.",
+          },
+          requestEnvelopeToken: {
+            type: "string",
+            description:
+              "Phase 6 cross-plugin scope binding (same as memory_search). Forward the token from the inbound notification when the active context belongs to a scoped channel.",
           },
         },
         required: ["message"],
@@ -802,6 +1049,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             enum: ["auto", "whisper-cli", "openai-whisper"],
             description: "Force a specific backend (default: auto)",
+          },
+          requestEnvelopeToken: {
+            type: "string",
+            description:
+              "Phase 6 cross-plugin scope binding (same as memory_search). When transcribing audio that came through a scoped channel, forward the inbound's token so the abs-path gate respects per-chat scope.",
           },
         },
         required: ["audioPath"],
@@ -934,7 +1186,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "webchat_reply",
       description:
-        "Send a reply to the open WebChat browser over SSE. Use this to respond to WebChat messages. The message is delivered in real time and persisted in chat history.",
+        "Send a reply to the open WebChat browser over SSE. Use this to respond to WebChat messages. The message is delivered in real time and persisted in chat history. The `sessionId` MUST be the same UUID surfaced in the inbox entry — every browser tab has its own private session and a wrong sessionId routes the reply to the wrong user.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -942,8 +1194,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "The reply content (plain text or markdown)",
           },
+          sessionId: {
+            type: "string",
+            description:
+              "The session UUID v4 from the inbox entry. Copy it verbatim from the prompt; never invent or reuse one. The bridge rejects unknown sessions with delivered:false (the agent's reply is still saved).",
+          },
         },
-        required: ["message"],
+        required: ["message", "sessionId"],
       },
     },
     {
@@ -974,23 +1231,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
-    const results = searchMemory(query, maxResults);
+    const envelope = resolveEnvelopeFromArgs(params);
+    const { results, stats: scopeStats } = searchMemory(query, maxResults, {
+      envelope: envelope ?? undefined,
+    });
 
-    // Dream tracking (best-effort)
+    // Phase 4a-1 — recall tracking happens AFTER scope filtering so a
+    // denied chunk never seeds future dream promotions.
     trackRecall(query, results);
 
     const stats = memoryDB.stats();
     const backendLabel = qmdManager ? "QMD (vsearch)" : "FTS5+BM25";
 
+    const scopeLine = formatScopeNotice(scopeStats);
+
     if (results.length === 0) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `No results for: "${query}"\nBackend: ${backendLabel} | Index: ${stats.files} files, ${stats.chunks} chunks.`,
-          },
-        ],
-      };
+      const emptyText = scopeLine
+        ? `No results for: "${query}"\nBackend: ${backendLabel} | Index: ${stats.files} files, ${stats.chunks} chunks.\n${scopeLine}`
+        : `No results for: "${query}"\nBackend: ${backendLabel} | Index: ${stats.files} files, ${stats.chunks} chunks.`;
+      return { content: [{ type: "text", text: emptyText }] };
     }
 
     const formatted = results
@@ -1000,20 +1259,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       )
       .join("\n\n---\n\n");
 
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Found ${results.length} results for: "${query}" (${backendLabel} | ${stats.files} files, ${stats.chunks} chunks)\n\n${formatted}`,
-        },
-      ],
-    };
+    const header = `Found ${results.length} results for: "${query}" (${backendLabel} | ${stats.files} files, ${stats.chunks} chunks)`;
+    const fullText = scopeLine
+      ? `${header}\n${scopeLine}\n\n${formatted}`
+      : `${header}\n\n${formatted}`;
+
+    return { content: [{ type: "text", text: fullText }] };
   }
 
   if (name === "memory_get") {
     const filePath = String(params.path || "");
     const from = params.from ? Number(params.from) : undefined;
     const lineCount = params.lines ? Number(params.lines) : undefined;
+
+    // Phase 4a-1 — gate channel-derived paths against the active
+    // adapter. No-op when no channel is armed.
+    const live = getLiveConfig();
+    const runtime = detectScopeRuntime(live, WORKSPACE);
+    const envelope = resolveEnvelopeFromArgs(params);
+    const ctx = makeForegroundContext(
+      `req-${Date.now()}`,
+      envelope ? { envelope } : {}
+    );
+    const gate = assertCanReadPath(filePath, ctx, runtime, live.scope, WORKSPACE);
+    if (!gate.allowed) {
+      return {
+        content: [{ type: "text", text: `Error: ${gate.error}` }],
+        isError: true,
+      };
+    }
 
     const result = memoryDB.readFile(filePath, from, lineCount);
 
@@ -1083,7 +1357,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     result.promoted
                       .map(
                         (c) =>
-                          `- ${c.entry.path}#L${c.entry.startLine} — score: ${c.finalScore.toFixed(3)} (${c.entry.recallCount}x across ${c.entry.recallDays.length} days)`
+                          `- ${dreamEngine.redactPathForDisplay(c.entry.path)}#L${c.entry.startLine} — score: ${c.finalScore.toFixed(3)} (${c.entry.recallCount}x across ${c.entry.recallDays.length} days)`
                       )
                       .join("\n")
                   : "No entries met the promotion threshold.",
@@ -1139,6 +1413,70 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!key) {
         return {
           content: [{ type: "text", text: "Error: 'key' is required. Example: agent_config(action='set', key='memory.backend', value='qmd')" }],
+          isError: true,
+        };
+      }
+
+      // Codex 4th-pass CRITICAL 1 (v5): refuse all scope-tree writes
+      // and prototype-pollution segments via this MCP tool. v4 allowed
+      // ancestor-object writes (e.g. `key='scope', value='{...}'`)
+      // because the leaf check only inspected the dotted key, not the
+      // payload. v5 takes the conservative stance: NO scope writes via
+      // agent_config — the wizard's `Bash` path handles every key.
+      const cls = classifyAgentConfigKey(key);
+      if (cls === "scope") {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `Error: \`${key}\` cannot be set through agent_config. ` +
+                `Scope-tree writes (any key starting with \`scope\`) require out-of-band confirmation. ` +
+                `Use \`/agent:scope wizard\` — the wizard performs the change through a user-approved Bash edit. ` +
+                `See docs/channel-scope-compat.md.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      if (cls === "proto") {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `Error: \`${key}\` contains a forbidden path segment (__proto__/constructor/prototype) — refused.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      if (cls === "oversize") {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `Error: key is too long or too deep (max 256 chars / 16 segments / 64 chars per segment). Refused to prevent CPU/memory bloat.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      if (cls === "privileged") {
+        // Codex 6th-pass HIGH F-6-1: this key (e.g. `voice.outputDir`)
+        // becomes a trusted write root downstream, so flipping it from
+        // the agent's tool surface would let a prompt-injected agent
+        // self-elevate. Same out-of-band-confirmation gate as scope keys.
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `Error: \`${key}\` is a path-bearing key that becomes a trusted write root for voice output. ` +
+                `Refused via agent_config — change it through a Bash edit of agent-config.json (which prompts for permission).`,
+            },
+          ],
           isError: true,
         };
       }
@@ -1247,11 +1585,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
-    const result = getMemoryContext(message, (q, n) => searchMemory(q, n), {
-      maxResults: mcCfg.maxResults,
-      includeRecency: mcCfg.includeRecency,
-      halfLifeDays: mcCfg.halfLifeDays ?? live.memory.builtin?.halfLifeDays,
-    });
+    // Phase 4a-1 — getMemoryContext expects a SearchResult[] from its
+    // search callback, so we drop the scope stats here. The underlying
+    // searchMemory has already filtered (when armed); the digest the
+    // user sees is automatically scope-aware.
+    // Phase 6 — extract envelope once and thread it through every
+    // search callback invocation so the digest stays bound to the
+    // inbound that triggered memory_context.
+    const envelope = resolveEnvelopeFromArgs(params);
+    const result = getMemoryContext(
+      message,
+      (q, n) =>
+        searchMemory(q, n, envelope ? { envelope } : {}).results,
+      {
+        maxResults: mcCfg.maxResults,
+        includeRecency: mcCfg.includeRecency,
+        halfLifeDays: mcCfg.halfLifeDays ?? live.memory.builtin?.halfLifeDays,
+      }
+    );
 
     if (format === "json") {
       return {
@@ -1443,6 +1794,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         isError: true,
       };
     }
+    // Phase 4a-2 — gate channel-derived audio paths. Codex Q2 fix:
+    // `voice_transcribe`'s `audioPath` is documented as an absolute
+    // filesystem path, so we MUST reverse-map it through configured
+    // `memory.extraPaths` before calling `assertCanReadPath` (which
+    // only knows about logical `extra:` paths). The whole block is
+    // gated on `runtime.anyArmed` — zero-diff for users without opt-in.
+    const liveForGate = getLiveConfig();
+    const runtimeForGate = detectScopeRuntime(liveForGate, WORKSPACE);
+    if (runtimeForGate.anyArmed || runtimeForGate.anyEnforceConfigured) {
+      const envelope = resolveEnvelopeFromArgs(params);
+      const ctxForGate = makeForegroundContext(
+        `req-${Date.now()}`,
+        envelope ? { envelope } : {}
+      );
+      const extraPaths = liveForGate.memory?.extraPaths ?? [];
+      const mapping = mapAbsoluteToLogical(audioPath, extraPaths);
+      if (mapping?.kind === "deny") {
+        // Textual prefix matched a known channel root but realpath
+        // failed — fail closed without disk read.
+        return {
+          content: [
+            { type: "text", text: sanitizeDenied(mapping.channel, audioPath) },
+          ],
+          isError: true,
+        };
+      }
+      const pathToGate =
+        mapping?.kind === "logical" ? mapping.path : audioPath;
+      const gateResult = assertCanReadPath(
+        pathToGate,
+        ctxForGate,
+        runtimeForGate,
+        liveForGate.scope,
+        WORKSPACE
+      );
+      if (!gateResult.allowed) {
+        return {
+          content: [{ type: "text", text: gateResult.error }],
+          isError: true,
+        };
+      }
+    }
     const result = await voiceTranscribe(audioPath, {
       config: voiceCfg,
       preferred: (params.backend as any) || undefined,
@@ -1587,6 +1980,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ],
       };
     }
+    // Phase 4a-2 — scaffolding for the webchat scope adapter. Today
+    // the runtime never arms `webchat` because no adapter is registered
+    // (Phase 4b adds the session model + adapter), so this branch is
+    // unreachable at runtime. The shape is in place so a future
+    // armed+enforce webchat can fail closed without touching the
+    // inbox content. Zero-behavior-change for users without opt-in.
+    const liveForInbox = getLiveConfig();
+    const runtimeForInbox = detectScopeRuntime(liveForInbox, WORKSPACE);
+    const wc = runtimeForInbox.channels.webchat;
+    if (wc?.armed === true && wc.mode === "enforce") {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "scope-denied: webchat:armed-without-adapter",
+          },
+        ],
+        isError: true,
+      };
+    }
     const limit = Number(params.limit) || 20;
     const messages = httpBridge.drainChatInbox(limit);
 
@@ -1595,14 +2008,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     const formatted = messages
-      .map((m, i) => `[${i + 1}] ${m.ts} — ${m.content}`)
+      .map(
+        (m, i) =>
+          `[${i + 1}] ${m.ts} — [sessionId=${m.sessionId}] ${m.content}`
+      )
       .join("\n");
 
     return {
       content: [
         {
           type: "text",
-          text: `${messages.length} pending WebChat message(s):\n\n${formatted}\n\nReply to each using webchat_reply.`,
+          text: `${messages.length} pending WebChat message(s):\n\n${formatted}\n\nReply to each using webchat_reply with the matching sessionId. Copy the sessionId VERBATIM — every browser tab has its own private session.`,
         },
       ],
     };
@@ -1621,18 +2037,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
     const message = String(params.message || "").trim();
+    const sessionId = String(params.sessionId || "");
     if (!message) {
       return {
         content: [{ type: "text", text: "Error: message is required" }],
         isError: true,
       };
     }
-    const msg = httpBridge.sendChatReply(message);
+    if (!sessionId) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Error: sessionId is required. Copy it verbatim from the inbox entry's [sessionId=...] tag.",
+          },
+        ],
+        isError: true,
+      };
+    }
+    let result;
+    try {
+      result = httpBridge.sendChatReply(message, sessionId);
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: invalid sessionId (${(err as Error).message}). Copy the sessionId verbatim from the inbox entry.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    const { message: msg, delivered } = result;
+    const status = delivered
+      ? `delivered to WebChat session ${sessionId.slice(0, 8)}…`
+      : `saved (no live SSE client for session ${sessionId.slice(0, 8)}… — reply will surface on reconnect)`;
     return {
       content: [
         {
           type: "text",
-          text: `Reply sent to WebChat (id: ${msg.id}, ${httpBridge.sseClientCount()} connected client(s)).`,
+          text: `Reply ${status} (id: ${msg.id}).`,
         },
       ],
     };
@@ -1689,6 +2134,7 @@ if (httpBridge) {
             id: msg.id,
             ts: msg.ts,
             content: msg.content,
+            sessionId: msg.sessionId,
           },
         },
       });
@@ -1699,3 +2145,17 @@ if (httpBridge) {
     // Logged inside HttpBridge — nothing else to do
   });
 }
+
+// Phase 5: lifecycle watcher on the global plugins state file.
+// Closes the Phase 4a-1 stale-armed window where a 5s runtime cache
+// could outlive a `/agent:scope disable` or a plugin uninstall.
+//
+// We deliberately do NOT install SIGINT/SIGTERM handlers here. Adding
+// them would override Node's default exit behavior and could leave
+// the process alive if other code in the runtime registers handlers
+// that don't re-raise. Codex round-1 HIGH for Phase 5 v2: the watcher
+// uses `fs.watch({ persistent: false })` and `.unref()` on the
+// debounce timer, so neither the watcher nor the timer keeps the
+// event loop alive. The OS reclaims the watcher fd on exit.
+const _scopeLifecycleHandle = startLifecycleWatcher();
+void _scopeLifecycleHandle;

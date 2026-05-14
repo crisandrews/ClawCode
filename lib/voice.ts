@@ -439,6 +439,140 @@ export function generateOutputPath(config?: VoiceConfig, ext = "mp3"): string {
   return path.join(dir, `clawcode-voice-${stamp}-${rand}.${ext}`);
 }
 
+/**
+ * Phase 4a-2.5 v6 — Codex 5th-pass CRITICAL + HIGH: combined hardening
+ * of `voice_speak` outputPath. v5 only refused string-prefix matches
+ * against the trust directory; Codex 5th pass found two CRITICAL
+ * bypasses and one HIGH:
+ *
+ *   1. CRITICAL — case-insensitive filesystems (macOS APFS by default,
+ *      Windows NTFS): `~/.Claude/Agent/Scope-Trust/whatsapp-owner`
+ *      refers to the same inode as the lowercase trust path but the
+ *      v5 string-prefix check was case-sensitive.
+ *   2. CRITICAL — symlinks: a symlink at `/tmp/foo -> ~/.claude/agent/scope-trust`
+ *      gives `/tmp/foo/whatsapp-owner` a lexical path that doesn't
+ *      start with the trust-dir prefix, but the FS would write into
+ *      the trust dir anyway.
+ *   3. HIGH — arbitrary clobber: even outside the trust dir, the v5
+ *      check let the agent write audio bytes to `agent-config.json`,
+ *      `~/.ssh/authorized_keys`, hook files, etc. The trust dir is
+ *      the unique elevation surface but config-clobber and ssh-key
+ *      injection are still meaningful damage.
+ *
+ * v6 takes the conservative stance: voice output MUST land under one
+ * of an explicit allowlist of roots:
+ *   - `config.outputDir` (the configured per-instance output dir)
+ *   - `os.tmpdir()` (system temp)
+ *   - `/tmp` (Linux/macOS hard-coded fallback for back-compat)
+ *
+ * The check canonicalizes both sides via `realpathSync.native` of the
+ * deepest existing ancestor (the file itself usually doesn't exist
+ * yet — the TTS writer creates it), then does a case-folded
+ * comparison on darwin/win32 and a case-sensitive comparison on
+ * linux/other. This catches symlinked ancestors AND case-quirk
+ * variants of the trust dir, since both resolve to the canonical path.
+ *
+ * Defense in depth: a final explicit deny against the trust dir's
+ * canonical realpath is added even though the allowlist alone should
+ * preclude it (in case a user configures `outputDir` to something
+ * weird).
+ */
+export function assertSafeOutputPath(
+  outputPath: string,
+  config?: VoiceConfig
+): void {
+  const expanded = expandTilde(outputPath);
+  const resolved = path.resolve(expanded);
+  const canonical = canonicalizeExisting(resolved);
+
+  // Allowed roots — canonicalized once each.
+  const allowedRoots = [
+    config?.outputDir,
+    os.tmpdir(),
+    "/tmp",
+  ]
+    .filter((r): r is string => typeof r === "string" && r.length > 0)
+    .map((r) => canonicalizeExisting(path.resolve(expandTilde(r))));
+
+  let allowed = false;
+  for (const root of allowedRoots) {
+    if (isUnder(canonical, root)) {
+      allowed = true;
+      break;
+    }
+  }
+
+  if (!allowed) {
+    throw new Error(
+      `voice_speak outputPath ${outputPath} resolves to ${canonical} which is outside the allowed output roots (${allowedRoots.join(", ")}) — refused.`
+    );
+  }
+
+  // Defense-in-depth: explicit deny on the trust dir even if the
+  // allowlist somehow contained it.
+  const trustDirEnv = process.env.CLAW_SCOPE_TRUST_DIR;
+  const trustDirRaw = trustDirEnv ?? path.join(os.homedir(), ".claude", "agent", "scope-trust");
+  const trustDir = canonicalizeExisting(path.resolve(expandTilde(trustDirRaw)));
+
+  if (isUnder(canonical, trustDir)) {
+    throw new Error(
+      `voice_speak outputPath ${outputPath} canonicalizes under the scope-trust directory — refused.`
+    );
+  }
+}
+
+/**
+ * Resolve symlinks on every existing ancestor. Walks up until an
+ * existing prefix is found, realpaths it, then re-joins the
+ * non-existing tail. Mirrors how the FS will treat the path when the
+ * TTS writer calls `mkdirSync(dirname, recursive: true)` followed by
+ * `writeFileSync(file, ...)`.
+ */
+function canonicalizeExisting(absPath: string): string {
+  const segments = absPath.split(path.sep).filter(Boolean);
+  let cursor = path.isAbsolute(absPath) ? path.sep : "";
+  let resolved = cursor;
+  for (let i = 0; i < segments.length; i++) {
+    const candidate = path.join(resolved || cursor, segments[i]);
+    try {
+      const real = fs.realpathSync.native(candidate);
+      resolved = real;
+    } catch {
+      // Stop at first non-existing component; append the rest verbatim.
+      const tail = segments.slice(i).join(path.sep);
+      return path.join(resolved, tail);
+    }
+  }
+  return resolved;
+}
+
+/**
+ * Case-folded `path.startsWith` for filesystems where the OS treats
+ * paths case-insensitively. macOS (darwin) and Windows (win32) fold;
+ * Linux (and other unices) compare exact.
+ */
+function isUnder(child: string, root: string): boolean {
+  const childN = normalizeForFs(child);
+  const rootN = normalizeForFs(root);
+  if (childN === rootN) return true;
+  return childN.startsWith(rootN + path.sep);
+}
+
+function normalizeForFs(p: string): string {
+  if (process.platform === "darwin" || process.platform === "win32") {
+    return p.toLowerCase();
+  }
+  return p;
+}
+
+function expandTilde(p: string): string {
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/") || p.startsWith("~\\")) {
+    return path.join(os.homedir(), p.slice(2));
+  }
+  return p;
+}
+
 // ---------------------------------------------------------------------------
 // Side-effectful execution (not in unit tests — skill/server invokes these)
 // ---------------------------------------------------------------------------
@@ -476,6 +610,21 @@ export async function speak(
 
   const ext = backend === "say" ? "aiff" : "mp3";
   const outputPath = opts.outputPath ?? generateOutputPath(opts.config, ext);
+
+  // Phase 4a-2.5 v6 — Codex 5th-pass CRITICAL + HIGH: reject any
+  // outputPath that doesn't canonicalize under one of the allowlisted
+  // roots (config.outputDir / os.tmpdir / /tmp) AND defense-in-depth
+  // refuse the trust dir specifically. Closes the case-folded +
+  // symlinked bypass and the agent-config / ssh-key clobber surface.
+  try {
+    assertSafeOutputPath(outputPath, opts.config);
+  } catch (err) {
+    return {
+      ok: false,
+      backend,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 
   try {
     // Ensure output dir exists

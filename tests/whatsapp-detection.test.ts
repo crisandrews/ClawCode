@@ -117,6 +117,41 @@ check("detectWhatsappProjectDir: falls back to first local when cwd doesn't matc
   }
 });
 
+check("detectWhatsappProjectDir: cwdExactMatchOnly disables fallback (Codex P2)", () => {
+  const fx = makeFixture();
+  try {
+    const other = path.join(fx.home, "project-a");
+    writeInstalledPlugins(fx.home, [
+      { scope: "local", projectPath: other },
+    ]);
+    // Without opt-in: fallback returns the unrelated install.
+    const fallbackGot = detectWhatsappProjectDir(fx.home, fx.cwd);
+    assert(fallbackGot === other, "default fallback still works");
+    // With opt-in: returns undefined since no entry matches cwd.
+    const exactOnly = detectWhatsappProjectDir(fx.home, fx.cwd, {
+      cwdExactMatchOnly: true,
+    });
+    assert(
+      exactOnly === undefined,
+      `expected undefined under cwdExactMatchOnly, got ${exactOnly}`
+    );
+    // With opt-in AND a matching cwd: still returns the match.
+    writeInstalledPlugins(fx.home, [
+      { scope: "local", projectPath: other },
+      { scope: "local", projectPath: fx.cwd },
+    ]);
+    const exactMatch = detectWhatsappProjectDir(fx.home, fx.cwd, {
+      cwdExactMatchOnly: true,
+    });
+    assert(
+      exactMatch === fx.cwd,
+      `expected ${fx.cwd} under cwdExactMatchOnly with match, got ${exactMatch}`
+    );
+  } finally {
+    fx.cleanup();
+  }
+});
+
 check("detectWhatsappProjectDir: returns undefined when no local install", () => {
   const fx = makeFixture();
   try {

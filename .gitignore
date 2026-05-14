@@ -16,6 +16,8 @@ memory/.memory.sqlite
 memory/.memory.sqlite-wal
 memory/.memory.sqlite-shm
 memory/.dreams/
+memory/.scoped/
+**/memory/.scoped/
 memory/.crons-lock/
 memory/.reconciling
 memory/.cron-last-stamp

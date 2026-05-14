@@ -6,6 +6,38 @@
 import fs from "fs";
 import path from "path";
 
+/**
+ * Channel-scope per-channel knob. ABSENCE means `mode: "off"` —
+ * users without this block in `agent-config.json` see zero behavior
+ * change. Per the per-canal opt-in design (Phase 3+).
+ */
+export interface ChannelScopeConfig {
+  /** Default `"off"`. `"shadow"` collects stats without filtering;
+   *  `"enforce"` filters. */
+  mode?: "off" | "shadow" | "enforce";
+  /** Foreground identity preference. Default `"auto"`. */
+  identity?: "auto" | "owner" | "guest";
+  /** Background lane (dreams + indexer) identity per channel. */
+  background?: { identity?: "deny" | "system-owner" };
+}
+
+export interface WhatsappScopeConfig extends ChannelScopeConfig {
+  /** Override path to `access.json`. Default `"auto"` (resolve via
+   *  channel-detector). */
+  accessJsonPath?: "auto" | string;
+  /** When true, only honor a paired install whose projectPath
+   *  exactly matches the launch cwd (no first-local fallback). */
+  cwdExactMatchOnly?: boolean;
+}
+
+export interface ScopeConfigTree {
+  whatsapp?: WhatsappScopeConfig;
+  telegram?: ChannelScopeConfig;
+  discord?: ChannelScopeConfig;
+  imessage?: ChannelScopeConfig;
+  webchat?: ChannelScopeConfig;
+}
+
 export interface AgentConfig {
   /** HTTP bridge — optional local HTTP server for webhooks, status, and API access */
   http?: {
@@ -131,6 +163,12 @@ export interface AgentConfig {
       mmrLambda?: number;
     };
   };
+  /**
+   * Channel-scope per-channel opt-in. ABSENT block = all channels
+   * `mode: "off"` = zero behavior change for users who haven't run
+   * `/agent:scope wizard`. See `docs/channel-scope-compat.md`.
+   */
+  scope?: ScopeConfigTree;
 }
 
 const DEFAULT_CONFIG: AgentConfig = {
@@ -171,6 +209,9 @@ export function loadConfig(pluginRoot: string): AgentConfig {
           ...parsed.memory?.builtin,
         },
       },
+      // Phase 3 — scope.* deep-merge. Absent block stays undefined
+      // so detectScopeRuntime() short-circuits to anyArmed=false.
+      scope: parsed.scope ? mergeScopeConfig(parsed.scope) : undefined,
     };
   } catch {
     return DEFAULT_CONFIG;
@@ -184,4 +225,147 @@ export function saveConfig(pluginRoot: string, config: AgentConfig): void {
 
 export function configExists(pluginRoot: string): boolean {
   return fs.existsSync(path.join(pluginRoot, CONFIG_FILENAME));
+}
+
+/**
+ * Phase 3 — channel-scope deep-merge. Each channel keeps the user's
+ * settings; missing fields default per-channel:
+ *   - `mode = "off"` (no opt-in)
+ *   - `identity = "auto"`
+ *   - `background.identity = "deny"` (no scoped dream/index work)
+ *
+ * Returns undefined when the input is missing/empty so callers can
+ * short-circuit on `if (!config.scope) return ...`.
+ */
+// Codex Phase 5 round-2 MEDIUM: invalid `mode` strings (e.g. typo
+// `"enfroce"`) used to fall through unvalidated. WhatsApp would arm
+// on any non-"off" value but the filter only enforces on exact
+// "enforce" → silent enforcement bypass on typo. v3 validates each
+// scope-config string against its allowed set and fail-closes to
+// the safest default. The user gets accurate doctor warnings via the
+// existing scope-status row, so they can spot a typo without silent
+// drift.
+const VALID_MODES = new Set<ChannelScopeConfig["mode"]>(["off", "shadow", "enforce"]);
+const VALID_IDENTITIES = new Set<ChannelScopeConfig["identity"]>([
+  "auto",
+  "owner",
+  "guest",
+]);
+const VALID_BG_IDENTITIES = new Set(["deny", "system-owner"]);
+
+function coerceMode(v: unknown): ChannelScopeConfig["mode"] {
+  return typeof v === "string" && VALID_MODES.has(v as ChannelScopeConfig["mode"])
+    ? (v as ChannelScopeConfig["mode"])
+    : "off";
+}
+function coerceIdentity(v: unknown): ChannelScopeConfig["identity"] {
+  return typeof v === "string" &&
+    VALID_IDENTITIES.has(v as ChannelScopeConfig["identity"])
+    ? (v as ChannelScopeConfig["identity"])
+    : "auto";
+}
+function coerceBgIdentity(v: unknown): "deny" | "system-owner" {
+  return typeof v === "string" && VALID_BG_IDENTITIES.has(v)
+    ? (v as "deny" | "system-owner")
+    : "deny";
+}
+
+/**
+ * Codex Phase 5 round-3 LOW: `coerceMode` / `coerceIdentity` /
+ * `coerceBgIdentity` silently swallow typos. Without a separate path
+ * the user's `"enfroce"` becomes `"off"` and the doctor scope-status
+ * row just reports `mode: off` — losing the diagnostic that something
+ * is wrong. This helper walks the raw scope tree (post-JSON-parse,
+ * pre-merge) and returns a list of invalid-string warnings keyed by
+ * channel + field. The doctor pulls these into scope-status so the
+ * user sees `whatsapp: invalid mode "enfroce" — fail-closed to off`
+ * instead of the scrubbed value.
+ */
+export interface ScopeConfigWarning {
+  channel: string;
+  field: string;
+  raw: string;
+}
+
+export function collectScopeConfigWarnings(
+  pluginRoot: string
+): ScopeConfigWarning[] {
+  const configPath = path.join(pluginRoot, CONFIG_FILENAME);
+  let parsed: { scope?: unknown };
+  try {
+    const raw = fs.readFileSync(configPath, "utf-8");
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const out: ScopeConfigWarning[] = [];
+  const scope = parsed?.scope;
+  if (!scope || typeof scope !== "object") return out;
+  for (const [channel, v] of Object.entries(scope as Record<string, unknown>)) {
+    if (!v || typeof v !== "object") continue;
+    const cv = v as Record<string, unknown>;
+    if (
+      typeof cv.mode === "string" &&
+      !VALID_MODES.has(cv.mode as ChannelScopeConfig["mode"])
+    ) {
+      out.push({ channel, field: "mode", raw: cv.mode });
+    }
+    if (
+      typeof cv.identity === "string" &&
+      !VALID_IDENTITIES.has(cv.identity as ChannelScopeConfig["identity"])
+    ) {
+      out.push({ channel, field: "identity", raw: cv.identity });
+    }
+    const bg = (cv.background as { identity?: unknown } | undefined)?.identity;
+    if (typeof bg === "string" && !VALID_BG_IDENTITIES.has(bg)) {
+      out.push({ channel, field: "background.identity", raw: bg });
+    }
+  }
+  return out;
+}
+
+function mergeScopeConfig(raw: unknown): ScopeConfigTree | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const out: ScopeConfigTree = {};
+  for (const channel of [
+    "whatsapp",
+    "telegram",
+    "discord",
+    "imessage",
+    "webchat",
+  ] as const) {
+    const v = r[channel];
+    if (!v || typeof v !== "object") continue;
+    const cv = v as Record<string, unknown>;
+    const merged: ChannelScopeConfig = {
+      mode: coerceMode(cv.mode),
+      identity: coerceIdentity(cv.identity),
+      background: {
+        identity: coerceBgIdentity(
+          (cv.background as { identity?: unknown })?.identity
+        ),
+      },
+    };
+    if (channel === "whatsapp") {
+      const w = v as Record<string, unknown>;
+      // Codex round-1 MEDIUM 1: coerce non-string accessJsonPath to "auto"
+      // so a misconfigured object/null/array doesn't bubble through to
+      // resolveAccessPath → path.dirname(non-string) → throw on the
+      // search hot path.
+      const rawAccess = w.accessJsonPath;
+      const accessJsonPath: WhatsappScopeConfig["accessJsonPath"] =
+        typeof rawAccess === "string" ? rawAccess : "auto";
+      const wa: WhatsappScopeConfig = {
+        ...merged,
+        accessJsonPath,
+        cwdExactMatchOnly:
+          typeof w.cwdExactMatchOnly === "boolean" ? w.cwdExactMatchOnly : false,
+      };
+      out.whatsapp = wa;
+    } else {
+      out[channel] = merged;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }

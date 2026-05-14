@@ -184,6 +184,26 @@ export function cloneToTemp(source: ParsedSource): string {
   return tempDir;
 }
 
+/**
+ * Codex 3rd-pass CRITICAL 3: skill names must be safe directory
+ * basenames. Without this guard, a skill with `name: ../agent/scope-trust`
+ * could escape `~/.claude/skills/` and plant arbitrary files (e.g.
+ * the scope owner-trust marker that Phase 4a-2.5 v3 added). The
+ * permitted shape is the same as a slug — letters, digits, hyphens,
+ * dots, underscores — and explicitly NOT `.` or `..` even though
+ * those would otherwise pass the regex.
+ */
+export function isSafeSkillName(name: unknown): name is string {
+  if (typeof name !== "string") return false;
+  if (name.length === 0 || name.length > 128) return false;
+  if (name === "." || name === "..") return false;
+  // No path separators, no leading/trailing dots, no control chars.
+  if (/[\\/\0]/.test(name)) return false;
+  // Slug-style allowed set.
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) return false;
+  return true;
+}
+
 function copyDirSync(src: string, dest: string) {
   fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
@@ -543,6 +563,21 @@ export function install(
 
     const fm = detected.frontmatter!;
     const name = fm.name;
+
+    // Codex 3rd-pass CRITICAL 3: validate skill name as a safe basename.
+    // Without this, a skill named `../agent/scope-trust` escapes the
+    // skills root and lets `copyDirSync` plant arbitrary files in
+    // `~/.claude/agent/...` — including the scope-trust marker that
+    // `isOwnerTrusted` accepts. Reject anything that isn't a plain
+    // slug-style identifier.
+    if (!isSafeSkillName(name)) {
+      return {
+        ok: false,
+        reason: `Invalid skill name "${name}": must contain only letters, digits, hyphens, dots, and underscores; cannot be "." or ".." or empty`,
+        format: detected,
+      };
+    }
+
     const requirements = checkRequirements(fm);
     const warnings: string[] = [];
 
@@ -577,6 +612,23 @@ export function install(
 
     const targetRoot = scopeDir(workspace, scope);
     const targetDir = path.join(targetRoot, name);
+
+    // Codex 3rd-pass CRITICAL 3 (defense in depth): even if name passed
+    // the slug check, ensure the resolved targetDir stays under
+    // targetRoot. Catches OS-specific quirks (e.g. NULs, unicode) that
+    // slip the name regex but get normalized to a path that escapes.
+    const resolvedRoot = path.resolve(targetRoot);
+    const resolvedTarget = path.resolve(targetDir);
+    if (
+      resolvedTarget !== path.join(resolvedRoot, name) ||
+      !resolvedTarget.startsWith(resolvedRoot + path.sep)
+    ) {
+      return {
+        ok: false,
+        reason: `Skill name "${name}" resolves outside the skills root (${resolvedRoot}). Refusing to install.`,
+        format: detected,
+      };
+    }
 
     if (fs.existsSync(targetDir) && !opts.force) {
       return {
@@ -672,10 +724,39 @@ export function remove(
   name: string,
   opts: RemoveOptions = {}
 ): RemoveResult {
+  // Phase 4a-2.5 v5 — Codex 4th-pass HIGH 1: validate skill name as a
+  // safe basename before any filesystem operation. v4 only validated
+  // in `install`; the agent could still pass `name = "../agent-config.json"`
+  // or `"../agent/scope-trust/whatsapp-owner"` through `skill_remove`
+  // (the MCP handler exposes `confirm: boolean` so `rmSync` runs on
+  // attacker-chosen paths). Blocks arbitrary deletion of workspace
+  // files and the trust marker itself.
+  if (!isSafeSkillName(name)) {
+    return {
+      ok: false,
+      reason: `Invalid skill name "${name}": must contain only letters, digits, hyphens, dots, and underscores; cannot be "." or ".." or empty`,
+    };
+  }
+
   const scopes: InstallScope[] = opts.scope ? [opts.scope] : ["plugin", "project", "user"];
   for (const scope of scopes) {
     const dir = scopeDir(workspace, scope);
     const target = path.join(dir, name);
+
+    // Defense-in-depth: even if name passed the slug check, ensure
+    // the resolved target stays under the scope dir.
+    const resolvedRoot = path.resolve(dir);
+    const resolvedTarget = path.resolve(target);
+    if (
+      resolvedTarget !== path.join(resolvedRoot, name) ||
+      !resolvedTarget.startsWith(resolvedRoot + path.sep)
+    ) {
+      return {
+        ok: false,
+        reason: `Skill name "${name}" resolves outside the skills root (${resolvedRoot}). Refusing to remove.`,
+      };
+    }
+
     if (!fs.existsSync(target)) continue;
 
     const skill: InstalledSkill = {

@@ -64,7 +64,8 @@ Coming from OpenClaw? `/agent:import` brings your agent's personality, memory, s
 - **[Community skills](#community-skills)** — install from GitHub with `owner/repo@branch#subdir`. OS + dependency validation.
 - **[Always-on](#always-on-service)** — launchd / systemd service. Enables dreaming + heartbeat 24/7.
 - **[Webhooks](#webhooks)** — external systems (Cloudflare Workers, GitHub Actions, CI/CD, IoT) can POST events to the agent via HTTP. The agent processes them like any other message.
-- **[Doctor](#diagnostics)** — 9 health checks (config, identity, memory, SQLite, QMD, bootstrap, HTTP, messaging, dreaming). `--fix` auto-repairs safe issues.
+- **[Channel scope](#channel-scope)** — opt-in per-channel privacy layer. When you pair WhatsApp, you can choose: agent acts as owner (sees all chats), guest (sees nothing channel-derived), or auto (owner-only ceiling). Default is off — zero behavior change for users who don't opt in.
+- **[Doctor](#diagnostics)** — 9+ health checks (config, identity, memory, SQLite, QMD, bootstrap, HTTP, messaging, dreaming, scope). `--fix` auto-repairs safe issues.
 - **[Terse by design](#how-it-works)** — the agent acts, doesn't narrate. Confirmations in 1-2 lines, no preambles, no recaps.
 
 ## [Prerequisites](#prerequisites)
@@ -193,6 +194,8 @@ agent_config(action='set', key='http.enabled', value='true')
 /mcp
 ```
 
+Every browser tab gets its own `sessionId` (UUID v4, persisted in `localStorage`) that partitions per-session chat history and live agent replies — two browsers sharing the same `http.token` cannot read each other's conversations. `sessionId` is a privacy partition; `http.token` remains the auth boundary.
+
 Full details: [`docs/webchat.md`](docs/webchat.md) · [`docs/http-bridge.md`](docs/http-bridge.md)
 
 ### [Messaging channels](#messaging-channels)
@@ -206,6 +209,28 @@ Reach your agent from WhatsApp, Telegram, Discord, iMessage, or Slack. Each mess
 Slash commands work from any channel — `/status`, `/help`, `/whoami`, `/new`, `/compact` all respond whether the user is in the CLI terminal or chatting via WhatsApp. Formatting adapts automatically (`*bold*` for WhatsApp, `**bold**` for Telegram, standard markdown for CLI).
 
 Full details: [`docs/channels.md`](docs/channels.md)
+
+### [Channel scope](#channel-scope)
+
+When the agent indexes messaging-channel logs into its memory (WhatsApp via `claude-whatsapp`), it can apply per-channel scope filtering so the agent only sees what the operator is allowed to see — mirroring the upstream plugin's own access governance.
+
+**Default is off.** Users who don't opt in see no behavior change.
+
+To opt in:
+
+```
+/agent:scope wizard
+```
+
+The wizard walks through: which channel, mode (`shadow` = log only, `enforce` = filter), and identity (`owner` = sees all, `guest` = sees nothing channel-derived, `auto` = owner-only ceiling). `owner` mode requires an out-of-band trust file you create via Bash — the agent cannot grant itself owner privileges.
+
+Important caveats:
+
+- **MCP scope is not a filesystem sandbox.** Native `Read`, `Grep`, or direct SQLite over channel log files always bypass the scope filter by design. Hard isolation lives at the OS/filesystem layer.
+- The filter covers MCP tools (`memory_search`, `memory_get`, `memory_context`, `dream`, `voice_transcribe`, `chat_inbox_read`).
+- A separate per-chat indexer reads upstream `messages.db` read-only and stores chat-id columns locally so per-chat allowlists work.
+
+Full details: [`docs/channel-scope-compat.md`](docs/channel-scope-compat.md) · [`PRIVACY.md`](PRIVACY.md#channel-scope-per-channel-opt-in)
 
 ### [Importing agents](#importing-agents)
 
@@ -276,6 +301,7 @@ Full details: [`docs/crons.md`](docs/crons.md)
 | `/agent:import [id]` | Import an existing agent (personality + memory + skills + crons) |
 | `/agent:doctor [--fix]` | Diagnose agent health. `--fix` applies safe auto-repairs |
 | `/agent:settings` | View/modify agent config (guided) |
+| `/agent:scope` | Channel-scope opt-in: `wizard`, `status`, `enable`, `disable`, `audit`, `test` |
 | `/agent:skill install\|list\|remove` | Install community skills from GitHub |
 | `/agent:channels` | Messaging channel status and launch command |
 | `/agent:service install\|status\|uninstall\|logs` | Always-on background service |

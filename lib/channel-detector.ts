@@ -24,7 +24,12 @@ export type ChannelName =
   | "discord"
   | "imessage"
   | "slack"
-  | "fakechat";
+  | "fakechat"
+  // `webchat` is a scope-only channel. It has no CHANNEL_REGISTRY entry
+  // (not launchable as a Claude Code plugin — it's the in-process HTTP
+  // bridge). Listed here so `lib/scope/*` can use a single ChannelName
+  // type without secondary union games.
+  | "webchat";
 
 export type ChannelKind =
   | "development" // requires --dangerously-load-development-channels
@@ -344,10 +349,19 @@ function resolveHome(p: string, home: string): string {
  *
  * Exported so `detectWhatsappAudio` in `lib/voice.ts` can resolve the
  * same path without duplicating the logic.
+ *
+ * Phase 3 — `cwdExactMatchOnly`: when `true`, only return a path when
+ * the launch cwd exactly matches a local install's `projectPath`.
+ * Disables the "first local entry fallback" that otherwise picks an
+ * arbitrary install whose cwd doesn't match. The fallback exists for
+ * single-install convenience, but in multi-project setups it can
+ * surface stale WA channel state. Opt-in via
+ * `config.scope.whatsapp.cwdExactMatchOnly = true`.
  */
 export function detectWhatsappProjectDir(
   home: string,
-  cwd: string
+  cwd: string,
+  options: { cwdExactMatchOnly?: boolean } = {}
 ): string | undefined {
   try {
     const f = path.join(home, ".claude", "plugins", "installed_plugins.json");
@@ -360,6 +374,7 @@ export function detectWhatsappProjectDir(
       (e) => e.scope === "local" && e.projectPath === cwd
     );
     if (exact?.projectPath) return exact.projectPath;
+    if (options.cwdExactMatchOnly) return undefined;
     const firstLocal = entries.find(
       (e) => e.scope === "local" && e.projectPath
     );

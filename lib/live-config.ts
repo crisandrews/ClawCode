@@ -18,6 +18,7 @@
 import fs from "fs";
 import path from "path";
 import { loadConfig, type AgentConfig } from "./config.ts";
+import { PRIVILEGED_PATH_KEYS } from "./scope/agent-config-guard.ts";
 
 // ---------------------------------------------------------------------------
 // Keys whose values are captured at startup and cannot be hot-reloaded.
@@ -33,7 +34,7 @@ export const CRITICAL_KEYS = [
   "http.token",
 ] as const;
 
-export type CriticalKey = (typeof CRITICAL_KEYS)[number];
+export type CriticalKey = (typeof CRITICAL_KEYS)[number] | string;
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -155,6 +156,25 @@ function getByPath(obj: unknown, keyPath: string): unknown {
   return node;
 }
 
+/**
+ * Phase 4a-2.5 v8 — Codex 7th-pass MEDIUM F3 helper: set a deep
+ * dotted-path on an object, creating intermediate objects as needed.
+ * Used to preserve privileged-key values from the previous live config
+ * when the on-disk config tries to change them.
+ */
+function setByPath(obj: any, keyPath: string, value: unknown): void {
+  const parts = keyPath.split(".");
+  let node = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const p = parts[i];
+    if (node[p] === null || node[p] === undefined || typeof node[p] !== "object") {
+      node[p] = {};
+    }
+    node = node[p];
+  }
+  node[parts[parts.length - 1]] = value;
+}
+
 function equalDeep(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a !== typeof b) return false;
@@ -212,10 +232,38 @@ function reload(configPath: string): void {
 
   if (!nextConfig) return;
 
+  // Phase 4a-2.5 v8 — Codex 7th-pass MEDIUM F3: privileged keys never
+  // hot-reload. If a Bash auto-allow session edited agent-config.json
+  // to point `voice.outputDir` at `~/.ssh` (or `memory.qmd.command`
+  // at `/usr/bin/curl`, etc.), the live in-memory value MUST stay at
+  // the previous value until `/mcp` restarts the server. The user
+  // gets the change surfaced via the same critical-key callback so
+  // they can run `/mcp` consciously rather than have privilege flips
+  // happen silently mid-session.
+  const frozenPrivileged: CriticalChange[] = [];
+  if (previous) {
+    for (const k of PRIVILEGED_PATH_KEYS) {
+      const prev = getByPath(previous, k);
+      const next = getByPath(nextConfig, k);
+      if (!equalDeep(prev, next)) {
+        setByPath(nextConfig, k, prev);
+        frozenPrivileged.push({
+          key: k as CriticalKey,
+          from: prev,
+          to: next,
+        });
+      }
+    }
+  }
+
   current = nextConfig;
 
   if (previous && onCriticalChange) {
     const changes = diffCriticalKeys(previous, nextConfig);
+    // Append any frozen-privileged entries so the user is notified.
+    for (const f of frozenPrivileged) {
+      changes.push(f);
+    }
     if (changes.length > 0) {
       try {
         onCriticalChange(changes);

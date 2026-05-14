@@ -11,12 +11,16 @@
  */
 
 import fs from "fs";
+import os from "os";
 import path from "path";
 import http from "http";
 import { execSync } from "child_process";
-import { loadConfig } from "./config.ts";
+import { loadConfig, collectScopeConfigWarnings } from "./config.ts";
 import { MemoryDB } from "./memory-db.ts";
 import { QmdManager } from "./qmd-manager.ts";
+import { runScopeAudit } from "./scope-audit.ts";
+import { detectScopeRuntime } from "./scope/runtime.ts";
+import { detectChannels } from "./channel-detector.ts";
 
 export type CheckStatus = "ok" | "warn" | "error" | "info" | "off";
 
@@ -535,6 +539,781 @@ export function checkJq(): DiagnosticCheck {
 }
 
 // ---------------------------------------------------------------------------
+// Scope checks (Phase 0 of channel-scope compatibility plan)
+// ---------------------------------------------------------------------------
+
+/**
+ * Surface signals that channel-derived content is reachable through
+ * shared memory ahead of any scope enforcement. Pure read-only summary
+ * over `runScopeAudit`.
+ */
+export function checkScopePreEnforceAudit(
+  workspace: string
+): DiagnosticCheck {
+  let report;
+  try {
+    report = runScopeAudit(workspace);
+  } catch (err) {
+    return {
+      id: "scope-pre-enforce-audit",
+      label: "Scope audit",
+      status: "warn",
+      message: `audit failed: ${err instanceof Error ? err.message : String(err)}`,
+      hint: "Run `/agent:scope audit` for diagnostic detail",
+    };
+  }
+  const s = report.summary;
+  // Tier the status: actual content leaks (signals 1-3) warrant a WARN;
+  // implementation hints alone (signals 4-6) are INFO; nothing → OK.
+  if (s.anySignals) {
+    const parts: string[] = [];
+    if (s.extraPathChunkCount > 0)
+      parts.push(`${s.extraPathChunkCount} chunk(s) under extra:`);
+    if (s.promotedLineCount > 0)
+      parts.push(`${s.promotedLineCount} promoted line(s) cite extra:`);
+    if (s.recallEntryCount > 0)
+      parts.push(`${s.recallEntryCount} recall entry/entries`);
+    return {
+      id: "scope-pre-enforce-audit",
+      label: "Scope audit",
+      status: "warn",
+      message: parts.join(" · "),
+      hint: "Channel-derived content reachable via memory_search. Future `/agent:scope wizard` (Phase 4a-1+) will let you opt into per-channel enforcement; meanwhile see docs/channel-scope-compat.md.",
+    };
+  }
+  if (s.anyImplementationHints) {
+    const parts: string[] = [];
+    if (s.hotPathLogCount > 0)
+      parts.push(`${s.hotPathLogCount} log statement(s) in hot paths`);
+    if (s.mcpResourceCount > 0)
+      parts.push(`${s.mcpResourceCount} MCP resource declaration(s)`);
+    if (s.exportCommandCount > 0)
+      parts.push(`${s.exportCommandCount} export/backup command(s)`);
+    return {
+      id: "scope-pre-enforce-audit",
+      label: "Scope audit",
+      status: "info",
+      message: `no content leaked yet · code hints: ${parts.join(" · ")}`,
+      hint: "Code-level signals to review before scope enforcement ships. See docs/channel-scope-compat.md.",
+    };
+  }
+  return {
+    id: "scope-pre-enforce-audit",
+    label: "Scope audit",
+    status: "ok",
+    message: "no channel-derived content found in shared memory",
+  };
+}
+
+/**
+ * Always-present reminder that the planned scope filter only covers
+ * MCP tool surfaces; native filesystem reads (Read, Grep, direct
+ * SQLite) bypass the filter by design.
+ */
+export function checkScopeBypasses(_workspace: string): DiagnosticCheck {
+  return {
+    id: "scope-bypasses",
+    label: "Scope bypasses",
+    status: "info",
+    message: "MCP scope ≠ filesystem sandbox",
+    hint: "Native Read/Grep/SQLite directos sobre logs no se filtran (intencional). Ver docs/channel-scope-compat.md.",
+  };
+}
+
+/**
+ * Surface count of quarantined memory snapshots under
+ * ~/.claude/agent/quarantine/ so the user remembers they exist.
+ */
+export function checkScopeQuarantinePending(
+  _workspace: string
+): DiagnosticCheck {
+  const home = os.homedir();
+  const quarantineDir = path.join(home, ".claude", "agent", "quarantine");
+  if (!fs.existsSync(quarantineDir)) {
+    return {
+      id: "scope-quarantine-pending",
+      label: "Scope quarantine",
+      status: "off",
+      message: "no quarantined content",
+    };
+  }
+  let count = 0;
+  try {
+    for (const entry of fs.readdirSync(quarantineDir, {
+      withFileTypes: true,
+    })) {
+      if (
+        entry.isFile() &&
+        entry.name.startsWith("MEMORY.") &&
+        entry.name.endsWith(".md")
+      ) {
+        count++;
+      }
+    }
+  } catch {
+    // Permission denied or not readable — treat as no content.
+  }
+  if (count === 0) {
+    return {
+      id: "scope-quarantine-pending",
+      label: "Scope quarantine",
+      status: "off",
+      message: "no quarantined content",
+    };
+  }
+  return {
+    id: "scope-quarantine-pending",
+    label: "Scope quarantine",
+    status: "info",
+    message: `${count} archived snapshot(s) in ${quarantineDir}`,
+    hint: "Review with: ls ~/.claude/agent/quarantine/",
+  };
+}
+
+/**
+ * Phase 4a-2.6 v12 (Codex 12th-pass LOW v11-F3): surface the
+ * synthetic-indexer counters persisted by `MemoryDB.bumpIndexerMetric`.
+ * Reads the `scope_indexer_metrics` table directly (no MemoryDB
+ * instantiation — doctor must be safe to run in any state). Returns
+ * "off" if the workspace has never run the indexer, "info" / "warn"
+ * when there's something to surface.
+ */
+export function checkScopeIndexerHealth(workspace: string): DiagnosticCheck {
+  const dbPath = path.join(workspace, "memory", ".memory.sqlite");
+  if (!fs.existsSync(dbPath)) {
+    return {
+      id: "scope-indexer-health",
+      label: "Scope indexer health",
+      status: "off",
+      message: "no memory DB yet",
+    };
+  }
+  let pairsCapped = 0;
+  let reservedPrefixSkipped = 0;
+  let scopedUnknownSkipped = 0;
+  try {
+    // Reuse the MemoryDB accessor so the metrics-table CREATE IF NOT
+    // EXISTS contract is honored — opening the file directly with
+    // better-sqlite3 in readonly mode would fail when the table
+    // doesn't exist yet. Codex 13th-pass LOW v12-F4: use the new
+    // `headless: true` flag so doctor doesn't allocate fs.watch
+    // handles or rewrite mode bits on every diagnostic run.
+    const memDb = new MemoryDB(workspace, [], {
+      quietBoot: true,
+      headless: true,
+    });
+    try {
+      pairsCapped = memDb.getIndexerMetric("pairs_capped");
+      reservedPrefixSkipped = memDb.getIndexerMetric(
+        "reserved_prefix_skipped"
+      );
+      // Codex Phase 4a-3 post-impl-round3 LOW #10.
+      scopedUnknownSkipped = memDb.getIndexerMetric(
+        "scoped_unknown_channel_skipped"
+      );
+    } finally {
+      memDb.close();
+    }
+  } catch {
+    return {
+      id: "scope-indexer-health",
+      label: "Scope indexer health",
+      status: "off",
+      message: "metrics unreadable",
+    };
+  }
+  if (
+    pairsCapped === 0 &&
+    reservedPrefixSkipped === 0 &&
+    scopedUnknownSkipped === 0
+  ) {
+    return {
+      id: "scope-indexer-health",
+      label: "Scope indexer health",
+      status: "ok",
+      message: "no truncation or reserved-prefix collisions",
+    };
+  }
+  // Codex 13th-pass LOW v12-F3: counters are cumulative event counts
+  // (a single problem chat-day or colliding file may bump the counter
+  // multiple times across re-runs), so word the message that way.
+  // The user can't infer "N distinct issues" from these.
+  const parts: string[] = [];
+  if (pairsCapped > 0)
+    parts.push(
+      `${pairsCapped} cumulative chat-day truncation event(s) past the per-pair cap`
+    );
+  if (reservedPrefixSkipped > 0)
+    parts.push(
+      `${reservedPrefixSkipped} cumulative file-collision event(s) at the reserved prefix`
+    );
+  if (scopedUnknownSkipped > 0)
+    parts.push(
+      `${scopedUnknownSkipped} cumulative scoped file(s) skipped under unknown channel(s)`
+    );
+  // Codex 13th-pass MEDIUM v12-F1: pairsCapped is privacy-relevant
+  // (an owner won't find tail messages from a truncated day), so
+  // promote to `warn` rather than `info`. A truly informational state
+  // (capped=0, collision=0) is `ok` above.
+  // Codex 14th-pass LOW v13-F1: when BOTH counters are non-zero,
+  // build a compound hint instead of dropping the truncation
+  // remediation in favor of the collision one.
+  const status: DiagnosticCheck["status"] = "warn";
+  const hints: string[] = [];
+  if (reservedPrefixSkipped > 0) {
+    hints.push(
+      "rename the extraPath that contains 'messages-db/' or files at extra:claude-whatsapp/messages-db/...; the prefix is reserved for the synthetic per-chat indexer"
+    );
+  }
+  if (pairsCapped > 0) {
+    hints.push(
+      "a very high-volume chat-day was truncated to the safety bound; tail messages from that day aren't in the synthetic chunk and won't surface in memory_search results"
+    );
+  }
+  if (scopedUnknownSkipped > 0) {
+    hints.push(
+      "memory/.scoped/<channel>/ exists for a channel name the runtime doesn't recognize; remove the directory or rename to a known channel (whatsapp/telegram/discord/imessage/webchat)"
+    );
+  }
+  return {
+    id: "scope-indexer-health",
+    label: "Scope indexer health",
+    status,
+    message: parts.join("; "),
+    hint: hints.join("; "),
+  };
+}
+
+/**
+ * Phase 5: scope status row. Reads `loadConfig().scope` and asks
+ * `detectScopeRuntime(cfg)` for the live snapshot. Per-channel info
+ * row showing mode, identity, armed state, and whether the access
+ * path was auto-discovered.
+ *
+ * Always uses the config-aware runtime path — calling the no-arg
+ * `detectScopeRuntime()` would always return `anyArmed: false`
+ * (intentional Phase-0-stub compatibility shim).
+ */
+export function checkScopeStatus(workspace: string): DiagnosticCheck {
+  let cfg;
+  try {
+    cfg = loadConfig(workspace);
+  } catch {
+    return {
+      id: "scope-status",
+      label: "Scope status",
+      status: "off",
+      message: "config unreadable",
+    };
+  }
+  // Codex round 3 LOW: surface typo'd values that `coerceMode` /
+  // `coerceIdentity` would have silently swallowed. The user's bad
+  // input is fail-closed to off/auto/deny by config-load — but they
+  // need to know that, otherwise they think scope is on.
+  let warnings: ReturnType<typeof collectScopeConfigWarnings> = [];
+  try {
+    warnings = collectScopeConfigWarnings(workspace);
+  } catch {
+    /* ignore — typo diagnostics are best-effort */
+  }
+  if (!cfg.scope) {
+    if (warnings.length > 0) {
+      // Raw scope block exists but every value typo'd — `loadConfig`
+      // returned `scope: undefined`. Still surface the typos.
+      return {
+        id: "scope-status",
+        label: "Scope status",
+        status: "warn",
+        message: formatScopeWarnings(warnings),
+        hint: "Invalid scope values fail-closed to off — fix the typos and re-run /agent:scope status.",
+      };
+    }
+    return {
+      id: "scope-status",
+      label: "Scope status",
+      status: "ok",
+      message: "Channel scope: not configured (per-channel opt-in)",
+      hint: "Run `/agent:scope wizard` to opt in, or see docs/channel-scope-compat.md",
+    };
+  }
+  let runtime;
+  try {
+    runtime = detectScopeRuntime(cfg, workspace);
+  } catch {
+    return {
+      id: "scope-status",
+      label: "Scope status",
+      status: "off",
+      message: "runtime detection failed",
+    };
+  }
+  const channels: string[] = [];
+  // Codex round 1 MEDIUM #1: a channel configured with mode=shadow or
+  // enforce that fails to arm (e.g. access.json missing) is a broken
+  // opt-in, not informational. Bump status to warn so the user notices.
+  let hasMisconfiguredArm = false;
+  for (const [ch, state] of Object.entries(runtime.channels)) {
+    if (!state) continue;
+    const s = state as {
+      mode: string;
+      armed: boolean;
+      configured: boolean;
+      reason?: string;
+    };
+    if (!s.configured) continue;
+    const tag = s.armed ? "armed" : "disarmed";
+    if (!s.armed && s.mode !== "off") hasMisconfiguredArm = true;
+    channels.push(
+      `${ch}: ${s.mode}/${tag}${s.reason ? ` (${s.reason})` : ""}`
+    );
+  }
+  const warnMsg = warnings.length > 0 ? formatScopeWarnings(warnings) : null;
+  if (channels.length === 0) {
+    if (warnMsg) {
+      return {
+        id: "scope-status",
+        label: "Scope status",
+        status: "warn",
+        message: warnMsg,
+        hint: "Invalid scope values fail-closed to off — fix the typos and re-run /agent:scope status.",
+      };
+    }
+    return {
+      id: "scope-status",
+      label: "Scope status",
+      status: "ok",
+      message: "Channel scope configured but no channels armed",
+    };
+  }
+  if (hasMisconfiguredArm) {
+    const message = warnMsg
+      ? `${channels.join("; ")} | ${warnMsg}`
+      : channels.join("; ");
+    return {
+      id: "scope-status",
+      label: "Scope status",
+      status: "warn",
+      message,
+      hint:
+        "A channel is set to shadow/enforce but failed to arm — check governance (e.g. access.json) and run /agent:scope status. The MCP filter is NOT active for that channel.",
+    };
+  }
+  if (warnMsg) {
+    return {
+      id: "scope-status",
+      label: "Scope status",
+      status: "warn",
+      message: `${channels.join("; ")} | ${warnMsg}`,
+      hint: "Invalid scope values fail-closed to off — fix the typos and re-run /agent:scope status.",
+    };
+  }
+  return {
+    id: "scope-status",
+    label: "Scope status",
+    status: "info",
+    message: channels.join("; "),
+    hint: runtime.anyArmed
+      ? "MCP-level filter active. Native Read/Grep/SQLite still bypass — see docs/channel-scope-compat.md"
+      : "Configured with mode=off — run /agent:scope wizard to opt in",
+  };
+}
+
+function formatScopeWarnings(
+  warnings: ReturnType<typeof collectScopeConfigWarnings>
+): string {
+  return (
+    "invalid: " +
+    warnings
+      .map((w) => `${w.channel}.${w.field}=${JSON.stringify(w.raw)}`)
+      .join(", ")
+  );
+}
+
+/**
+ * Phase 5: proactive offer to run `/agent:scope wizard` when:
+ *   (a) at least one channel detector reports installed + authenticated,
+ *   (b) `loadConfig().scope?.<channel>?.mode` is undefined or "off",
+ *   (c) the dismiss-marker `~/.claude/agent/.scope-wizard-dismissed`
+ *       does NOT exist.
+ *
+ * Severity is `info` (a suggestion, not a defect). Marker is
+ * permanent; users can re-run by removing it. Codex pre-impl WATCH:
+ * non-expiring dismissal matches existing per-user marker patterns
+ * in this repo.
+ */
+/**
+ * Test-only injection point. Production callers pass no second arg
+ * and the real `detectChannels` is used. Tests can substitute a
+ * fake to exercise positive-offer paths without depending on the
+ * caller's environment having claude-whatsapp paired.
+ */
+export type _DetectChannelsFn = (...args: unknown[]) => Array<{
+  name: string;
+  installed: string;
+  authenticated: string;
+}>;
+
+export function checkScopeWizardAvailable(
+  workspace: string,
+  _detectChannelsForTest?: _DetectChannelsFn
+): DiagnosticCheck {
+  // Marker dismisses the offer permanently.
+  // `CLAW_SCOPE_DISMISS_MARKER` env var overrides the default path —
+  // used by tests to avoid touching the real user's ~/.claude. Codex
+  // round 1 LOW #7.
+  const markerPath =
+    process.env.CLAW_SCOPE_DISMISS_MARKER ||
+    path.join(os.homedir(), ".claude", "agent", ".scope-wizard-dismissed");
+  if (fs.existsSync(markerPath)) {
+    return {
+      id: "scope-wizard-available",
+      label: "Scope wizard",
+      status: "off",
+      message: "dismissed",
+    };
+  }
+  let cfg;
+  try {
+    cfg = loadConfig(workspace);
+  } catch {
+    return {
+      id: "scope-wizard-available",
+      label: "Scope wizard",
+      status: "off",
+      message: "config unreadable",
+    };
+  }
+  // Codex round 1 MEDIUM #2: only offer the wizard for channels with
+  // implemented adapters. Today only WhatsApp ships an adapter; the
+  // wizard flow itself only describes WA. Telegram/Discord/iMessage
+  // detectors may report installed+authenticated but enabling scope
+  // for them would be a no-op (mode != off + no adapter = disarmed).
+  const SUPPORTED_OFFER_CHANNELS = new Set(["whatsapp"]);
+  let installed: string[] = [];
+  try {
+    const detector = _detectChannelsForTest ?? detectChannels;
+    const channels = detector({ cwd: workspace });
+    for (const c of channels) {
+      // Codex pre-impl LOW #9: tri-state strings, not booleans.
+      if (
+        SUPPORTED_OFFER_CHANNELS.has(c.name) &&
+        c.installed === "yes" &&
+        c.authenticated === "yes"
+      ) {
+        installed.push(c.name);
+      }
+    }
+  } catch {
+    // Detector failure is non-fatal — the offer just doesn't fire.
+    return {
+      id: "scope-wizard-available",
+      label: "Scope wizard",
+      status: "off",
+      message: "detector unavailable",
+    };
+  }
+  // Only offer for channels that are installed + authenticated AND
+  // currently `mode: off` (or unconfigured). Skip channels that already
+  // have a non-off mode set.
+  const offerCandidates = installed.filter((ch) => {
+    const sc = cfg.scope?.[ch as keyof typeof cfg.scope] as
+      | { mode?: string }
+      | undefined;
+    return !sc || !sc.mode || sc.mode === "off";
+  });
+  if (offerCandidates.length === 0) {
+    return {
+      id: "scope-wizard-available",
+      label: "Scope wizard",
+      status: "ok",
+      message: "no eligible channel for the wizard",
+    };
+  }
+  // Dismiss instruction lives in the MESSAGE (not the hint) because
+  // `formatReport` suppresses hints on `info` rows. Codex round 2 LOW.
+  return {
+    id: "scope-wizard-available",
+    label: "Scope wizard",
+    status: "info",
+    message:
+      `${offerCandidates.join(", ")} paired but scope is off — run /agent:scope wizard to opt in (dismiss with: touch ${markerPath})`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 ship-readiness doctor checks (round-8 follow-up)
+// Plan line 561 lists `scope-stale`, `scope-owner-assertion`,
+// `scope-schema-drift`. v8 of Phase 5 hadn't implemented them. v9 adds
+// all three.
+// ---------------------------------------------------------------------------
+
+/**
+ * scope-stale — detect when access.json mtime changed without the
+ * runtime cache being invalidated. Today the runtime caches detection
+ * for 5s (RUNTIME_TTL_MS) and the lifecycle watcher invalidates on
+ * `~/.claude/plugins/installed_plugins.json` change. But upstream
+ * editing access.json directly (e.g. user adds a new allowFrom JID)
+ * doesn't trigger the watcher. This check surfaces the discrepancy:
+ * if access.json was modified more than RUNTIME_TTL_MS ago but the
+ * runtime cache hasn't observed it, flag warn so the user knows to
+ * restart the MCP or wait for the cache window to elapse.
+ *
+ * Plan line 561 specifically asked for cadence "on-startup +
+ * on-config-change + on-MCP-tool-call". This implementation runs at
+ * doctor time, which covers on-startup and on-config-change-via-doctor
+ * paths. The on-MCP-tool-call cadence is implicit via the 5s TTL.
+ */
+export function checkScopeStale(workspace: string): DiagnosticCheck {
+  let cfg;
+  try {
+    cfg = loadConfig(workspace);
+  } catch {
+    return {
+      id: "scope-stale",
+      label: "Scope staleness",
+      status: "off",
+      message: "config unreadable",
+    };
+  }
+  if (!cfg.scope) {
+    return {
+      id: "scope-stale",
+      label: "Scope staleness",
+      status: "off",
+      message: "scope not configured",
+    };
+  }
+  // For each configured channel with mode != off, check the
+  // governance file mtime against the runtime cache. The cache key
+  // includes the config fingerprint so config changes already
+  // invalidate it; this check is about FILE changes outside the
+  // config (e.g. access.json edited directly).
+  const stale: string[] = [];
+  const futureMtime: string[] = [];
+  // Codex round-9 LOW: clock-skew guard. A 5-second tolerance covers
+  // typical NTP wobble; anything beyond is a real anomaly worth surfacing.
+  const CLOCK_SKEW_TOLERANCE_MS = 5_000;
+  for (const channel of ["whatsapp"] as const) {
+    const sc = cfg.scope[channel];
+    if (!sc || !sc.mode || sc.mode === "off") continue;
+    const accessPath =
+      sc.accessJsonPath && sc.accessJsonPath !== "auto"
+        ? sc.accessJsonPath
+        : null;
+    if (!accessPath) continue; // auto-resolved paths re-detect on each call
+    try {
+      const stat = fs.statSync(accessPath);
+      const ageMs = Date.now() - stat.mtimeMs;
+      // Codex round-9 LOW: future-mtime detection. Negative age means
+      // the file is "from the future" — clock skew between this host
+      // and whatever wrote the file, or a host clock that was just
+      // adjusted backwards. Either way the user should know.
+      if (ageMs < -CLOCK_SKEW_TOLERANCE_MS) {
+        futureMtime.push(
+          `${channel} (access.json mtime ${Math.round(-ageMs / 1000)}s in the future)`
+        );
+        continue;
+      }
+      // Codex round-9 LOW: use `>=` to capture the exact 5s boundary
+      // instead of silently passing it. Heuristic: flag stale if mtime
+      // is between RUNTIME_TTL_MS (5s) and 1h ago.
+      if (ageMs >= 5_000 && ageMs < 3_600_000) {
+        stale.push(`${channel} (access.json modified ${Math.round(ageMs / 1000)}s ago)`);
+      }
+    } catch {
+      /* file missing → handled by other checks */
+    }
+  }
+  if (futureMtime.length > 0) {
+    return {
+      id: "scope-stale",
+      label: "Scope staleness",
+      status: "warn",
+      message: `clock skew detected: ${futureMtime.join("; ")}`,
+      hint: "Governance file mtime is in the future — possible NTP issue or host clock adjustment. Stale-detection heuristics rely on monotonic local time.",
+    };
+  }
+  if (stale.length > 0) {
+    return {
+      id: "scope-stale",
+      label: "Scope staleness",
+      status: "info",
+      message: `recent governance edit: ${stale.join("; ")}`,
+      hint: "The runtime cache may serve a snapshot up to 5s old; if you JUST edited access.json, wait or run /mcp restart to force a re-read.",
+    };
+  }
+  return {
+    id: "scope-stale",
+    label: "Scope staleness",
+    status: "ok",
+    message: "no recent governance edits detected",
+  };
+}
+
+/**
+ * scope-owner-assertion — UX safety: when the agent is acting as
+ * channel owner (identity=owner + trust file present), surface that
+ * fact so the user remembers they granted full-channel memory access.
+ * Plan line 561.
+ */
+export function checkScopeOwnerAssertion(
+  workspace: string
+): DiagnosticCheck {
+  let cfg;
+  try {
+    cfg = loadConfig(workspace);
+  } catch {
+    return {
+      id: "scope-owner-assertion",
+      label: "Scope owner assertion",
+      status: "off",
+      message: "config unreadable",
+    };
+  }
+  if (!cfg.scope) {
+    return {
+      id: "scope-owner-assertion",
+      label: "Scope owner assertion",
+      status: "off",
+      message: "scope not configured",
+    };
+  }
+  const owners: string[] = [];
+  for (const channel of ["whatsapp"] as const) {
+    const sc = cfg.scope[channel];
+    if (!sc || sc.identity !== "owner") continue;
+    // Check for the out-of-band trust file
+    const trustPath =
+      process.env.CLAW_SCOPE_TRUST_DIR
+        ? path.join(process.env.CLAW_SCOPE_TRUST_DIR, `${channel}-owner`)
+        : path.join(os.homedir(), ".claude", "agent", "scope-trust", `${channel}-owner`);
+    if (fs.existsSync(trustPath)) {
+      owners.push(channel);
+    }
+  }
+  if (owners.length === 0) {
+    return {
+      id: "scope-owner-assertion",
+      label: "Scope owner assertion",
+      status: "ok",
+      message: "agent not acting as owner for any channel",
+    };
+  }
+  return {
+    id: "scope-owner-assertion",
+    label: "Scope owner assertion",
+    status: "info",
+    message: `agent acting as owner for: ${owners.join(", ")}`,
+    hint: "Trust file + identity=owner grants the agent full memory access for this channel's chunks. Revoke via: rm <trust-file> AND /agent:scope wizard to set identity=auto.",
+  };
+}
+
+/**
+ * scope-schema-drift — detect when upstream access.json or messages.db
+ * schemas have unrecognized fields/columns. Phase 4a-2.6 v9 implemented
+ * the messages.db schema check (rejected on unknown columns). This
+ * doctor check surfaces the same condition so the user knows there
+ * may be silent loss of per-chat indexing after an upstream upgrade.
+ * Plan line 561.
+ */
+export function checkScopeSchemaDrift(
+  workspace: string
+): DiagnosticCheck {
+  let cfg;
+  try {
+    cfg = loadConfig(workspace);
+  } catch {
+    return {
+      id: "scope-schema-drift",
+      label: "Scope schema drift",
+      status: "off",
+      message: "config unreadable",
+    };
+  }
+  if (!cfg.scope) {
+    return {
+      id: "scope-schema-drift",
+      label: "Scope schema drift",
+      status: "off",
+      message: "scope not configured",
+    };
+  }
+  const drifts: string[] = [];
+  // Codex round-9 BUG fix: previously a single broad `try/catch`
+  // swallowed BOTH lazy-require failures AND schema probe failures,
+  // returning silent `ok` even when imports broke in a packaged dist
+  // layout. v10 splits the require step from the probe step: a require
+  // failure surfaces as `warn` ("probe unavailable") so the user knows
+  // we couldn't check. A probe failure (handle null on existing file)
+  // remains `warn` ("unsupported schema").
+  let openMessagesDb:
+    | ((channelDir: string) => { close: () => void } | null)
+    | null = null;
+  let resolveWhatsappChannelDir:
+    | ((c: unknown, ws?: string) => string | null)
+    | null = null;
+  try {
+    openMessagesDb = require("./scope/messages-db.ts").openMessagesDb;
+    resolveWhatsappChannelDir =
+      require("./scope/runtime.ts").resolveWhatsappChannelDir;
+  } catch (err) {
+    return {
+      id: "scope-schema-drift",
+      label: "Scope schema drift",
+      status: "warn",
+      message: `probe unavailable: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+      hint: "Schema-drift detection requires the messages-db reader to load. If this fires on a packaged dist, that's a packaging bug — drift can no longer be detected by doctor until fixed.",
+    };
+  }
+  for (const channel of ["whatsapp"] as const) {
+    const sc = cfg.scope[channel];
+    if (!sc || !sc.mode || sc.mode === "off") continue;
+    try {
+      const channelDir = resolveWhatsappChannelDir!(cfg, workspace);
+      if (channelDir) {
+        const handle = openMessagesDb!(channelDir);
+        if (!handle) {
+          // Could be missing OR schema mismatch. Distinguish by
+          // checking the file actually exists.
+          const dbPath = path.join(channelDir, "messages.db");
+          if (fs.existsSync(dbPath)) {
+            drifts.push(`${channel} messages.db unsupported schema`);
+          }
+        } else {
+          handle.close();
+        }
+      }
+    } catch (err) {
+      // Probe-time failure on this specific channel (corrupt DB,
+      // permission denied). Surface as a per-channel drift entry so
+      // the user knows we tried and couldn't.
+      drifts.push(
+        `${channel} probe failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+  if (drifts.length > 0) {
+    return {
+      id: "scope-schema-drift",
+      label: "Scope schema drift",
+      status: "warn",
+      message: drifts.join("; "),
+      hint: "Upstream schema changed in a way ClawCode doesn't recognize. Per-chat indexing is paused for this channel until support is added. File issue at github.com/crisandrews/ClawCode/issues.",
+    };
+  }
+  return {
+    id: "scope-schema-drift",
+    label: "Scope schema drift",
+    status: "ok",
+    message: "no schema drift detected",
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
 
@@ -553,6 +1332,16 @@ export async function runDoctor(
   checks.push(checkDreaming(workspace));
   checks.push(checkCronRegistry(workspace));
   checks.push(checkJq());
+  checks.push(checkScopePreEnforceAudit(workspace));
+  checks.push(checkScopeBypasses(workspace));
+  checks.push(checkScopeQuarantinePending(workspace));
+  checks.push(checkScopeIndexerHealth(workspace));
+  checks.push(checkScopeStatus(workspace));
+  checks.push(checkScopeWizardAvailable(workspace));
+  // Phase 5 ship-readiness round-8 follow-up
+  checks.push(checkScopeStale(workspace));
+  checks.push(checkScopeOwnerAssertion(workspace));
+  checks.push(checkScopeSchemaDrift(workspace));
 
   const summary = { ok: 0, warn: 0, error: 0, info: 0, off: 0 };
   for (const c of checks) summary[c.status]++;

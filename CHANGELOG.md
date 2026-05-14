@@ -2,6 +2,62 @@
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-05-13
+
+### Why this release matters
+
+Brings a brand-new opt-in privacy layer to indexed channel content. When you pair OpenCLAUDE with `claude-whatsapp` (or any future channel plugin that publishes per-chat history scope), search/recall/dreams/voice now respect that scope automatically — without flipping anything for users who don't opt in. Adds a security hardening pass on path-bearing config keys, a privacy fix to WebChat's per-tab history, and per-chat binding for memory tool calls so concurrent inbounds from different chats can't bleed scope across each other.
+
+### Added
+
+- Skills/scope: new `/agent:scope` skill suite — `wizard` (interactive setup), `enable`, `disable`, `status`, `test <chatId>` (dry-run), `audit`. Wizard walks the user through choosing a channel, mode (`off | shadow | enforce`), foreground identity (`owner | auto | guest`), and background-task identity (`deny | system-owner`). Owner unlock requires an explicit trust file at `~/.claude/agent/scope-trust/<channel>-owner` written via Bash so the agent cannot silently elevate itself. First wizard apply emits a one-time banner explaining that MCP scope is not a filesystem sandbox (native `Read`/`Grep`/`SQLite` calls still see raw files); subsequent runs skip the banner.
+- Lib/scope: per-channel opt-in scope tree under `config.scope.<channel>`. Defaults to `off` everywhere — absent config means zero behavior change. Three modes: `off` (no-op), `shadow` (logs what would be filtered but returns everything), `enforce` (filters). Channels recognised today: `whatsapp` (full), `telegram` / `discord` / `imessage` / `webchat` (config plumbing only, awaiting publishers).
+- Lib/scope/whatsapp: adapter mirrors upstream `claude-whatsapp/scope.ts` byte-exact — owner unlock with trust file, bootstrap fail-open only on auto-discovered installs, per-chat `historyScope` (`'own' | 'all' | string[]`) honored. Hardened access.json reader with mtime+size+inode cache, forward-compatible normalizer (drops unknown enum values, preserves last-known-good on parse failure), 5-min grace window when access.json briefly disappears.
+- Lib/scope/synthetic-indexer: per-chat synthetic chunks generated from upstream `messages.db` (read-only, WAL-respecting) under `extra:claude-whatsapp/messages-db/<chat_id>/<YYYY-MM-DD>`. Replaces the prior daily-transcript chunks for per-chat semantics. Cursor + dev:ino identity stored across restarts, in-place truncation and rowid reuse detected and recovered, throttled reconciliation walks the full chunk set to catch edits and deletes upstream, PII quarantine on confirmed (ENOENT) DB absence with 24h grace window.
+- Lib/scope/dreams: dual-lane promotion. Local-only memory candidates still promote to `memory/MEMORY.md`. Candidates from an armed channel route to `memory/.scoped/<channel>/MEMORY.<encoded-chat>.md` (`chmod 0700`/`0600`), with PII redaction markers (`<scoped:<channel>:<8-char-hash>>`) on DREAMS.md, MEMORY.md routing comments, and dream response payloads. Mixed candidates fall to worst-contributor-wins so cross-chat aggregations never silently land in the unscoped lane. Exclusive O_EXCL lock file with cross-host timestamp grace + same-host PID liveness probe.
+- Lib/scope/envelope: cross-plugin request envelope contract. When `claude-whatsapp` 1.19.0+ is installed and an inbound triggers an agent turn, OpenCLAUDE's `memory_search` / `memory_get` / `memory_context` / `voice_transcribe` MCP tools accept an optional `requestEnvelopeToken` arg. With the token forwarded, scope decisions bind to that specific inbound's chat/sender. Without it, behavior is unchanged. Reader hardened against symlink/uid/mode/short-read/oversize/realpath/skew/expired/replayed payloads with bounded-reuse LRU (256 cap).
+- Lib/scope/agent-config-guard: classifier blocks `agent_config(action='set')` writes to security-sensitive scope keys (`scope.<channel>.{mode,identity,accessJsonPath,cwdExactMatchOnly,background.identity}`), prototype-pollution paths (`__proto__`, `constructor`, `prototype` at any segment), oversize keys (>256 chars, >16 segments, >64 chars/segment), and a privileged-keys list (`voice.outputDir`, `memory.extraPaths`, `memory.qmd.command` and their ancestors/descendants). Refused writes return a clear out-of-band-confirmation message pointing at the wizard.
+- Lib/doctor: new `scope-status` / `scope-stale` / `scope-owner-assertion` / `scope-schema-drift` / `scope-bypasses` / `scope-quarantine-pending` / `scope-wizard-available` / `scope-indexer-health` checks. Proactive offer surfaces `Run /agent:scope wizard` when WhatsApp is paired + authenticated but `scope.whatsapp.mode === "off"`, dismissable via `~/.claude/agent/.scope-wizard-dismissed`. Indexer health surfaces cumulative `pairs_capped` and `reserved_prefix_skipped` counters as warnings when non-zero.
+- Lib/scope/lifecycle: file-watcher on `~/.claude/plugins/installed_plugins.json` with 500ms debounce + unrefed timer. Re-runs channel detection automatically on plugin install/uninstall/upgrade so a freshly paired WhatsApp install lights up scope without restart.
+- Lib/http-bridge: WebChat per-tab session model. Every `/v1/chat/send`, `/v1/chat/history`, `/v1/chat/stream` request now requires `sessionId` (UUID v4). Two browsers with the same `http.token` cannot see each other's chat history or live agent replies. Per-session message cap (500), pin-on-active LRU (100 unpinned + sentinel buckets outside the budget), SSE-clients-per-session cap (8). Reserved `_legacy` bucket migrates pre-existing JSONL entries (logged before this release added `sessionId`) internally and never escapes any public surface. Watchdog ping path uses reserved `_watchdog` bucket.
+- Skills/settings: new `Channel scope (\`scope.*\`)` read-only panel section pointing at `/agent:scope wizard` for changes. Notes the `agent_config` blocklist so the user knows wizard-via-Bash is intentional.
+
+### Changes
+
+- Server: `memory_search`, `memory_get`, `memory_context`, `voice_transcribe` MCP schemas accept an optional `requestEnvelopeToken: string`. Invalid / absent tokens fall back to current behavior (no per-chat binding); valid tokens emit the partial allowlist derived from the envelope's chat/sender. Other channels and unarmed (`mode: off`) configurations are unaffected.
+- Lib/dreaming: `applyPreventivePromoteGuard` is channel-aware — drops only candidates from armed channels; candidates from unarmed channels (and locals) fall through to the existing local lane. `routePromotions(promoted, runtime)` exposed for the dual-lane split.
+- Lib/memory-db: schema migration adds `chunks.source_channel` / `chunks.source_chat_id` (passive metadata when scope is `off`); batched 1k-row backfill with auto-backup; idempotent on re-run. New `scope_indexer_cursors` / `scope_indexer_metrics` / `scope_synthetic_reconcile` tables. Migration runs once on first launch after upgrade and is a no-op afterwards.
+- Lib/memory-db: search now reads stored `source_channel` / `source_chat_id` when populated (falls back to path-pattern derivation otherwise). QMD result paths under any configured `extraPath` reconstruct `extra:<root>/<rel>` correctly (longest-prefix-wins) so channel attribution lands on QMD hits.
+- Lib/memory-db: chmod 0700 on `memory/`, 0600 on `.memory.sqlite[-wal/-shm]` so other local users cannot read the SQLite store. New `MemoryDBOptions.headless` skips chmod and fs.watch for read-only diagnostic open paths (doctor).
+- Lib/scope/cache: atomic write-temp+rename for `scope-cache.json`, version+updatedAt envelope, last-known-good on parse failure, advisory lock with stale-lock recovery (30s).
+- Lib/voice: `voice_transcribe` rejects absolute paths that resolve under an armed channel's `extraPath` unless the call carries a valid envelope (tilde expansion + realpath comparison + longest-prefix-wins; tied-longest fails closed).
+- Lib/voice: text-hash binding for `voice.speak` removed. The agent already has the snippet in context once a search returned it; binding text to a snippet hash gave false positives on benign transformations and false negatives on paraphrases. Voice egress remains a documented out-of-scope channel.
+- Lib/voice: `voice.speak` output path canonicalized through `realpathSync.native` (case-folded on darwin/win32) and restricted to the configured `outputDir` / `os.tmpdir()` / `/tmp` allowlist. Refuses any path resolving under the trust-file directory.
+- Lib/live-config: hot-reload refuses to update privileged scope/voice/memory keys. Preserves the prior in-memory value and surfaces a synthetic `CriticalChange` notification ("/mcp restart needed") with the rejected change visible.
+- Lib/channel-detector: `detectWhatsappProjectDir` accepts `cwdExactMatchOnly: true` for callers that must match the workspace exactly and skip the project-root fallback. Default behavior unchanged.
+- Lib/skill-manager: `skill_install` and `skill_remove` validate name (slug charset, no separators/NUL, length cap, reject `.` / `..`) and path containment before any filesystem operation.
+- Lib/scope/runtime: `detectScopeRuntime(config, workspaceRoot?)` threads workspace through `resolveAccessPath(cfg, baseCwd)` so detached / background spawns resolve the correct channel directory.
+- Lib/scope/filter: SQL pre-filter emits partial-allowlist clauses (`(chunks.source_channel != ? OR chunks.source_chat_id IN (?, ?, …))`) so partial allowlists don't trigger an O(N) per-row gate.
+- Lib/types: `SearchResult.provenance?` + `scopeToken?` (passive metadata; populated whenever search returns a row from a known-channel path).
+- Lib/scope/provenance: path containment is separator-safe + `realpathSync`-resolved with mtime+size+ino-keyed cache (inode change invalidates cache on atomic-replace). Fails closed if `realpathSync` throws.
+
+### Fixes
+
+- Server: `chat_inbox_read` gates on `runtime.channels.webchat?.armed === true && mode === "enforce"`. Unreachable today (no webchat adapter ships), but the gate is in place for a future publisher.
+- Lib/scope/runtime: `applyPreventivePromoteGuard` now resolves the live runtime via `detectScopeRuntime(loadConfig(pluginRoot))` instead of a default-arg fallback. Previous code returned no-armed AND purged adapters mid-session, leaking channel chunks into MEMORY.md and clearing adapter state. Adapters are purged only on explicit re-detection or no-scope branches.
+- Lib/memory-db: `MemoryDB.search` over-fetches `maxResults * 8` candidates when an adapter is armed so post-filter refill from locals matches `maxResults`. Unarmed path unchanged (no over-fetch).
+- Lib/scope/whatsapp: explicit `guest` / `deny` config now beats bootstrap fail-open. Malformed access.json with missing `ownerJids` field is rejected instead of masquerading as bootstrap.
+- Lib/scope/whatsapp: marker file (`<channel-dir>/.last-inbound.json`) is reader-side hardened — `O_NOFOLLOW` + `O_NONBLOCK` + single-fd `fstat` + mode `& 0o077` + wrong-uid + future-skew (5s tolerance) + non-regular-file rejection + 4 KiB read cap. Reader runs for cache eviction side-effects only and is no longer consulted for owner unlock (identity primitive replaces it).
+- Lib/qmd-manager: when scope is armed and the partial allowlist is non-null/null-non-empty, QMD is skipped for the scoped query because QMD's external index doesn't honor `source_chat_id`. Owner unlock (allowlist === null) keeps QMD in the path.
+
+### Compatibility
+
+- Zero behavior change when `config.scope.*` is absent. The plugin works exactly as before for users who do not opt in.
+- Old `claude-whatsapp` paired with new OpenCLAUDE: per-chat semantics fall back to the owner-only ceiling (no `requestEnvelopeToken` in the inbound). Owner unlock via the trust file is unaffected. Recommend updating `claude-whatsapp` to 1.19.0+ to get the full per-chat guarantee.
+- New `claude-whatsapp` paired with old OpenCLAUDE: old OpenCLAUDE silently ignores the envelope token and continues on its pre-1.5.0 path. No upstream breakage.
+- The synthetic indexer is a no-op for users without `scope.whatsapp.*` configured. Existing daily-transcript chunks coexist as legacy entries.
+
+
 ## [1.4.14] — 2026-04-21
 
 ### Changes

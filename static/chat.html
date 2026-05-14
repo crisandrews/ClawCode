@@ -342,6 +342,47 @@
       const token = qs.get("token") || "";
       const authHeader = token ? { Authorization: "Bearer " + token } : {};
 
+      // Per-browser session id (Phase 4b). Persisted in localStorage so
+      // history survives reload. If localStorage is unavailable (private
+      // mode in some browsers), we fall back to a tab-lifetime UUID.
+      const SESSION_KEY = "openclaw.sessionId";
+      const UUID_V4_RE =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      function makeUuidV4() {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") {
+          return window.crypto.randomUUID();
+        }
+        // Fallback for older browsers: synthesize a UUIDv4 from getRandomValues.
+        const bytes = new Uint8Array(16);
+        (window.crypto || window.msCrypto).getRandomValues(bytes);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        const h = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+        return (
+          h.slice(0, 8) +
+          "-" +
+          h.slice(8, 12) +
+          "-" +
+          h.slice(12, 16) +
+          "-" +
+          h.slice(16, 20) +
+          "-" +
+          h.slice(20)
+        );
+      }
+      let sessionId = "";
+      try {
+        const stored = localStorage.getItem(SESSION_KEY);
+        if (typeof stored === "string" && UUID_V4_RE.test(stored)) {
+          sessionId = stored;
+        }
+      } catch {}
+      if (!sessionId) {
+        sessionId = makeUuidV4();
+        try { localStorage.setItem(SESSION_KEY, sessionId); } catch {}
+      }
+      const sessionQs = "sessionId=" + encodeURIComponent(sessionId);
+
       const messagesEl = document.getElementById("messages");
       const inputEl = document.getElementById("input");
       const formEl = document.getElementById("send-form");
@@ -443,7 +484,10 @@
 
       async function loadHistory() {
         try {
-          const res = await fetch("/v1/chat/history?limit=50", { headers: authHeader });
+          const res = await fetch(
+            "/v1/chat/history?limit=50&" + sessionQs,
+            { headers: authHeader }
+          );
           if (!res.ok) return;
           const data = await res.json();
           for (const msg of data.entries || []) addMessage(msg);
@@ -451,7 +495,10 @@
       }
 
       function connectSse() {
-        const url = "/v1/chat/stream" + (token ? "?token=" + encodeURIComponent(token) : "");
+        const url =
+          "/v1/chat/stream?" +
+          sessionQs +
+          (token ? "&token=" + encodeURIComponent(token) : "");
         const es = new EventSource(url);
 
         es.addEventListener("hello", () => {
@@ -495,7 +542,7 @@
           const res = await fetch("/v1/chat/send", {
             method: "POST",
             headers: { "Content-Type": "application/json", ...authHeader },
-            body: JSON.stringify({ message: content }),
+            body: JSON.stringify({ message: content, sessionId }),
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({ error: "Send failed" }));
