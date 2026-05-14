@@ -1,19 +1,19 @@
 # Scope Envelope Contract (cross-repo)
 
 > **Status**: 1.0 (stable)
-> **Mirrored** between `OpenCLAUDE/docs/scope-envelope-contract.md` and `claude-whatsapp/docs/scope-envelope-contract.md`. Edit BOTH or NEITHER. Drift = contract violation.
+> **Mirrored** between `ClawCode/docs/scope-envelope-contract.md` and `claude-whatsapp/docs/scope-envelope-contract.md`. Edit BOTH or NEITHER. Drift = contract violation.
 
 ## Purpose
 
-claude-whatsapp publishes per-inbound metadata that OpenCLAUDE optionally consumes to scope `memory_search` / `memory_get` / `memory_context` / `voice_transcribe` to the chat that triggered the agent. Without this contract, OpenCLAUDE has no way to know which WhatsApp chat the current MCP call is in service of, so per-chat `historyScope` enforcement is impossible.
+claude-whatsapp publishes per-inbound metadata that ClawCode optionally consumes to scope `memory_search` / `memory_get` / `memory_context` / `voice_transcribe` to the chat that triggered the agent. Without this contract, ClawCode has no way to know which WhatsApp chat the current MCP call is in service of, so per-chat `historyScope` enforcement is impossible.
 
-Both plugins are independent — each works standalone. Integration activates only when both are installed AND `scope.whatsapp.mode != off` in OpenCLAUDE's config.
+Both plugins are independent — each works standalone. Integration activates only when both are installed AND `scope.whatsapp.mode != off` in ClawCode's config.
 
 ## Invariants
 
-1. **Independence**: claude-whatsapp writes envelopes regardless of whether OpenCLAUDE is installed. OpenCLAUDE reads envelopes only when scope is opted-in. Each plugin still operates fully without the other.
-2. **Fail-closed**: when `scope.whatsapp.mode === "enforce"` and no valid envelope is consumed, OpenCLAUDE returns guest `[]` (no chats). Owner unlock path (`identity:"owner"` + trust file) is the only opt-out — and it's declared out-of-band, not through the envelope.
-3. **Envelope token is the authority**: OpenCLAUDE reads `chatId`/`senderId` from the envelope file on disk, NOT from the notification payload. The notification's existing `meta.chat_id` / `meta.user_id` fields are agent-display data only — never authoritative for scope decisions. A prompt-injected agent forging `chatId` in tool arguments cannot trick OpenCLAUDE, because OpenCLAUDE ignores tool-arg chatId and uses the envelope file's chatId.
+1. **Independence**: claude-whatsapp writes envelopes regardless of whether ClawCode is installed. ClawCode reads envelopes only when scope is opted-in. Each plugin still operates fully without the other.
+2. **Fail-closed**: when `scope.whatsapp.mode === "enforce"` and no valid envelope is consumed, ClawCode returns guest `[]` (no chats). Owner unlock path (`identity:"owner"` + trust file) is the only opt-out — and it's declared out-of-band, not through the envelope.
+3. **Envelope token is the authority**: ClawCode reads `chatId`/`senderId` from the envelope file on disk, NOT from the notification payload. The notification's existing `meta.chat_id` / `meta.user_id` fields are agent-display data only — never authoritative for scope decisions. A prompt-injected agent forging `chatId` in tool arguments cannot trick ClawCode, because ClawCode ignores tool-arg chatId and uses the envelope file's chatId.
 4. **Byte-exact JID round-trip**: senderId and chatId travel as opaque strings. No normalization. Whitespace, case, suffix preserved exactly as upstream emits.
 
 ## Constants
@@ -29,7 +29,7 @@ DIR_NAME                     = ".request-envelopes"
 DIR_MODE                     = 0o700
 FILE_MODE                    = 0o600
 ROTATION_CAP                 = 500         // claude-whatsapp prunes oldest envelopes past this count
-LRU_CONSUMED_TOKENS_CAP      = 256         // OpenCLAUDE in-memory consumed-token cache
+LRU_CONSUMED_TOKENS_CAP      = 256         // ClawCode in-memory consumed-token cache
 ENVELOPE_MAX_BYTES           = 1024        // defensive cap on file size at read time
 ```
 
@@ -40,7 +40,7 @@ ENVELOPE_MAX_BYTES           = 1024        // defensive cap on file size at read
 ```
 
 - **claude-whatsapp side**: `<channel-dir>` is the plugin's `CHANNEL_DIR`, resolved at `server.ts:121` as `process.env.CLAUDE_PROJECT_DIR ?? detectProjectDir()`. `detectProjectDir()` reads `~/.claude/plugins/installed_plugins.json` to find the local-scope `projectPath` for the `whatsapp@claude-whatsapp` install matching the current cwd. The same dir already holds `access.json`, `messages.db`, and `.last-inbound.json` (last-inbound marker).
-- **OpenCLAUDE side**: same path resolved via `lib/channel-detector.ts:detectWhatsappProjectDir(home, cwd, { cwdExactMatchOnly })`, which reads the SAME `installed_plugins.json`. Returns `null` gracefully when claude-whatsapp is not installed (independence preserved). There is no dedicated env var for the envelope dir — discovery flows through the existing install-registry mechanism.
+- **ClawCode side**: same path resolved via `lib/channel-detector.ts:detectWhatsappProjectDir(home, cwd, { cwdExactMatchOnly })`, which reads the SAME `installed_plugins.json`. Returns `null` gracefully when claude-whatsapp is not installed (independence preserved). There is no dedicated env var for the envelope dir — discovery flows through the existing install-registry mechanism.
 
 `<token>` is the base64url-encoded 32-byte payload; it MUST match `TOKEN_REGEX` and MUST equal the `token` field inside the JSON.
 
@@ -91,13 +91,13 @@ For every inbound message that the plugin handles AND about which it emits a `no
      }
    }
    ```
-   The agent extracts `requestEnvelopeToken` from notification meta and forwards it to OpenCLAUDE tools. OpenCLAUDE NEVER trusts `chat_id`/`user_id` from the notification or from tool args — it reads identity from the envelope file on disk.
+   The agent extracts `requestEnvelopeToken` from notification meta and forwards it to ClawCode tools. ClawCode NEVER trusts `chat_id`/`user_id` from the notification or from tool args — it reads identity from the envelope file on disk.
 5. Best-effort housekeeping on each write:
    - Glob `.request-envelopes/*.json`; if count > `ROTATION_CAP`, unlink oldest by mtime.
    - Unlink files where `expiresAt < Date.now() - CLOCK_SKEW_TOLERANCE_MS` (drop with skew tolerance).
-6. Tolerate transient filesystem errors (ENOSPC, EROFS): log warning, skip envelope write, dispatch notification WITHOUT token. OpenCLAUDE will see absent token and fail-closed (acceptable degradation).
+6. Tolerate transient filesystem errors (ENOSPC, EROFS): log warning, skip envelope write, dispatch notification WITHOUT token. ClawCode will see absent token and fail-closed (acceptable degradation).
 
-## Reader responsibilities (OpenCLAUDE)
+## Reader responsibilities (ClawCode)
 
 `loadEnvelope(channelDir: string, token: string): EnvelopePayload | null`:
 
@@ -196,7 +196,7 @@ resolveAllowed(envelope, access):
   default                           → [...new Set([envelope.chatId])].filter(c => universe.has(c))
 ```
 
-Note: `groups[chatId].allowFrom` exists in the real `AccessState` but is **inbound admission control** (server.ts:643 — used to decide whether an inbound message gets accepted), NOT read scope. OpenCLAUDE's resolver MUST NOT consult `groups[chatId].allowFrom` when computing read-scope chat lists.
+Note: `groups[chatId].allowFrom` exists in the real `AccessState` but is **inbound admission control** (server.ts:643 — used to decide whether an inbound message gets accepted), NOT read scope. ClawCode's resolver MUST NOT consult `groups[chatId].allowFrom` when computing read-scope chat lists.
 
 ## Rejected scope values
 
@@ -204,17 +204,17 @@ Note: `groups[chatId].allowFrom` exists in the real `AccessState` but is **inbou
 
 ## senderId / chatId canonicalization
 
-There is NO normalization layer. JIDs travel as opaque strings, byte-exact, between claude-whatsapp's source (the upstream WA library) and OpenCLAUDE's indexer + envelope reader. Whitespace, case, suffix (`@s.whatsapp.net`, `@g.us`) preserved.
+There is NO normalization layer. JIDs travel as opaque strings, byte-exact, between claude-whatsapp's source (the upstream WA library) and ClawCode's indexer + envelope reader. Whitespace, case, suffix (`@s.whatsapp.net`, `@g.us`) preserved.
 
 A mismatch caused by normalization on one side would silently break filtering. If either side introduces a normalization pass in the future, the contract version MUST bump.
 
 ## Compatibility matrix
 
-| claude-whatsapp | OpenCLAUDE | mode | envelope token | behavior |
+| claude-whatsapp | ClawCode | mode | envelope token | behavior |
 |-----------------|------------|------|----------------|----------|
 | pre-1.19.0 | pre-1.5.0 | n/a | n/a | pre-contract baseline |
 | 1.19.0+ | pre-1.5.0 | n/a | written but ignored | pre-contract baseline |
-| pre-1.19.0 | 1.5.0+ | enforce | absent | OpenCLAUDE reads token=null → guest `[]`. **Surface in doctor as warn**: "OpenCLAUDE expects requestEnvelopeToken but claude-whatsapp doesn't emit it; upgrade claude-whatsapp or set scope.whatsapp.mode=off". Workaround: owner unlock (identity:"owner"+trust file) unaffected. |
+| pre-1.19.0 | 1.5.0+ | enforce | absent | ClawCode reads token=null → guest `[]`. **Surface in doctor as warn**: "ClawCode expects requestEnvelopeToken but claude-whatsapp doesn't emit it; upgrade claude-whatsapp or set scope.whatsapp.mode=off". Workaround: owner unlock (identity:"owner"+trust file) unaffected. |
 | 1.19.0+ | 1.5.0+ | off | n/a | scope inactive |
 | 1.19.0+ | 1.5.0+ | shadow | n/a | shadow logs but doesn't filter |
 | 1.19.0+ | 1.5.0+ | enforce | valid | partial allowlist emitted per chat/sender binding |
@@ -245,13 +245,13 @@ Version skew between installed plugins is detected at runtime by the reader: an 
 
 ## References
 
-- claude-whatsapp `scope.ts:71` — `scopedAllowedChats(context, access)` — the reference logic that OpenCLAUDE's resolver mirrors.
+- claude-whatsapp `scope.ts:71` — `scopedAllowedChats(context, access)` — the reference logic that ClawCode's resolver mirrors.
 - claude-whatsapp `server.ts:694, 701` — current `currentInboundContext` + `setInboundContext` — the hook point where envelope writing is wired.
-- OpenCLAUDE `lib/scope/whatsapp.ts` — adapter; extends `normalizeAccess`, `resolveAllowed`, and `allowedChatIds` to consume envelope-bound foreground contexts.
-- OpenCLAUDE `lib/scope/envelope.ts` — reader.
-- OpenCLAUDE `lib/scope/context.ts:ForegroundContext` — extended with optional `envelope` field.
-- OpenCLAUDE `lib/channel-detector.ts:detectWhatsappProjectDir` — channel-dir resolution.
+- ClawCode `lib/scope/whatsapp.ts` — adapter; extends `normalizeAccess`, `resolveAllowed`, and `allowedChatIds` to consume envelope-bound foreground contexts.
+- ClawCode `lib/scope/envelope.ts` — reader.
+- ClawCode `lib/scope/context.ts:ForegroundContext` — extended with optional `envelope` field.
+- ClawCode `lib/channel-detector.ts:detectWhatsappProjectDir` — channel-dir resolution.
 
 ## Golden fixture
 
-A shared golden fixture (`tests/fixtures/scope-envelope-v1.json`) MUST exist in both repos with identical bytes. Both writer (claude-whatsapp) and reader (OpenCLAUDE) consume the fixture in tier1 tests to verify the schema round-trips without drift.
+A shared golden fixture (`tests/fixtures/scope-envelope-v1.json`) MUST exist in both repos with identical bytes. Both writer (claude-whatsapp) and reader (ClawCode) consume the fixture in tier1 tests to verify the schema round-trips without drift.

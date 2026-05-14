@@ -45,7 +45,7 @@ If the user asks "can the agent see X chat?" or anything privacy-related:
 
 When a WhatsApp inbound triggers a `notifications/claude/channel` notification, claude-whatsapp embeds a `meta.requestEnvelopeToken` field (a 43-char base64url string). This token binds the current MCP call to the chat/sender that triggered the inbound, enabling per-chat scope enforcement.
 
-**You MUST forward this token to OpenCLAUDE memory tools when handling a channel-originated turn.** Pass `requestEnvelopeToken: "<token from notification meta>"` as an argument to:
+**You MUST forward this token to ClawCode memory tools when handling a channel-originated turn.** Pass `requestEnvelopeToken: "<token from notification meta>"` as an argument to:
 
 - `memory_search`
 - `memory_get`

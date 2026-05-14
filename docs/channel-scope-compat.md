@@ -1,8 +1,8 @@
 # Channel-scope compatibility
 
-OpenCLAUDE indexes content from external channel plugins (today: `claude-whatsapp`'s WhatsApp logs, transcripts, voice notes) into a shared memory store, then exposes that content through MCP search/recall, dreams, and inbox surfaces. Without coordination, the agent would see every chat regardless of the upstream plugin's own per-chat access governance (`historyScope` in claude-whatsapp).
+ClawCode indexes content from external channel plugins (today: `claude-whatsapp`'s WhatsApp logs, transcripts, voice notes) into a shared memory store, then exposes that content through MCP search/recall, dreams, and inbox surfaces. Without coordination, the agent would see every chat regardless of the upstream plugin's own per-chat access governance (`historyScope` in claude-whatsapp).
 
-Channel scope is the **optional, per-channel** opt-in layer that mirrors the upstream plugin's access rules at OpenCLAUDE's MCP boundary. It is `mode: off` by default — users who don't configure it see no behavior change, and OpenCLAUDE works exactly as before.
+Channel scope is the **optional, per-channel** opt-in layer that mirrors the upstream plugin's access rules at ClawCode's MCP boundary. It is `mode: off` by default — users who don't configure it see no behavior change, and ClawCode works exactly as before.
 
 This document covers: what scope enforces, how to turn it on, the cross-plugin contract that makes per-chat semantics possible, and the residual risks (especially native-filesystem bypass) that scope **does not** close.
 
@@ -55,11 +55,11 @@ Both are required. The trust file exists because the agent can write the config 
 
 ## Cross-plugin request envelope contract
 
-When both `claude-whatsapp` and OpenCLAUDE are installed and OpenCLAUDE has scope opted-in, per-chat semantics flow through a **request envelope token**:
+When both `claude-whatsapp` and ClawCode are installed and ClawCode has scope opted-in, per-chat semantics flow through a **request envelope token**:
 
 - claude-whatsapp emits a 32-byte random token for every inbound, written atomically to `<channel-dir>/.request-envelopes/<token>.json` (mode `0o600`, dir `0o700`).
 - The token is embedded in the inbound's notification meta as `meta.requestEnvelopeToken`.
-- When OpenCLAUDE's memory tools (`memory_search`, `memory_get`, `memory_context`, `voice_transcribe`) accept the optional `requestEnvelopeToken` arg and the agent forwards the token, OpenCLAUDE resolves the envelope and emits an allowlist that mirrors `claude-whatsapp/scope.ts:scopedAllowedChats` byte-exact.
+- When ClawCode's memory tools (`memory_search`, `memory_get`, `memory_context`, `voice_transcribe`) accept the optional `requestEnvelopeToken` arg and the agent forwards the token, ClawCode resolves the envelope and emits an allowlist that mirrors `claude-whatsapp/scope.ts:scopedAllowedChats` byte-exact.
 - Without forwarding the token under `mode = enforce`, calls fall through to guest `[]`. Owner unlock (`identity:"owner"` + trust file) is the always-available escape hatch and is unaffected by envelope absence.
 
 Full wire-level contract: `docs/scope-envelope-contract.md` (mirrored byte-exact in both repos).
