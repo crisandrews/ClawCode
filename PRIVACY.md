@@ -23,7 +23,7 @@ Typical local artifacts:
 - `HEARTBEAT.md` — local heartbeat log.
 - `logs/` and `conversations/` — optional local transcripts of CLI, WebChat, and messaging-channel sessions.
 - `.claude/settings.json`, `.claude/hooks.json`, cron definitions — local configuration.
-- `~/.claude/agent/scope-trust/<channel>-owner` — out-of-band trust marker created by the user via `/agent:scope wizard` (Bash-prompted). Empty file; presence + ownership = consent that this machine can act with owner privileges for the named channel. Created with mode `0o600`.
+- `~/.claude/agent/scope-trust/<workspace-fingerprint>/<channel>-owner` — out-of-band trust marker created by the user via `/agent:scope wizard` (Bash-prompted). Empty file; presence + ownership = consent that this machine can act with owner privileges for the named channel in THIS workspace. Created with mode `0o600` under a fingerprint subdir (mode `0o700`). As of 1.7.0 trust is per-workspace: granting in workspace A does NOT silently unlock workspace B. Pre-1.7 releases used a global path; legacy files are now ignored — re-run the wizard per workspace after upgrading.
 
 ### Channel-scope storage
 
@@ -63,7 +63,7 @@ When `execGate.mode` is `shadow` or `enforce`, every `Bash`, `Write`, `Edit`, `M
 
 Shadow mode logs would-block events to `memory/.execgate-shadow.jsonl` (rotated at 1 MB to `.1` backup; older history dropped). Useful for a one-week observation period before flipping to enforce. Doctor row `scope-execgate-shadow-events` summarizes recent events.
 
-A separate **out-of-band trust file** `~/.claude/agent/scope-trust/<channel>-exec` (mode 0600, same uid as the agent) unlocks the gate when the user explicitly trusts this machine for execution. The trust file is a SEPARATE primitive from the read-scope `<channel>-owner` trust file — having one does NOT imply the other. Both are created via Bash (user permission prompt), never by the agent through MCP.
+A separate **out-of-band trust file** `~/.claude/agent/scope-trust/<workspace-fingerprint>/<channel>-exec` (mode 0600, same uid as the agent, under a fingerprint subdir scoped to THIS workspace) unlocks the gate when the user explicitly trusts this machine for execution. The trust file is a SEPARATE primitive from the read-scope `<channel>-owner` trust file — having one does NOT imply the other. Trust granted in workspace A does NOT bleed to workspace B; if you want exec-trust in multiple workspaces, opt in to each independently. Both are created via Bash (user permission prompt), never by the agent through MCP.
 
 Always-on protected paths fire regardless of mode: Write/Edit calls targeting plugin internals (`hooks/` directory + the hook script, `dist/exec-gate-resolver.cjs`, and the specific source files that implement the gate — `lib/scope/exec-gate.ts`, `lib/scope/exec-gate-hook-entry.ts`, `lib/scope/protected-paths.ts`, `lib/scope/agent-config-guard.ts`), `agent-config.json`, `.mcp.json`, the scope-trust directory, `~/.ssh/`, credential dirs (`~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`), shell-init files (`.bashrc` etc.), LaunchAgents / user systemd units, and channel governance files (`<channel-dir>/access.json`) are refused. This list is hard-coded; the user cannot opt out via config. It protects the gate's own surface from prompt-injection bootstrap attacks.
 

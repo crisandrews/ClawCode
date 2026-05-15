@@ -49,6 +49,15 @@ import type { ScopeAdapter } from "./index.ts";
 import type { ChunkProvenance } from "./provenance.ts";
 import type { ScopeContext } from "./context.ts";
 import { isOwnerTrusted } from "./trust.ts";
+import { warnLegacyTrustMigrationOnce } from "./legacy-warn.ts";
+
+// Codex Phase 8 Step 2 Q4: the legacy-trust migration warn dedup Set now
+// lives in `legacy-warn.ts` so both the WhatsApp adapter AND
+// `detectScopeRuntime` go through the SAME dedup. Pre-refactor each
+// surface had its own private Set and a WhatsApp user would have seen
+// the warning twice on the first armed detection. Shared helper +
+// workspace-fingerprint key give exactly-once-per-(workspace × channel ×
+// suffix) semantics regardless of how many surfaces consult it.
 
 // ---------------------------------------------------------------------------
 // access.json shape (forward-compat — tolerates unknown fields)
@@ -496,6 +505,14 @@ export interface WhatsappAdapterOptions {
   /** Absolute path to `access.json`. Resolved by runtime detection. */
   accessPath: string;
   /**
+   * Workspace root for trust-file scoping (Phase 8 / 1.7.0). The adapter
+   * captures it at construction time so `allowedChatIds(context)` —
+   * which has no workspace context itself — still consults the correct
+   * per-workspace `<channel>-owner` trust file. The ScopeAdapter
+   * interface stays unchanged.
+   */
+  workspaceRoot: string;
+  /**
    * `config.scope.whatsapp.identity` — declarative per-machine owner
    * proof. `"owner"` unlocks `'all'` for foreground calls without
    * needing the `WHATSAPP_OWNER_BYPASS=1` env var. `"guest"` denies
@@ -536,6 +553,7 @@ export function createWhatsappAdapter(
   const configuredIdentity: ConfiguredIdentity =
     options.configuredIdentity ?? "auto";
   const isAutoDiscovered = options.isAutoDiscovered ?? false;
+  const workspaceRoot = options.workspaceRoot;
 
   // Initial load — if it fails, the adapter is not armed.
   const probe = loadAccess(options.accessPath, accessCache);
@@ -576,6 +594,12 @@ export function createWhatsappAdapter(
       // on disappearance, future infra). NOT consumed for the unlock
       // decision — see file docstring + Codex post-impl HIGH 1.
       void loadInboundContext(channelDir, inboundCache);
+      // Codex Phase 8 round-1 MEDIUM + Step 2 Q4: surface the migration
+      // hint when a legacy global trust file would have unlocked under
+      // 1.6 but the workspace-scoped one doesn't exist. Dedup with
+      // `runtime.ts` via the shared `warnLegacyTrustMigrationOnce`
+      // helper so WA users see exactly one warning.
+      warnLegacyTrustMigrationOnce(workspaceRoot, "whatsapp", "owner");
       return resolveAllowed(
         context,
         access,
@@ -584,7 +608,7 @@ export function createWhatsappAdapter(
         // Codex post-impl 2nd-pass CRITICAL: out-of-band trust file
         // gates the `identity = "owner"` (and background system-owner)
         // unlocks so the agent can't escalate via agent_config alone.
-        isOwnerTrusted("whatsapp"),
+        isOwnerTrusted(workspaceRoot, "whatsapp"),
         // Codex 3rd-pass CRITICAL 2: bootstrap fail-open only honored
         // for auto-discovered upstream paths.
         isAutoDiscovered

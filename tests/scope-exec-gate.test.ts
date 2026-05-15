@@ -34,6 +34,7 @@ import {
   ENVELOPE_VERSION,
   type RequestEnvelopePayload,
 } from "../lib/scope/envelope.ts";
+import { workspaceFingerprint } from "../lib/scope/trust.ts";
 import {
   SHADOW_LOG_MAX_BYTES,
   appendShadowEvent,
@@ -152,6 +153,35 @@ function withTrustDir<T>(fn: () => T): T {
   }
 }
 
+/**
+ * Phase 8: write a workspace-bound trust file at the correct fingerprinted
+ * path. The trust dir base (CLAW_SCOPE_TRUST_DIR) must already be set by
+ * the surrounding `withTrustDir`.
+ */
+function plantTrustFile(
+  workspaceRoot: string,
+  channel: "whatsapp" | "telegram" | "discord" | "imessage" | "webchat",
+  suffix: "owner" | "exec",
+  opts: { asSymlink?: boolean; mode?: number } = {}
+): string {
+  const fp = workspaceFingerprint(workspaceRoot);
+  const trustBase = process.env.CLAW_SCOPE_TRUST_DIR!;
+  const dir = path.join(trustBase, fp);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
+  const filePath = path.join(dir, `${channel}-${suffix}`);
+  if (opts.asSymlink) {
+    const target = path.join(trustBase, `real-target-${channel}-${suffix}`);
+    fs.writeFileSync(target, "", { mode: 0o600 });
+    fs.chmodSync(target, 0o600);
+    fs.symlinkSync(target, filePath);
+  } else {
+    fs.writeFileSync(filePath, "", { mode: opts.mode ?? 0o600 });
+    fs.chmodSync(filePath, opts.mode ?? 0o600);
+  }
+  return filePath;
+}
+
 const OWNER_JID = "1234567890@s.whatsapp.net";
 const NON_OWNER_JID = "9876543210@s.whatsapp.net";
 
@@ -177,9 +207,9 @@ function armedWA(
 function baseInput(
   toolName: string,
   toolInput: unknown,
-  armed: ArmedChannel[]
+  armed: ArmedChannel[],
+  ws: ReturnType<typeof fakeWorkspace> = fakeWorkspace()
 ): ResolverInput {
-  const ws = fakeWorkspace();
   return {
     toolName,
     toolInput,
@@ -346,11 +376,9 @@ check("C1 non-owner envelope + trust file <channel>-exec → allow", () => {
   const cd = mkChannelDir();
   writeEnvelope(cd, freshTok(), { senderId: NON_OWNER_JID });
   withTrustDir(() => {
-    // Create the exec trust file.
-    const trustDir = process.env.CLAW_SCOPE_TRUST_DIR!;
-    fs.writeFileSync(path.join(trustDir, "whatsapp-exec"), "", { mode: 0o600 });
-    fs.chmodSync(path.join(trustDir, "whatsapp-exec"), 0o600);
-    const result = resolve(baseInput("Bash", { command: "echo hi" }, [armedWA(cd)]));
+    const ws = fakeWorkspace();
+    plantTrustFile(ws.workspaceRoot, "whatsapp", "exec");
+    const result = resolve(baseInput("Bash", { command: "echo hi" }, [armedWA(cd)], ws));
     assert(result.decision === "allow", `expected allow, got ${result.decision}`);
   });
 });
@@ -359,18 +387,12 @@ check("C2 symlink trust file → rejected (lstat) → gate fires normally", () =
   const cd = mkChannelDir();
   writeEnvelope(cd, freshTok(), { senderId: NON_OWNER_JID });
   withTrustDir(() => {
-    const trustDir = process.env.CLAW_SCOPE_TRUST_DIR!;
-    // Real symlink: target is a regular file, but the trust-file path
-    // itself is a symlink to it. lstat must catch the symlink.
-    const target = path.join(trustDir, "real-target");
-    fs.writeFileSync(target, "", { mode: 0o600 });
-    fs.chmodSync(target, 0o600);
-    const linkPath = path.join(trustDir, "whatsapp-exec");
-    fs.symlinkSync(target, linkPath);
-    // Sanity: confirm the symlink + target exist as expected.
+    const ws = fakeWorkspace();
+    const linkPath = plantTrustFile(ws.workspaceRoot, "whatsapp", "exec", { asSymlink: true });
+    // Sanity: confirm the symlink exists.
     const ls = fs.lstatSync(linkPath);
     assert(ls.isSymbolicLink(), "fixture: linkPath should be a symbolic link");
-    const result = resolve(baseInput("Bash", { command: "echo hi" }, [armedWA(cd)]));
+    const result = resolve(baseInput("Bash", { command: "echo hi" }, [armedWA(cd)], ws));
     assert(result.decision === "block", `expected block, got ${result.decision}`);
   });
 });
@@ -379,11 +401,10 @@ check("C3 trust separation: <channel>-owner exists but <channel>-exec does NOT �
   const cd = mkChannelDir();
   writeEnvelope(cd, freshTok(), { senderId: NON_OWNER_JID });
   withTrustDir(() => {
-    const trustDir = process.env.CLAW_SCOPE_TRUST_DIR!;
-    fs.writeFileSync(path.join(trustDir, "whatsapp-owner"), "", { mode: 0o600 });
-    fs.chmodSync(path.join(trustDir, "whatsapp-owner"), 0o600);
+    const ws = fakeWorkspace();
+    plantTrustFile(ws.workspaceRoot, "whatsapp", "owner");
     // No `whatsapp-exec` file.
-    const result = resolve(baseInput("Bash", { command: "echo hi" }, [armedWA(cd)]));
+    const result = resolve(baseInput("Bash", { command: "echo hi" }, [armedWA(cd)], ws));
     assert(result.decision === "block", `expected block, got ${result.decision}`);
   });
 });
@@ -395,10 +416,9 @@ check("C4 isOwnerTrusted suffix=exec is per-channel (telegram trust doesn't unlo
   writeEnvelope(cdWa, freshTok(), { senderId: NON_OWNER_JID });
   writeEnvelope(cdTg, freshTok(), { senderId: NON_OWNER_JID });
   withTrustDir(() => {
-    const trustDir = process.env.CLAW_SCOPE_TRUST_DIR!;
+    const ws = fakeWorkspace();
     // Only telegram is exec-trusted — NOT whatsapp.
-    fs.writeFileSync(path.join(trustDir, "telegram-exec"), "", { mode: 0o600 });
-    fs.chmodSync(path.join(trustDir, "telegram-exec"), 0o600);
+    plantTrustFile(ws.workspaceRoot, "telegram", "exec");
 
     const armed: ArmedChannel[] = [
       armedWA(cdWa),
@@ -414,7 +434,7 @@ check("C4 isOwnerTrusted suffix=exec is per-channel (telegram trust doesn't unlo
         },
       },
     ];
-    const result = resolve(baseInput("Bash", { command: "echo hi" }, armed));
+    const result = resolve(baseInput("Bash", { command: "echo hi" }, armed, ws));
     // WA is the un-trusted channel that should still block.
     assert(result.decision === "block", `expected block from WA, got ${result.decision}`);
     assert(result.decision === "block" && result.channel === "whatsapp", "should be attributed to WA, not telegram");
@@ -810,12 +830,11 @@ check("H9 coerceExecGateConfig: tools=[] (empty array) → default tools, NOT em
 check("H10 trust-file with mode 0o644 (world-readable) → isOwnerTrusted returns false", () => {
   // WARN 7 fix: trust file must be 0o600 (or stricter).
   withTrustDir(() => {
-    const trustDir = process.env.CLAW_SCOPE_TRUST_DIR!;
-    fs.writeFileSync(path.join(trustDir, "whatsapp-exec"), "");
-    fs.chmodSync(path.join(trustDir, "whatsapp-exec"), 0o644);
+    const ws = fakeWorkspace();
+    plantTrustFile(ws.workspaceRoot, "whatsapp", "exec", { mode: 0o644 });
     const cd = mkChannelDir();
     writeEnvelope(cd, freshTok(), { senderId: NON_OWNER_JID });
-    const result = resolve(baseInput("Bash", { command: "echo hi" }, [armedWA(cd)]));
+    const result = resolve(baseInput("Bash", { command: "echo hi" }, [armedWA(cd)], ws));
     assert(result.decision === "block", `world-readable trust should NOT unlock, got ${result.decision}`);
   });
 });
@@ -944,10 +963,8 @@ check("J2 (FAIL A) unresolved channel + <channel>-exec trust → allow (escape h
   // file. User who knows the install is fine (e.g. mid-uninstall, manual
   // setup) can create the trust file to unlock.
   withTrustDir(() => {
-    const trustDir = process.env.CLAW_SCOPE_TRUST_DIR!;
-    fs.writeFileSync(path.join(trustDir, "whatsapp-exec"), "", { mode: 0o600 });
-    fs.chmodSync(path.join(trustDir, "whatsapp-exec"), 0o600);
     const ws = fakeWorkspace();
+    plantTrustFile(ws.workspaceRoot, "whatsapp", "exec");
     const armed: ArmedChannel[] = [
       {
         channel: "whatsapp",
@@ -1209,6 +1226,205 @@ check("K5 (round-2 LOW 2) discoverSourceFiles returns workspace-local set, sorte
     files.includes("lib/scope/channel-hint.ts"),
     `channel-hint.ts not auto-discovered — esbuild metafile is wrong`
   );
+});
+
+// ---------------------------------------------------------------------------
+// Group L — Phase 8 legacy global trust diagnostic (2 cases)
+// ---------------------------------------------------------------------------
+
+check("L1 valid legacy + missing workspace trust → block WITH diagnostic suffix", () => {
+  const cd = mkChannelDir();
+  writeEnvelope(cd, freshTok(), { senderId: NON_OWNER_JID });
+  withTrustDir(() => {
+    const ws = fakeWorkspace();
+    // Codex Phase 8 round-1 LOW: stubs assert args so a resolver bug that
+    // forgets to pass workspace/channel/suffix is caught by Group L.
+    const trustCalls: Array<{ ws: string; ch: string; suf: string }> = [];
+    const legacyCalls: Array<{ ch: string; suf: string }> = [];
+    const result = resolve({
+      ...baseInput("Bash", { command: "echo hi" }, [armedWA(cd)], ws),
+      effects: {
+        isOwnerTrusted: (workspaceRoot, channel, suffix) => {
+          trustCalls.push({ ws: workspaceRoot, ch: channel, suf: suffix });
+          return false;
+        },
+        legacyGlobalTrustExists: (channel, suffix) => {
+          legacyCalls.push({ ch: channel, suf: suffix });
+          return true;
+        },
+        recordShadow: () => {},
+      },
+    });
+    assert(result.decision === "block", `expected block, got ${result.decision}`);
+    assert(
+      "reason" in result &&
+        /legacy global exec trust ignored for this workspace — run \/agent:scope wizard to re-grant/.test(
+          result.reason
+        ),
+      `expected legacy diagnostic suffix, got: ${"reason" in result ? result.reason : "<no reason>"}`
+    );
+    assert(
+      trustCalls.length > 0 &&
+        trustCalls.some(
+          (c) => c.ws === ws.workspaceRoot && c.ch === "whatsapp" && c.suf === "exec"
+        ),
+      `isOwnerTrusted should be called with (workspaceRoot, "whatsapp", "exec"); got ${JSON.stringify(trustCalls)}`
+    );
+    assert(
+      legacyCalls.length > 0 &&
+        legacyCalls.some((c) => c.ch === "whatsapp" && c.suf === "exec"),
+      `legacyGlobalTrustExists should be called with ("whatsapp", "exec"); got ${JSON.stringify(legacyCalls)}`
+    );
+  });
+});
+
+check("L3 shadow mode + legacy trust ignored → shadow event flags legacyGlobalExecTrustIgnored=true (Codex round-1 MEDIUM)", () => {
+  const cd = mkChannelDir();
+  writeEnvelope(cd, freshTok(), { senderId: NON_OWNER_JID });
+  withTrustDir(() => {
+    const ws = fakeWorkspace();
+    // Codex round-2 LOW partial: record/assert args (match L1/L2 strength).
+    const trustCalls: Array<{ ws: string; ch: string; suf: string }> = [];
+    const legacyCalls: Array<{ ch: string; suf: string }> = [];
+    let captured: { event: unknown; logDir: string } | null = null;
+    const result = resolve({
+      ...baseInput("Bash", { command: "echo hi" }, [
+        armedWA(cd, { mode: "shadow" }),
+      ], ws),
+      effects: {
+        isOwnerTrusted: (workspaceRoot, channel, suffix) => {
+          trustCalls.push({ ws: workspaceRoot, ch: channel, suf: suffix });
+          return false;
+        },
+        legacyGlobalTrustExists: (channel, suffix) => {
+          legacyCalls.push({ ch: channel, suf: suffix });
+          return true;
+        },
+        recordShadow: (event, logDir) => {
+          captured = { event, logDir };
+        },
+      },
+    });
+    assert(result.decision === "shadow", `expected shadow, got ${result.decision}`);
+    assert(captured !== null, "shadow event should have been recorded");
+    const ev = (captured!.event as unknown) as {
+      legacyGlobalExecTrustIgnored?: boolean;
+    };
+    assert(
+      ev.legacyGlobalExecTrustIgnored === true,
+      `shadow event should carry legacyGlobalExecTrustIgnored=true; got ${JSON.stringify(ev)}`
+    );
+    assert(
+      "reason" in result &&
+        /legacy global exec trust ignored for this workspace — run \/agent:scope wizard to re-grant/.test(
+          result.reason
+        ),
+      `expected legacy suffix in shadow reason: ${"reason" in result ? result.reason : "<no reason>"}`
+    );
+    assert(
+      trustCalls.some(
+        (c) => c.ws === ws.workspaceRoot && c.ch === "whatsapp" && c.suf === "exec"
+      ),
+      `isOwnerTrusted should be called with (workspaceRoot, "whatsapp", "exec"); got ${JSON.stringify(trustCalls)}`
+    );
+    assert(
+      legacyCalls.some((c) => c.ch === "whatsapp" && c.suf === "exec"),
+      `legacyGlobalTrustExists should be called with ("whatsapp", "exec"); got ${JSON.stringify(legacyCalls)}`
+    );
+  });
+});
+
+check("L4 shadow mode + NO legacy trust → shadow event flags legacyGlobalExecTrustIgnored=false", () => {
+  const cd = mkChannelDir();
+  writeEnvelope(cd, freshTok(), { senderId: NON_OWNER_JID });
+  withTrustDir(() => {
+    const ws = fakeWorkspace();
+    // Codex round-2 LOW partial: record/assert args (match L1/L2 strength).
+    const trustCalls: Array<{ ws: string; ch: string; suf: string }> = [];
+    const legacyCalls: Array<{ ch: string; suf: string }> = [];
+    let captured: { event: unknown; logDir: string } | null = null;
+    const result = resolve({
+      ...baseInput("Bash", { command: "echo hi" }, [
+        armedWA(cd, { mode: "shadow" }),
+      ], ws),
+      effects: {
+        isOwnerTrusted: (workspaceRoot, channel, suffix) => {
+          trustCalls.push({ ws: workspaceRoot, ch: channel, suf: suffix });
+          return false;
+        },
+        legacyGlobalTrustExists: (channel, suffix) => {
+          legacyCalls.push({ ch: channel, suf: suffix });
+          return false;
+        },
+        recordShadow: (event, logDir) => {
+          captured = { event, logDir };
+        },
+      },
+    });
+    assert(result.decision === "shadow", `expected shadow, got ${result.decision}`);
+    assert(captured !== null, "shadow event should have been recorded");
+    const ev = (captured!.event as unknown) as {
+      legacyGlobalExecTrustIgnored?: boolean;
+    };
+    assert(
+      ev.legacyGlobalExecTrustIgnored === false,
+      `shadow event should carry legacyGlobalExecTrustIgnored=false; got ${JSON.stringify(ev)}`
+    );
+    assert(
+      "reason" in result && !/legacy global exec trust ignored/.test(result.reason),
+      `no legacy suffix expected: ${"reason" in result ? result.reason : "<no reason>"}`
+    );
+    assert(
+      trustCalls.some(
+        (c) => c.ws === ws.workspaceRoot && c.ch === "whatsapp" && c.suf === "exec"
+      ),
+      `isOwnerTrusted should be called with (workspaceRoot, "whatsapp", "exec"); got ${JSON.stringify(trustCalls)}`
+    );
+    assert(
+      legacyCalls.some((c) => c.ch === "whatsapp" && c.suf === "exec"),
+      `legacyGlobalTrustExists should be called with ("whatsapp", "exec"); got ${JSON.stringify(legacyCalls)}`
+    );
+  });
+});
+
+check("L2 stale/broken legacy → block WITHOUT diagnostic suffix", () => {
+  const cd = mkChannelDir();
+  writeEnvelope(cd, freshTok(), { senderId: NON_OWNER_JID });
+  withTrustDir(() => {
+    const ws = fakeWorkspace();
+    const trustCalls: Array<{ ws: string; ch: string; suf: string }> = [];
+    const legacyCalls: Array<{ ch: string; suf: string }> = [];
+    const result = resolve({
+      ...baseInput("Bash", { command: "echo hi" }, [armedWA(cd)], ws),
+      effects: {
+        isOwnerTrusted: (workspaceRoot, channel, suffix) => {
+          trustCalls.push({ ws: workspaceRoot, ch: channel, suf: suffix });
+          return false;
+        },
+        legacyGlobalTrustExists: (channel, suffix) => {
+          legacyCalls.push({ ch: channel, suf: suffix });
+          return false;
+        },
+        recordShadow: () => {},
+      },
+    });
+    assert(result.decision === "block", `expected block, got ${result.decision}`);
+    assert(
+      "reason" in result &&
+        !/legacy global exec trust ignored/.test(result.reason),
+      `unexpected legacy suffix on clean block: ${"reason" in result ? result.reason : "<no reason>"}`
+    );
+    assert(
+      trustCalls.some(
+        (c) => c.ws === ws.workspaceRoot && c.ch === "whatsapp" && c.suf === "exec"
+      ),
+      `isOwnerTrusted should be called with (workspaceRoot, "whatsapp", "exec"); got ${JSON.stringify(trustCalls)}`
+    );
+    assert(
+      legacyCalls.some((c) => c.ch === "whatsapp" && c.suf === "exec"),
+      `legacyGlobalTrustExists should be called with ("whatsapp", "exec"); got ${JSON.stringify(legacyCalls)}`
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

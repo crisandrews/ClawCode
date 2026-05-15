@@ -15,7 +15,7 @@ Use `/agent:scope wizard` — an interactive REPL that walks the user through:
 3. **Foreground identity** (`auto | owner | guest`)
 4. **Background identity** (`deny | system-owner`) — what dreams/indexer see when no inbound is in flight
 
-The wizard writes the scope tree to `agent-config.json` via `Bash` (which surfaces a permission prompt — the agent cannot silently elevate the policy via MCP because `agent_config(action='set')` refuses any scope key). If the user picks `owner` or `system-owner`, the wizard also creates an out-of-band trust file `~/.claude/agent/scope-trust/<channel>-owner` (a second `Bash` prompt). Both writes are required for owner unlock: config alone does not escalate.
+The wizard writes the scope tree to `agent-config.json` via `Bash` (which surfaces a permission prompt — the agent cannot silently elevate the policy via MCP because `agent_config(action='set')` refuses any scope key). If the user picks `owner` or `system-owner`, the wizard also creates an out-of-band trust file `~/.claude/agent/scope-trust/<workspace-fingerprint>/<channel>-owner` (a second `Bash` prompt; per-workspace as of 1.7.0). Both writes are required for owner unlock: config alone does not escalate.
 
 The first wizard apply also surfaces a one-time banner clarifying that MCP scope is not a filesystem sandbox.
 
@@ -40,9 +40,20 @@ When a channel is `mode: enforce` and the upstream plugin's governance is resolv
 To let an agent acting on the user's behalf see all chats indexed under a channel:
 
 1. **Config**: set `scope.<channel>.identity = "owner"` (foreground) or `scope.<channel>.background.identity = "system-owner"` (dreams + indexer). The wizard does this via `Bash`.
-2. **Out-of-band trust file**: create `~/.claude/agent/scope-trust/<channel>-owner` (any file with mode `0o600`; presence + uid is the signal). The wizard does this via a second `Bash` prompt.
+2. **Out-of-band trust file**: create `~/.claude/agent/scope-trust/<workspace-fingerprint>/<channel>-owner` (any file with mode `0o600`; presence + uid is the signal). The wizard does this via a second `Bash`, invoking the bridge script `scripts/print-workspace-fingerprint.mjs` so the Bash subdir name matches the TS helper byte-exact.
 
 Both are required. The trust file exists because the agent can write the config via `Bash` (which a permissive auto-allow setup could approve silently), but the second `Bash` to touch the trust file is a separate, deliberate confirmation — closing the prompt-injection escalation surface where a hijacked agent could otherwise simulate owner consent. **Caveat**: if `Bash` is on auto-allow for the session, the trust file is created without an interactive prompt; in that case the user should review the wizard's confirmation preview before approving the apply step, or run the commands manually outside the agent.
+
+### Trust files are per-workspace (1.7.0+)
+
+As of 1.7.0, trust files live in a subdirectory keyed by a fingerprint of the workspace path: `~/.claude/agent/scope-trust/<workspace-fingerprint>/<channel>-{owner,exec}`. The fingerprint is `SHA256(realpath(workspaceRoot))` (with case-fold applied per-workspace based on a filesystem probe rather than the platform default — case-sensitive APFS volumes don't get over-folded), truncated to 32 hex chars.
+
+Granting trust in workspace A does NOT silently unlock workspace B — `agent-config.json` was already per-workspace, so a global trust file would have been a category error. Re-run `/agent:scope wizard` in each workspace where you want trust granted.
+
+**1.6 → 1.7 migration** (hard cutover, no automatic upgrade):
+- Legacy `~/.claude/agent/scope-trust/<channel>-{owner,exec}` files (the pre-1.7 layout) are ignored as of 1.7.0.
+- Three surfaces nudge you to re-grant: a SessionStart hook stderr line, a `console.warn` when an armed channel first detects the mismatch, and a doctor row `scope-trust-legacy` that lists the exact paths plus the `rm` command to clean them up after re-granting.
+- The SessionStart advisory is dismissible per workspace via `~/.claude/agent/scope-trust/<workspace-fingerprint>/.scope-trust-legacy-dismissed` (workspace-scoped, not global — dismissing in workspace A still warns in workspace B).
 
 `WHATSAPP_OWNER_BYPASS=1` in the shell env is an alternative escape hatch — agents launched with that env can read scoped content as owner. Useful for owner-launched terminal sessions where no inbound has happened recently.
 
@@ -65,7 +76,7 @@ When the gate fires (mode != off + a non-owner envelope exists in the lookback w
 
 **Always-on protected paths** (independent of mode/policy, fires even with `mode: off`): writes via `Write`, `Edit`, `MultiEdit`, or `NotebookEdit` to a fixed self-protecting list — `<plugin-root>/hooks/` directory (incl. the PreToolUse hook script `exec-gate-pretool.sh`), `<plugin-root>/dist/exec-gate-resolver.cjs`, the four exec-gate source files (`<plugin-root>/lib/scope/exec-gate.ts`, `exec-gate-hook-entry.ts`, `protected-paths.ts`, `agent-config-guard.ts`), `<workspace>/agent-config.json`, `~/.claude/`, `~/.ssh/`, `~/.aws/`, `~/.gnupg/`, `~/.kube/`, `~/.docker/`, shell init files (`~/.bashrc`, `~/.zshrc`, `~/.profile`, `~/.config/fish/config.fish`, etc.), `~/Library/LaunchAgents/`, `~/.config/systemd/user/`, the `.mcp.json` / `.claude-plugin/plugin.json` files, and every configured channel's `access.json` (regardless of channel mode). The agent cannot self-modify the gate, plant a persistence backdoor through MCP write tools, or corrupt channel governance to soft-DoS the owner.
 
-**Execution-trust file** (separate from read-scope owner trust): `~/.claude/agent/scope-trust/<channel>-exec` unlocks the gate for that channel. Created via `Bash` in the wizard — the agent cannot create it through any MCP tool, ensuring the unlock requires deliberate user consent. The `<channel>-owner` (read scope) and `<channel>-exec` (execution scope) trust files are independent — neither implies the other. You can opt into reading all your channels' content from your own machine without also granting non-owner group chats the power to invoke destructive tools.
+**Execution-trust file** (separate from read-scope owner trust): `~/.claude/agent/scope-trust/<workspace-fingerprint>/<channel>-exec` unlocks the gate for that channel in THIS workspace. Created via `Bash` in the wizard — the agent cannot create it through any MCP tool, ensuring the unlock requires deliberate user consent. The `<channel>-owner` (read scope) and `<channel>-exec` (execution scope) trust files are independent — neither implies the other. You can opt into reading all your channels' content from your own machine without also granting non-owner group chats the power to invoke destructive tools. Per-workspace as of 1.7.0; if you want exec-trust in multiple workspaces, opt in to each one separately.
 
 **Trade-off — false-positives in mixed-traffic groups**: the gate fires whenever ANY non-owner envelope exists in the lookback window, even if the current turn is responding to a different inbound. Under context-contamination model this is correct: if the agent processed a non-owner message within the last 60s, its working context likely includes that content, and blocking destructive operations prevents action-on-injected content even when authority is ambiguous. Mitigations: create the `<channel>-exec` trust file, tighten `lookbackMs`, or run owner-driven destructive operations from a terminal (where no channel envelope is present → gate doesn't fire).
 

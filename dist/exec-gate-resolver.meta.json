@@ -42,9 +42,30 @@
       "imports": [],
       "format": "esm"
     },
-    "lib/scope/trust.ts": {
-      "bytes": 4614,
+    "lib/scope/canonical-path.ts": {
+      "bytes": 6785,
       "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "lib/scope/trust.ts": {
+      "bytes": 9808,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
         {
           "path": "node:fs",
           "kind": "import-statement",
@@ -59,12 +80,28 @@
           "path": "node:path",
           "kind": "import-statement",
           "external": true
+        },
+        {
+          "path": "lib/scope/canonical-path.ts",
+          "kind": "import-statement",
+          "original": "./canonical-path.ts"
+        }
+      ],
+      "format": "esm"
+    },
+    "lib/scope/legacy-warn.ts": {
+      "bytes": 2828,
+      "imports": [
+        {
+          "path": "lib/scope/trust.ts",
+          "kind": "import-statement",
+          "original": "./trust.ts"
         }
       ],
       "format": "esm"
     },
     "lib/scope/whatsapp.ts": {
-      "bytes": 29230,
+      "bytes": 30602,
       "imports": [
         {
           "path": "node:fs",
@@ -80,6 +117,11 @@
           "path": "lib/scope/trust.ts",
           "kind": "import-statement",
           "original": "./trust.ts"
+        },
+        {
+          "path": "lib/scope/legacy-warn.ts",
+          "kind": "import-statement",
+          "original": "./legacy-warn.ts"
         }
       ],
       "format": "esm"
@@ -138,7 +180,7 @@
       "format": "esm"
     },
     "lib/scope/runtime.ts": {
-      "bytes": 17798,
+      "bytes": 18400,
       "imports": [
         {
           "path": "node:fs",
@@ -171,6 +213,11 @@
           "original": "./whatsapp.ts"
         },
         {
+          "path": "lib/scope/legacy-warn.ts",
+          "kind": "import-statement",
+          "original": "./legacy-warn.ts"
+        },
+        {
           "path": "lib/scope/provenance.ts",
           "kind": "import-statement",
           "original": "./provenance.ts"
@@ -195,7 +242,7 @@
       "format": "esm"
     },
     "lib/scope/protected-paths.ts": {
-      "bytes": 10935,
+      "bytes": 10065,
       "imports": [
         {
           "path": "node:fs",
@@ -211,12 +258,17 @@
           "path": "node:path",
           "kind": "import-statement",
           "external": true
+        },
+        {
+          "path": "lib/scope/canonical-path.ts",
+          "kind": "import-statement",
+          "original": "./canonical-path.ts"
         }
       ],
       "format": "esm"
     },
     "lib/scope/exec-gate-shadow-log.ts": {
-      "bytes": 9168,
+      "bytes": 9574,
       "imports": [
         {
           "path": "node:fs",
@@ -232,7 +284,7 @@
       "format": "esm"
     },
     "lib/scope/exec-gate.ts": {
-      "bytes": 20731,
+      "bytes": 23153,
       "imports": [
         {
           "path": "node:crypto",
@@ -273,7 +325,7 @@
       "format": "esm"
     },
     "lib/scope/exec-gate-hook-entry.ts": {
-      "bytes": 14647,
+      "bytes": 16258,
       "imports": [
         {
           "path": "node:fs",
@@ -368,12 +420,27 @@
           "external": true
         },
         {
+          "path": "node:crypto",
+          "kind": "require-call",
+          "external": true
+        },
+        {
           "path": "node:fs",
           "kind": "require-call",
           "external": true
         },
         {
           "path": "node:os",
+          "kind": "require-call",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "require-call",
+          "external": true
+        },
+        {
+          "path": "node:fs",
           "kind": "require-call",
           "external": true
         },
@@ -408,11 +475,6 @@
           "external": true
         },
         {
-          "path": "node:fs",
-          "kind": "require-call",
-          "external": true
-        },
-        {
           "path": "node:os",
           "kind": "require-call",
           "external": true
@@ -437,13 +499,13 @@
       "entryPoint": "lib/scope/exec-gate-hook-entry.ts",
       "inputs": {
         "lib/scope/exec-gate-hook-entry.ts": {
-          "bytesInOutput": 6155
+          "bytesInOutput": 6815
         },
         "lib/config.ts": {
           "bytesInOutput": 3303
         },
         "lib/scope/runtime.ts": {
-          "bytesInOutput": 5251
+          "bytesInOutput": 5402
         },
         "lib/channel-detector.ts": {
           "bytesInOutput": 768
@@ -452,10 +514,16 @@
           "bytesInOutput": 200
         },
         "lib/scope/whatsapp.ts": {
-          "bytesInOutput": 10640
+          "bytesInOutput": 10774
         },
         "lib/scope/trust.ts": {
-          "bytesInOutput": 1132
+          "bytesInOutput": 3014
+        },
+        "lib/scope/canonical-path.ts": {
+          "bytesInOutput": 3410
+        },
+        "lib/scope/legacy-warn.ts": {
+          "bytesInOutput": 899
         },
         "lib/scope/scoped-paths.ts": {
           "bytesInOutput": 209
@@ -464,19 +532,19 @@
           "bytesInOutput": 794
         },
         "lib/scope/exec-gate.ts": {
-          "bytesInOutput": 8832
+          "bytesInOutput": 9489
         },
         "lib/scope/envelope.ts": {
           "bytesInOutput": 5661
         },
         "lib/scope/protected-paths.ts": {
-          "bytesInOutput": 5858
+          "bytesInOutput": 5172
         },
         "lib/scope/exec-gate-shadow-log.ts": {
           "bytesInOutput": 3840
         }
       },
-      "bytes": 54284
+      "bytes": 61475
     }
   }
 }

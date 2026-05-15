@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-05-15
+
+### Why this release matters
+
+**BREAKING for users of 1.5.0 / 1.6.0 scope-trust files.** Trust files now live in a per-workspace subdirectory keyed by a fingerprint of the workspace path: `~/.claude/agent/scope-trust/<workspace-fingerprint>/<channel>-{owner,exec}`. Previous releases stored them globally at `~/.claude/agent/scope-trust/<channel>-{owner,exec}`, which silently unlocked scope across every workspace once granted anywhere — a category error since the `agent-config.json` that the trust pairs with is already per-workspace. After upgrading, run `/agent:scope wizard` in each workspace where you want trust re-granted. Legacy global files are ignored as of 1.7.0 (hard cutover, no automatic migration).
+
+Three active surfaces nudge you on first contact: a SessionStart hook line, a `console.warn` when an armed channel first detects a workspace mismatch, and a doctor row (`scope-trust-legacy`) that lists the exact paths and the `rm` command to clean up after re-granting. The wizard's Bash snippets now compute the workspace fingerprint via the same TypeScript helper the runtime uses (`scripts/print-workspace-fingerprint.mjs`), so Bash and TS agree byte-exact on what subdirectory to read or write — closes the case-fold mismatch that an inline Bash crypto hash would have hit on macOS uppercase paths.
+
+### Added
+
+- Lib/scope/trust: workspace-bound API. `workspaceFingerprint(workspaceRoot)` is SHA256(realpath + per-FS-probe case-fold)→32 hex; resolves to the right subdir even on case-sensitive APFS volumes. All exports (`isOwnerTrusted`, `trustFilePath`, `writeTrustMarker`, `removeTrustMarker`) now require `workspaceRoot` — TypeScript breaks any caller that forgets to thread it. `legacyGlobalTrustExists(channel, suffix)` is a diagnostic-only predicate matching the full 1.6 unlock check (mode/uid/symlink) so doctor + warnings skip stale 0o644 leftovers.
+- Lib/scope/legacy-warn: single source of truth for "warn once per workspace × channel × suffix". Both the WhatsApp adapter and the runtime arm-detection path call into this so users see exactly one stderr advisory per upgrade-cliff event. FIFO-256-capped Set survives adapter rebuilds across the 5s runtime cache TTL.
+- Lib/scope/canonical-path: extracted `canonicalize` + `isWorkspaceCaseInsensitive` from `filter.ts` + `protected-paths.ts` into a shared module so the trust primitive and the filter share a single cache + probe implementation. Per-workspace probe inspects an actual flippable entry inside the workspace via inode compare — the platform-default heuristic was over-folding case-sensitive APFS volumes.
+- Lib/doctor: `checkScopeTrustLegacy` walks `<scope-trust-dir>/` for pre-1.7 flat-layout files, gates each through `legacyGlobalTrustExists`, and surfaces the exact paths + `rm` recovery command. Reports `ok` when the dir is absent or contains only 1.7+ fingerprint subdirs.
+- Hooks/scope-trust-legacy-warn.sh: SessionStart advisory. Silent when no legacy files; one-line stderr when present. Workspace-scoped dismissal marker at `<scope-trust-dir>/<fingerprint>/.scope-trust-legacy-dismissed` (dismissing in workspace A doesn't silence the advisory in workspace B).
+- Scripts/print-workspace-fingerprint.mjs: bridge from the wizard's Bash to the TS helper. Invoke via `node "$CLAUDE_PLUGIN_ROOT/node_modules/tsx/dist/cli.mjs" "$CLAUDE_PLUGIN_ROOT/scripts/print-workspace-fingerprint.mjs" "$PWD"`. Plugin-local tsx binary — `npx tsx` from arbitrary cwd is unreliable.
+
+### Changes
+
+- Skills/scope/SKILL.md: every Bash snippet that creates or removes a trust file now opens with `set -euo pipefail`, guards `CLAUDE_PLUGIN_ROOT`, validates the bridge-script hash against `^[0-9a-f]{32}$`, sets `umask 077`, and writes to `~/.claude/agent/scope-trust/<fingerprint>/<channel>-<suffix>`. Hardened against empty hashes, missing plugin root, and umask leaks. `/agent:scope disable` removes BOTH trust files for THIS workspace only.
+- Lib/scope/whatsapp: `WhatsappAdapterOptions.workspaceRoot` now required. Closure captures workspaceRoot at construction time; `ScopeAdapter` interface unchanged. Read-scope owner unlock + background `system-owner` unlock consult `isOwnerTrusted(workspaceRoot, "whatsapp", suffix)` against the per-workspace path. Migration warn for the read-scope case routes through `legacy-warn.ts` (no duplicate Set).
+- Lib/scope/runtime: passes `workspaceRoot` to the adapter; calls the shared `warnLegacyTrustMigrationOnce` helper for both `owner` and `exec` suffixes on first arm so users with legacy exec trust get the hint at runtime detection time too (not only at first exec-gate fire).
+- Lib/scope/exec-gate: enforce + shadow branches both surface the `legacy global exec trust ignored for this workspace` diagnostic suffix when workspace-scoped exec trust is missing AND a valid 1.6 global file exists. Shadow event payload gains `legacyGlobalExecTrustIgnored?: boolean`. `effects.isOwnerTrusted` signature now takes `workspaceRoot`; default forwards to the workspace-bound implementation.
+- Lib/scope/exec-gate-hook-entry: workspaceRoot is normalized at the hook boundary via `path.resolve` + NUL-byte rejection + absolute-path validation. Fails CLOSED (exit 2, stderr `exec-gate: unable to resolve workspaceRoot — fail-closed`) instead of the top-level `.catch(() => 0)` fail-open path.
+- Lib/doctor: `checkScopeOwnerAssertion` now consults `isOwnerTrusted(workspace, channel, "owner")` instead of constructing the legacy direct path, so a leftover 1.6 file doesn't surface as "acting as owner" in 1.7.
+- Hooks/hooks.json: `SessionStart` array gains a second entry for the new legacy-trust advisory hook. Existing `reconcile-crons.sh` invocation preserved unchanged.
+- Docs/channel-scope-compat: new "Trust files are per-workspace" subsection. PRIVACY.md / README.md / AGENTS.md updated to describe the per-workspace model + migration cliff.
+- Package.json: bumped 1.6.0 → 1.7.0. `test` script now also runs `scope-trust`, `scope-trust-workspace`, and `scope-trust-legacy-hook` suites.
+
+### Migration
+
+1. **Upgrade ClawCode to 1.7.0** (via `claude plugin update` or however you installed it).
+2. **Open each workspace** where you previously had scope enabled.
+3. **Run `/agent:scope wizard`** and select the same options you had before (owner / guest, shadow / enforce, denylist / allowlist). The wizard recreates the trust files under the new per-workspace path via Bash prompts.
+4. **Run `/agent:doctor`** — the `scope-trust-legacy` row lists every 1.6 global file with the exact `rm` command. Copy-paste and run to clean up.
+5. **Repeat per workspace** where you want trust. Granting in one workspace does NOT bleed to another.
+
+If you don't migrate: scope features silently degrade to guest in those workspaces. The agent surfaces a one-line warning on SessionStart + a warning when an armed channel first fires + a doctor row, so the cliff is loud rather than silent.
+
 ## [1.6.0] — 2026-05-14
 
 ### Why this release matters

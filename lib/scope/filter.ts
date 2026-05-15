@@ -31,6 +31,11 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ChannelName } from "../channel-detector.ts";
 import type { ChannelScopeConfig, ScopeConfigTree } from "../config.ts";
+import {
+  isWorkspaceCaseInsensitive,
+  _resetWsCaseInsensitiveCacheForTests as resetWsCaseInsensitiveCache,
+  _peekWsCaseInsensitiveForTests as peekWsCaseInsensitive,
+} from "./canonical-path.ts";
 import { deriveProvenance } from "./provenance.ts";
 import type { ChunkProvenance } from "./provenance.ts";
 import type { ScopeContext } from "./context.ts";
@@ -301,9 +306,6 @@ export function assertCanReadPath(
   return { allowed: false, error: sanitizeDenied(channel, relPath) };
 }
 
-const PLATFORM_CASE_INSENSITIVE_DEFAULT =
-  process.platform === "darwin" || process.platform === "win32";
-
 const SCOPED_MEMORY_TEXTUAL_RE =
   /(?:^|[/\\])memory[/\\]\.scoped[/\\]([a-z0-9_-]+)[/\\]MEMORY\.([^/\\]+)\.md$/i;
 
@@ -313,155 +315,24 @@ const SCOPED_MEMORY_TEXTUAL_RE =
 const WINDOWS_DRIVE_RELATIVE_RE = /^[A-Za-z]:[^/\\]/;
 
 /**
- * Codex 5th-pass MEDIUM: a case-sensitive APFS volume on macOS would
- * be over-folded by the platform-default heuristic, conflating
- * distinct files. Probe the workspace once and cache by realpath.
- *
- * Algorithm: realpath the workspace, then probe whether
- * `realpath(WORKSPACE.toUpperCase())` returns the same canonical path.
- * If it does (or matches case-folded), the FS is case-insensitive. If
- * it errors or returns a different canonical path, the FS is
- * case-sensitive. Cached per-workspace-realpath for the process
- * lifetime — workspace FS sensitivity doesn't change at runtime.
- */
-const wsCaseInsensitiveCache = new Map<string, boolean>();
-
-/** Cap on the workspace probe cache so a long-running process that
- *  cycles through many ephemeral workspaces (test runners, batch jobs)
- *  doesn't accumulate. Codex 6th-pass WATCH. */
-const WS_CASE_PROBE_CACHE_CAP = 64;
-
-function isWorkspaceCaseInsensitive(wsRealpath: string): boolean {
-  const cached = wsCaseInsensitiveCache.get(wsRealpath);
-  if (cached !== undefined) return cached;
-  let result = PLATFORM_CASE_INSENSITIVE_DEFAULT;
-  let conclusive = false;
-  try {
-    // Codex 6th-pass HIGH fix: probe INSIDE the workspace, not via its
-    // parent. A case-insensitive volume (CIFS/NTFS/exFAT over Linux,
-    // or a case-insensitive APFS sub-volume) mounted under a case-
-    // sensitive parent would have its parent answer "case-sensitive"
-    // even though the workspace's own filesystem folds case. The
-    // authoritative test is to look up a real entry INSIDE the
-    // workspace via a case-flipped name and compare inodes.
-    let entries: fs.Dirent[] = [];
-    try {
-      entries = fs.readdirSync(wsRealpath, { withFileTypes: true });
-    } catch {
-      /* no readdir — empty/unreadable; defer to parent-dir probe */
-    }
-    // Codex 7th-pass MEDIUM: sort to make the answer deterministic
-    // across processes. `readdirSync` order is filesystem-dependent;
-    // a dangling symlink as the first flippable entry could poison
-    // the answer one run and not the next.
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    for (const e of entries) {
-      const name = e.name;
-      const flipped =
-        name === name.toLowerCase() ? name.toUpperCase() : name.toLowerCase();
-      if (flipped === name) continue;
-      const orig = path.join(wsRealpath, name);
-      const variant = path.join(wsRealpath, flipped);
-      // Codex 7th-pass MEDIUM: lstat the orig first. If orig itself
-      // is a dangling symlink or otherwise unstattable, skip and try
-      // the next entry — DO NOT poison the result with `false`. Only
-      // the variant lookup proves case-(in)sensitivity.
-      try {
-        fs.lstatSync(orig);
-      } catch {
-        continue;
-      }
-      try {
-        const aOrig = fs.statSync(orig);
-        if (aOrig.ino === 0) continue;
-        try {
-          const aVar = fs.statSync(variant);
-          if (aVar.ino === 0) continue;
-          result = aOrig.dev === aVar.dev && aOrig.ino === aVar.ino;
-          conclusive = true;
-          break;
-        } catch {
-          // The case-flipped variant doesn't resolve while orig does
-          // — this IS the case-sensitive fingerprint.
-          result = false;
-          conclusive = true;
-          break;
-        }
-      } catch {
-        // orig fails stat (followed-symlink chain broken, race) —
-        // treat as inconclusive, try next entry.
-        continue;
-      }
-    }
-    if (!conclusive) {
-      // Workspace empty or no flippable entries. Codex 7th-pass MEDIUM:
-      // do NOT cache this fallback answer — re-probe on the next call,
-      // by the time the workspace has files we can answer authoritatively.
-      // We still derive a temporary answer for this call from the
-      // parent-dir basename flip, but don't poison the cache.
-      const dir = path.dirname(wsRealpath);
-      const base = path.basename(wsRealpath);
-      if (base.length > 0 && dir !== wsRealpath) {
-        const flipped =
-          base === base.toLowerCase()
-            ? base.toUpperCase()
-            : base.toLowerCase();
-        if (flipped !== base) {
-          const variant = path.join(dir, flipped);
-          try {
-            const aOrig = fs.statSync(wsRealpath);
-            const aVar = fs.statSync(variant);
-            if (aOrig.ino !== 0 && aVar.ino !== 0) {
-              result = aOrig.dev === aVar.dev && aOrig.ino === aVar.ino;
-            }
-          } catch {
-            result = false;
-          }
-        }
-      }
-    }
-  } catch {
-    /* fall back to platform default */
-  }
-  if (conclusive) {
-    if (wsCaseInsensitiveCache.size >= WS_CASE_PROBE_CACHE_CAP) {
-      const first = wsCaseInsensitiveCache.keys().next().value;
-      if (first !== undefined) wsCaseInsensitiveCache.delete(first);
-    }
-    wsCaseInsensitiveCache.set(wsRealpath, result);
-  }
-  return result;
-}
-
-/**
- * @internal Test-only: clear the workspace case-sensitivity probe
- * cache. Used by tests that recreate workspace directories.
+ * Codex Phase 8 round-1 HIGH: the workspace case-sensitivity probe now
+ * lives in `canonical-path.ts` so both filter and trust share a single
+ * cache + implementation. Re-exported here for backwards-compat with the
+ * Phase 5 test surface; new callers should import from `canonical-path.ts`
+ * directly.
  */
 export function _resetWsCaseInsensitiveCacheForTests(): void {
-  wsCaseInsensitiveCache.clear();
+  resetWsCaseInsensitiveCache();
 }
 
-/**
- * @internal Test-only: invoke the probe directly and return the
- * conclusive answer (or `null` if no entry was found and the fallback
- * would have to fire). Used by tests to assert that the dangling-
- * symlink first-entry case is skipped — the probe should still
- * reach a real flippable entry and answer authoritatively.
- */
-export function _probeWsCaseInsensitiveForTests(
-  wsRealpath: string
-): boolean {
+export function _probeWsCaseInsensitiveForTests(wsRealpath: string): boolean {
   return isWorkspaceCaseInsensitive(wsRealpath);
 }
 
-/**
- * @internal Test-only: peek the cached probe answer without triggering
- * a fresh probe. Returns undefined when no cache entry exists.
- */
 export function _peekWsCaseInsensitiveForTests(
   wsRealpath: string
 ): boolean | undefined {
-  return wsCaseInsensitiveCache.get(wsRealpath);
+  return peekWsCaseInsensitive(wsRealpath);
 }
 
 function caseFoldFor(wsCanonical: string, p: string): string {

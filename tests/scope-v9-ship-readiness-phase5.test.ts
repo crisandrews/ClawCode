@@ -33,6 +33,7 @@ import {
   checkScopeOwnerAssertion,
   checkScopeSchemaDrift,
 } from "../lib/doctor.ts";
+import { workspaceFingerprint } from "../lib/scope/trust.ts";
 import type { SearchResult } from "../lib/types.ts";
 
 let pass = 0;
@@ -316,8 +317,14 @@ async function run() {
   {
     const ws = makeWs();
     const trustDir = path.join(ws, "trust");
-    fs.mkdirSync(trustDir, { recursive: true });
-    fs.writeFileSync(path.join(trustDir, "whatsapp-owner"), "");
+    // Phase 8: trust file lives under <trustDir>/<workspace-fingerprint>/.
+    const fp = workspaceFingerprint(ws);
+    const fpDir = path.join(trustDir, fp);
+    fs.mkdirSync(fpDir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(fpDir, 0o700);
+    const trustFile = path.join(fpDir, "whatsapp-owner");
+    fs.writeFileSync(trustFile, "", { mode: 0o600 });
+    fs.chmodSync(trustFile, 0o600);
     process.env.CLAW_SCOPE_TRUST_DIR = trustDir;
     writeJson(path.join(ws, "agent-config.json"), {
       memory: { backend: "builtin", citations: "auto" },

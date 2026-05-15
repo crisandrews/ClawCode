@@ -23,6 +23,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { canonicalize } from "./canonical-path.ts";
 
 /** Reasons surfaced via stderr when a protected path is refused. */
 export type ProtectedPathReason =
@@ -207,38 +208,10 @@ export function classifyProtectedPath(
   return null;
 }
 
-/**
- * Canonicalize a path via `realpathSync` of the deepest existing
- * ancestor, joining any remaining (not-yet-existing) segments verbatim.
- * On case-insensitive filesystems (darwin, win32) the result is also
- * lower-cased so comparisons are case-fold-clean.
- *
- * If `realpathSync` throws (e.g., the root itself doesn't exist), falls
- * back to the input path with optional case folding.
- */
-function canonicalize(p: string, caseFold: boolean): string {
-  // Walk up to the deepest existing ancestor.
-  let cur = p;
-  const tail: string[] = [];
-  // Safety bound: don't loop forever.
-  for (let i = 0; i < 64; i++) {
-    try {
-      const real = fs.realpathSync.native(cur);
-      const joined = tail.length === 0 ? real : path.join(real, ...tail.reverse());
-      return caseFold ? joined.toLowerCase() : joined;
-    } catch {
-      // Not existing — pop one segment and retry.
-      const parent = path.dirname(cur);
-      if (parent === cur) {
-        // Reached fs root without finding any existing ancestor.
-        return caseFold ? p.toLowerCase() : p;
-      }
-      tail.push(path.basename(cur));
-      cur = parent;
-    }
-  }
-  return caseFold ? p.toLowerCase() : p;
-}
+// `canonicalize` was extracted to `./canonical-path.ts` (Phase 8 / Codex
+// round-1 HIGH #7) so the scope-trust primitive can reuse it without
+// pulling in the protected-paths classifier. The named import at the top
+// of this file uses the same implementation.
 
 /**
  * Subset of tool names for which `tool_input.file_path` / `notebook_path`

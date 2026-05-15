@@ -260,7 +260,7 @@ check("Codex P1: missingSince clears when file reappears", () => {
 check("createWhatsappAdapter returns null when file missing", () => {
   const f = makeFixture();
   try {
-    const adapter = createWhatsappAdapter({ accessPath: f.accessPath });
+    const adapter = createWhatsappAdapter({ accessPath: f.accessPath, workspaceRoot: f.workspace });
     assert(adapter === null, "no adapter");
   } finally {
     f.cleanup();
@@ -283,6 +283,7 @@ check("adapter returns no restriction in bootstrap mode (auto-discovered path)",
   try {
     const adapter = createWhatsappAdapter({
       accessPath: f.accessPath,
+      workspaceRoot: f.workspace,
       isAutoDiscovered: true,
     })!;
     const ctx = makeForegroundContext("req-1", { env: {} });
@@ -303,7 +304,7 @@ check("adapter returns no restriction with WHATSAPP_OWNER_BYPASS=1", () => {
     })
   );
   try {
-    const adapter = createWhatsappAdapter({ accessPath: f.accessPath })!;
+    const adapter = createWhatsappAdapter({ accessPath: f.accessPath, workspaceRoot: f.workspace })!;
     const ctx = makeForegroundContext("req-1", {
       env: { WHATSAPP_OWNER_BYPASS: "1" },
     });
@@ -321,7 +322,7 @@ check("adapter denies foreground without bypass when owner is set", () => {
     })
   );
   try {
-    const adapter = createWhatsappAdapter({ accessPath: f.accessPath })!;
+    const adapter = createWhatsappAdapter({ accessPath: f.accessPath, workspaceRoot: f.workspace })!;
     const ctx = makeForegroundContext("req-1", { env: {} });
     const allowed = adapter.allowedChatIds(ctx);
     assert(
@@ -345,7 +346,7 @@ check("adapter background system-owner WITHOUT trust file → []", () => {
   );
   try {
     // No trust file written — default state.
-    const adapter = createWhatsappAdapter({ accessPath: f.accessPath })!;
+    const adapter = createWhatsappAdapter({ accessPath: f.accessPath, workspaceRoot: f.workspace })!;
     const ctx = makeBackgroundContext("pass-1", "system-owner");
     const allowed = adapter.allowedChatIds(ctx);
     assert(
@@ -365,7 +366,7 @@ check("adapter background deny = []", () => {
     })
   );
   try {
-    const adapter = createWhatsappAdapter({ accessPath: f.accessPath })!;
+    const adapter = createWhatsappAdapter({ accessPath: f.accessPath, workspaceRoot: f.workspace })!;
     const ctx = makeBackgroundContext("pass-1", "deny");
     const allowed = adapter.allowedChatIds(ctx);
     assert(
@@ -388,7 +389,7 @@ check("Codex 2nd-pass HIGH 3: explicit background deny WINS over bootstrap", () 
   // (which itself requires the trust file — defense in depth).
   const f = makeFixture(JSON.stringify({ ownerJids: [], allowFrom: [] }));
   try {
-    const adapter = createWhatsappAdapter({ accessPath: f.accessPath })!;
+    const adapter = createWhatsappAdapter({ accessPath: f.accessPath, workspaceRoot: f.workspace })!;
     const ctx = makeBackgroundContext("pass-1", "deny");
     const allowed = adapter.allowedChatIds(ctx);
     assert(
@@ -412,7 +413,7 @@ check("canSee passes through non-whatsapp provenance", () => {
     })
   );
   try {
-    const adapter = createWhatsappAdapter({ accessPath: f.accessPath })!;
+    const adapter = createWhatsappAdapter({ accessPath: f.accessPath, workspaceRoot: f.workspace })!;
     const ctx = makeForegroundContext("req-1", { env: {} });
     const localProv = deriveProvenance("memory/MEMORY.md");
     assert(adapter.canSee(localProv, ctx) === true, "local always visible");
@@ -429,7 +430,7 @@ check("canSee denies whatsapp channel chunk under owner-only ceiling", () => {
     })
   );
   try {
-    const adapter = createWhatsappAdapter({ accessPath: f.accessPath })!;
+    const adapter = createWhatsappAdapter({ accessPath: f.accessPath, workspaceRoot: f.workspace })!;
     const ctx = makeForegroundContext("req-1", { env: {} });
     const waProv = deriveProvenance("extra:claude-whatsapp/x.md");
     assert(adapter.canSee(waProv, ctx) === false, "WA chunk denied");
@@ -446,7 +447,7 @@ check("canSee allows whatsapp channel chunk with owner bypass", () => {
     })
   );
   try {
-    const adapter = createWhatsappAdapter({ accessPath: f.accessPath })!;
+    const adapter = createWhatsappAdapter({ accessPath: f.accessPath, workspaceRoot: f.workspace })!;
     const ctx = makeForegroundContext("req-1", {
       env: { WHATSAPP_OWNER_BYPASS: "1" },
     });
@@ -466,7 +467,7 @@ check("adapter declares requiresPerChunkCheck=false in Phase 3", () => {
     JSON.stringify({ ownerJids: ["o@s.whatsapp.net"] })
   );
   try {
-    const adapter = createWhatsappAdapter({ accessPath: f.accessPath })!;
+    const adapter = createWhatsappAdapter({ accessPath: f.accessPath, workspaceRoot: f.workspace })!;
     assert(
       adapter.requiresPerChunkCheck === false,
       "false until per-chat scope lands"

@@ -18,6 +18,7 @@ import {
   checkScopeExecGateStatus,
   checkScopeExecGateShadowEvents,
 } from "../lib/doctor.ts";
+import { workspaceFingerprint } from "../lib/scope/trust.ts";
 
 const results: Array<{ name: string; pass: boolean; msg?: string }> = [];
 
@@ -162,12 +163,38 @@ check("status: custom tools[] → row shows 'custom(N)'", () => {
   });
 });
 
+/**
+ * Phase 8: write a per-workspace trust file at the fingerprinted path.
+ * Mirrors the helper in scope-exec-gate.test.ts but kept local so the
+ * doctor suite stays self-contained.
+ */
+function plantWorkspaceTrust(
+  workspace: string,
+  channel: "whatsapp",
+  suffix: "owner" | "exec",
+  opts: { asSymlink?: boolean; mode?: number } = {}
+): string {
+  const trustBase = process.env.CLAW_SCOPE_TRUST_DIR!;
+  const dir = path.join(trustBase, workspaceFingerprint(workspace));
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
+  const filePath = path.join(dir, `${channel}-${suffix}`);
+  if (opts.asSymlink) {
+    const target = path.join(trustBase, `real-target-${channel}-${suffix}`);
+    fs.writeFileSync(target, "", { mode: 0o600 });
+    fs.chmodSync(target, 0o600);
+    fs.symlinkSync(target, filePath);
+  } else {
+    fs.writeFileSync(filePath, "", { mode: opts.mode ?? 0o600 });
+    fs.chmodSync(filePath, opts.mode ?? 0o600);
+  }
+  return filePath;
+}
+
 check("status: trust file <channel>-exec present + valid mode → 'trust=yes'", () => {
   withTrustDir(() => {
-    const trustDir = process.env.CLAW_SCOPE_TRUST_DIR!;
-    fs.writeFileSync(path.join(trustDir, "whatsapp-exec"), "", { mode: 0o600 });
-    fs.chmodSync(path.join(trustDir, "whatsapp-exec"), 0o600);
     const fx = mkFixture();
+    plantWorkspaceTrust(fx.workspace, "whatsapp", "exec");
     writeConfig(fx.workspace, {
       whatsapp: {
         mode: "enforce",
@@ -182,18 +209,10 @@ check("status: trust file <channel>-exec present + valid mode → 'trust=yes'", 
   });
 });
 
-check("status: trust file is a symlink → 'trust=invalid' (Codex round-2 LOW C3)", () => {
-  // Codex Step 3 round-2 LOW C3: trust.ts:isOwnerTrusted uses lstatSync
-  // + isFile() to reject symlinks. Doctor must surface that as 'invalid'.
+check("status: trust file is a symlink → 'trust=invalid'", () => {
   withTrustDir(() => {
-    const trustDir = process.env.CLAW_SCOPE_TRUST_DIR!;
-    // Create a real target file the symlink points to, with 0o600 mode.
-    const targetPath = path.join(trustDir, "real-trust-target");
-    fs.writeFileSync(targetPath, "", { mode: 0o600 });
-    fs.chmodSync(targetPath, 0o600);
-    // Create the symlink at the expected trust file path.
-    fs.symlinkSync(targetPath, path.join(trustDir, "whatsapp-exec"));
     const fx = mkFixture();
+    plantWorkspaceTrust(fx.workspace, "whatsapp", "exec", { asSymlink: true });
     writeConfig(fx.workspace, {
       whatsapp: {
         mode: "enforce",
@@ -209,15 +228,11 @@ check("status: trust file is a symlink → 'trust=invalid' (Codex round-2 LOW C3
 });
 
 check("status: trust file present but world-readable (mode 0o644) → 'trust=invalid'", () => {
-  // Codex Step 3 round-1 MEDIUM fix: doctor must match resolver semantics.
-  // A trust file with bad mode wouldn't actually unlock the gate — surface
-  // that distinct state so the user doesn't think they're trusted when
-  // they aren't.
+  // Doctor must match resolver semantics: a trust file with bad mode
+  // wouldn't actually unlock the gate — surface that distinct state.
   withTrustDir(() => {
-    const trustDir = process.env.CLAW_SCOPE_TRUST_DIR!;
-    fs.writeFileSync(path.join(trustDir, "whatsapp-exec"), "");
-    fs.chmodSync(path.join(trustDir, "whatsapp-exec"), 0o644);
     const fx = mkFixture();
+    plantWorkspaceTrust(fx.workspace, "whatsapp", "exec", { mode: 0o644 });
     writeConfig(fx.workspace, {
       whatsapp: {
         mode: "enforce",

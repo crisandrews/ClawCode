@@ -62,9 +62,42 @@ async function main(): Promise<number> {
 
   const toolInput = payload.tool_input ?? {};
 
-  const workspaceRoot =
+  // Codex Phase 8 round-2 NEW-HIGH: normalize workspaceRoot at the hook
+  // boundary. `CLAUDE_PROJECT_DIR` may be empty (uncommon but observed)
+  // or unset; `payload.cwd` may be missing or relative. The fingerprint
+  // helper at trust.ts throws on empty/non-absolute input, and the
+  // top-level hook `.catch(() => process.exit(0))` (line 420) is
+  // fail-OPEN. So an unhandled throw here would silently un-arm the
+  // gate. We resolve to an absolute path explicitly here, then fail
+  // CLOSED (exit 2) if even that fails.
+  const rawWorkspaceRoot =
     process.env.CLAUDE_PROJECT_DIR ??
-    (typeof payload.cwd === "string" ? payload.cwd : process.cwd());
+    (typeof payload.cwd === "string" ? payload.cwd : "");
+  let workspaceRoot: string;
+  try {
+    const candidate =
+      typeof rawWorkspaceRoot === "string" && rawWorkspaceRoot.length > 0
+        ? rawWorkspaceRoot
+        : process.cwd();
+    // Codex Phase 8 round-3 LOW: NUL-byte hardening. `path.resolve` and
+    // `path.isAbsolute` both accept NUL bytes silently on POSIX, and Node
+    // file I/O later rejects them with a confusing ERR_INVALID_ARG_VALUE
+    // somewhere deep in the resolver. Reject at the boundary so the hook
+    // fails closed with a clear diagnostic instead of leaking the error
+    // to the silent top-level catch (which would be fail-open).
+    if (candidate.indexOf("\0") !== -1) {
+      throw new Error("workspaceRoot contains NUL byte");
+    }
+    workspaceRoot = path.resolve(candidate);
+    if (!path.isAbsolute(workspaceRoot) || workspaceRoot.length === 0) {
+      throw new Error("workspaceRoot did not resolve to absolute path");
+    }
+  } catch {
+    process.stderr.write(
+      "exec-gate: unable to resolve workspaceRoot (CLAUDE_PROJECT_DIR/cwd invalid) — fail-closed\n"
+    );
+    return 2;
+  }
   const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? path.resolve(__dirname, "..", "..");
   const memoryDir = path.join(workspaceRoot, "memory");
 

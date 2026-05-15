@@ -58,12 +58,15 @@ import { writeTrustMarker } from "../lib/scope/trust.ts";
  * restores prior env state — so tests don't leak trust files across
  * each other or into the user's real ~/.claude directory.
  */
-function withTrustForTest(scope: string, fn: () => void): void {
+/** Phase 8: trust is workspace-bound. Caller passes the same workspaceRoot
+ *  the adapter will receive — so writeTrustMarker plants under the
+ *  fingerprint subdir and isOwnerTrusted reads from the same place. */
+function withTrustForTest(workspaceRoot: string, fn: () => void): void {
   const prior = process.env.CLAW_SCOPE_TRUST_DIR;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "claw-trust-"));
   process.env.CLAW_SCOPE_TRUST_DIR = tmp;
   try {
-    writeTrustMarker("whatsapp");
+    writeTrustMarker(workspaceRoot, "whatsapp");
     fn();
   } finally {
     if (prior === undefined) delete process.env.CLAW_SCOPE_TRUST_DIR;
@@ -452,7 +455,7 @@ check("adapter: malformed access (no ownerJids) → [] (Codex 2nd-pass HIGH 3)",
   // bootstrap unlock.
   const f = makeFixture({ access: { foo: "bar" } });
   try {
-    const adapter = createWhatsappAdapter({ accessPath: f.accessPath });
+    const adapter = createWhatsappAdapter({ accessPath: f.accessPath, workspaceRoot: f.channelDir });
     // adapter MAY still build (loadAccess returns resolvable=true
     // because shape is at least an object). The key is what
     // allowedChatIds returns.
@@ -486,9 +489,10 @@ check("adapter: identity='owner' WITH trust file → null (full unlock)", () => 
     },
   });
   try {
-    withTrustForTest("identity-owner-trusted", () => {
+    withTrustForTest(f.channelDir, () => {
       const adapter = createWhatsappAdapter({
         accessPath: f.accessPath,
+        workspaceRoot: f.channelDir,
         configuredIdentity: "owner",
       })!;
       const ctx = makeForegroundContext("req-1", { env: {} });
@@ -515,6 +519,7 @@ check("adapter: identity='owner' WITHOUT trust file → [] (Codex 2nd-pass CRITI
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: f.accessPath,
+        workspaceRoot: f.channelDir,
         configuredIdentity: "owner",
       })!;
       const ctx = makeForegroundContext("req-1", { env: {} });
@@ -541,6 +546,7 @@ check("adapter: configuredIdentity='guest' → [] (explicit deny)", () => {
   try {
     const adapter = createWhatsappAdapter({
       accessPath: f.accessPath,
+      workspaceRoot: f.channelDir,
       configuredIdentity: "guest",
     })!;
     const ctx = makeForegroundContext("req-1", { env: {} });
@@ -566,6 +572,7 @@ check("adapter: configuredIdentity='auto' → ceiling deny", () => {
   try {
     const adapter = createWhatsappAdapter({
       accessPath: f.accessPath,
+      workspaceRoot: f.channelDir,
       configuredIdentity: "auto",
     })!;
     const ctx = makeForegroundContext("req-1", { env: {} });
@@ -594,7 +601,7 @@ check("adapter: marker NOT consulted for unlock (Codex HIGH 1 fix)", () => {
     marker: freshMarker("c", "owner@s.whatsapp.net", now),
   });
   try {
-    const adapter = createWhatsappAdapter({ accessPath: f.accessPath })!;
+    const adapter = createWhatsappAdapter({ accessPath: f.accessPath, workspaceRoot: f.channelDir })!;
     const ctx = makeForegroundContext("req-1", { env: {} });
     const allowed = adapter.allowedChatIds(ctx);
     // Pre-Codex: this returned null (owner unlock from marker).
@@ -620,6 +627,7 @@ check("adapter: WHATSAPP_OWNER_BYPASS=1 still wins over identity='guest'", () =>
   try {
     const adapter = createWhatsappAdapter({
       accessPath: f.accessPath,
+      workspaceRoot: f.channelDir,
       configuredIdentity: "guest",
     })!;
     const ctx = makeForegroundContext("req-1", {
@@ -641,6 +649,7 @@ check("adapter: identity='guest' WINS over bootstrap (Codex 2nd-pass HIGH 3)", (
   try {
     const adapter = createWhatsappAdapter({
       accessPath: f.accessPath,
+      workspaceRoot: f.channelDir,
       configuredIdentity: "guest",
     })!;
     const ctx = makeForegroundContext("req-1", { env: {} });
@@ -664,9 +673,10 @@ check("adapter: background system-owner WITH trust file → null", () => {
     },
   });
   try {
-    withTrustForTest("bg-system-owner-trusted", () => {
+    withTrustForTest(f.channelDir, () => {
       const adapter = createWhatsappAdapter({
         accessPath: f.accessPath,
+        workspaceRoot: f.channelDir,
         configuredIdentity: "guest", // foreground guest — irrelevant for bg
       })!;
       const bg = makeBackgroundContext("pass-1", "system-owner");
@@ -692,7 +702,7 @@ check("adapter: background system-owner WITHOUT trust → [] (Codex 2nd-pass CRI
   });
   try {
     withoutTrustForTest(() => {
-      const adapter = createWhatsappAdapter({ accessPath: f.accessPath })!;
+      const adapter = createWhatsappAdapter({ accessPath: f.accessPath, workspaceRoot: f.channelDir })!;
       const bg = makeBackgroundContext("pass-1", "system-owner");
       const allowed = adapter.allowedChatIds(bg);
       assert(
@@ -719,6 +729,7 @@ check("adapter: background deny ignores foreground identity='owner'", () => {
   try {
     const adapter = createWhatsappAdapter({
       accessPath: f.accessPath,
+      workspaceRoot: f.channelDir,
       configuredIdentity: "owner",
     })!;
     const bg = makeBackgroundContext("pass-1", "deny");
@@ -750,9 +761,10 @@ check("canSee: identity='owner'+trust → true for any whatsapp chunk", () => {
     },
   });
   try {
-    withTrustForTest("canSee-owner", () => {
+    withTrustForTest(f.channelDir, () => {
       const adapter = createWhatsappAdapter({
         accessPath: f.accessPath,
+        workspaceRoot: f.channelDir,
         configuredIdentity: "owner",
       })!;
       const ctx = makeForegroundContext("req-1", { env: {} });
@@ -784,6 +796,7 @@ check("canSee: configuredIdentity='guest' → false for any whatsapp chunk", () 
   try {
     const adapter = createWhatsappAdapter({
       accessPath: f.accessPath,
+      workspaceRoot: f.channelDir,
       configuredIdentity: "guest",
     })!;
     const ctx = makeForegroundContext("req-1", { env: {} });
@@ -812,6 +825,7 @@ check("canSee: passes through non-channel chunks regardless of identity", () => 
   try {
     const adapter = createWhatsappAdapter({
       accessPath: f.accessPath,
+      workspaceRoot: f.channelDir,
       configuredIdentity: "guest",
     })!;
     const ctx = makeForegroundContext("req-1", { env: {} });

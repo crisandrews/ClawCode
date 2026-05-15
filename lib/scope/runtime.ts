@@ -37,6 +37,7 @@ import {
   unregisterScopeAdapter,
 } from "./index.ts";
 import { createWhatsappAdapter } from "./whatsapp.ts";
+import { warnLegacyTrustMigrationOnce } from "./legacy-warn.ts";
 import { deriveProvenance } from "./provenance.ts";
 
 const ALL_KNOWN_SCOPE_CHANNELS: ChannelName[] = [
@@ -312,6 +313,7 @@ function detectWhatsappArmed(
 
   const adapter = createWhatsappAdapter({
     accessPath: accessPathResult.accessPath,
+    workspaceRoot: baseCwd,
     configuredIdentity: cfg.identity ?? "auto",
     // Codex 3rd-pass CRITICAL 2: bootstrap fail-open is only safe for
     // auto-discovered upstream governance. When the user (or a
@@ -334,6 +336,14 @@ function detectWhatsappArmed(
   }
 
   registerScopeAdapter(adapter);
+  // Codex Phase 8 Step 2 Q4: when arming a channel surfaces both the
+  // owner AND exec migration cliffs at the runtime layer too. The
+  // adapter only checks `owner` (read scope); runtime here also nudges
+  // `exec` so users with a legacy `<channel>-exec` get a hint before
+  // their first PreToolUse fires the gate. Shared `legacy-warn.ts`
+  // dedup means we don't double-warn.
+  warnLegacyTrustMigrationOnce(baseCwd, "whatsapp", "owner");
+  warnLegacyTrustMigrationOnce(baseCwd, "whatsapp", "exec");
   return {
     mode,
     configured: true,

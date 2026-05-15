@@ -63,12 +63,16 @@ function tmpDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
-function withTrustForTest<T>(channel: "whatsapp", fn: () => T): T {
+function withTrustForTest<T>(
+  workspaceRoot: string,
+  channel: "whatsapp",
+  fn: () => T
+): T {
   const dir = tmpDir("scope-trust-v4-");
   const prev = process.env.CLAW_SCOPE_TRUST_DIR;
   process.env.CLAW_SCOPE_TRUST_DIR = dir;
   try {
-    writeTrustMarker(channel);
+    writeTrustMarker(workspaceRoot, channel);
     return fn();
   } finally {
     if (prev === undefined) delete process.env.CLAW_SCOPE_TRUST_DIR;
@@ -183,6 +187,7 @@ check(
     try {
       const adapter = createWhatsappAdapter({
         accessPath,
+        workspaceRoot: dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -210,6 +215,7 @@ check(
       withoutTrustForTest(() => {
         const adapter = createWhatsappAdapter({
           accessPath,
+          workspaceRoot: dir,
           configuredIdentity: "auto",
           isAutoDiscovered: false,
         });
@@ -237,9 +243,10 @@ check(
       allowFrom: [],
     });
     try {
-      withTrustForTest("whatsapp", () => {
+      withTrustForTest(dir, "whatsapp", () => {
         const adapter = createWhatsappAdapter({
           accessPath,
+          workspaceRoot: dir,
           configuredIdentity: "auto",
           isAutoDiscovered: false,
         });
@@ -343,6 +350,7 @@ check(
       withoutTrustForTest(() => {
         const adapter = createWhatsappAdapter({
           accessPath,
+          workspaceRoot: dir,
           configuredIdentity: "auto",
           isAutoDiscovered: true,
         });
@@ -371,9 +379,10 @@ check(
       allowFrom: [],
     });
     try {
-      withTrustForTest("whatsapp", () => {
+      withTrustForTest(dir, "whatsapp", () => {
         const adapter = createWhatsappAdapter({
           accessPath,
+          workspaceRoot: dir,
           configuredIdentity: "auto",
           isAutoDiscovered: true,
         });
@@ -402,9 +411,10 @@ check(
       allowFrom: [],
     });
     try {
-      withTrustForTest("whatsapp", () => {
+      withTrustForTest(dir, "whatsapp", () => {
         const adapter = createWhatsappAdapter({
           accessPath,
+          workspaceRoot: dir,
           configuredIdentity: "auto",
           isAutoDiscovered: true,
         });

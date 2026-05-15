@@ -70,6 +70,12 @@ export interface ShadowEvent {
   lookbackMs: number;
   /** Count of valid envelopes the resolver saw in this window. */
   windowEnvelopeCount: number;
+  /** Codex Phase 8 round-1 MEDIUM: when a 1.6 legacy global trust file
+   *  for this channel would have unlocked under 1.6 semantics but no
+   *  workspace-scoped trust file exists, this flag is `true`. Surfaces
+   *  the silent shadow-mode degradation that users would otherwise miss
+   *  until they flip to enforce. Defaults false (post-1.7 native state). */
+  legacyGlobalExecTrustIgnored?: boolean;
 }
 
 export interface AppendOptions {

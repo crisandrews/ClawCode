@@ -1,4 +1,4 @@
-/* scope-exec-gate-bundle@338665798ddfd8f197b257755df465cf559e9c78e0f7792dd5b5230df406741f */
+/* scope-exec-gate-bundle@9c23950263a3126039e10f9e2fc03ab726aae6a05e518db7e2ed5a6bb2e07f03 */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -24,7 +24,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 
 // lib/scope/exec-gate-hook-entry.ts
 var import_node_fs7 = __toESM(require("node:fs"), 1);
-var import_node_path7 = __toESM(require("node:path"), 1);
+var import_node_path8 = __toESM(require("node:path"), 1);
 
 // lib/config.ts
 var import_fs = __toESM(require("fs"), 1);
@@ -132,9 +132,9 @@ function mergeScopeConfig(raw) {
 }
 
 // lib/scope/runtime.ts
-var import_node_fs3 = __toESM(require("node:fs"), 1);
+var import_node_fs4 = __toESM(require("node:fs"), 1);
 var import_node_os2 = __toESM(require("node:os"), 1);
-var import_node_path3 = __toESM(require("node:path"), 1);
+var import_node_path4 = __toESM(require("node:path"), 1);
 
 // lib/channel-detector.ts
 var import_fs2 = __toESM(require("fs"), 1);
@@ -168,28 +168,179 @@ function unregisterScopeAdapter(channel) {
 }
 
 // lib/scope/whatsapp.ts
-var import_node_fs2 = __toESM(require("node:fs"), 1);
-var import_node_path2 = __toESM(require("node:path"), 1);
+var import_node_fs3 = __toESM(require("node:fs"), 1);
+var import_node_path3 = __toESM(require("node:path"), 1);
 
 // lib/scope/trust.ts
-var import_node_fs = __toESM(require("node:fs"), 1);
+var import_node_crypto = __toESM(require("node:crypto"), 1);
+var import_node_fs2 = __toESM(require("node:fs"), 1);
 var import_node_os = __toESM(require("node:os"), 1);
+var import_node_path2 = __toESM(require("node:path"), 1);
+
+// lib/scope/canonical-path.ts
+var import_node_fs = __toESM(require("node:fs"), 1);
 var import_node_path = __toESM(require("node:path"), 1);
-var TRUST_DIR_REL = import_node_path.default.join(".claude", "agent", "scope-trust");
+function canonicalize(p, caseFold = false) {
+  let cur = p;
+  const tail = [];
+  for (let i = 0; i < 64; i++) {
+    try {
+      const real = import_node_fs.default.realpathSync.native(cur);
+      const joined = tail.length === 0 ? real : import_node_path.default.join(real, ...tail.reverse());
+      return caseFold ? joined.toLowerCase() : joined;
+    } catch {
+      const parent = import_node_path.default.dirname(cur);
+      if (parent === cur) {
+        return caseFold ? p.toLowerCase() : p;
+      }
+      tail.push(import_node_path.default.basename(cur));
+      cur = parent;
+    }
+  }
+  return caseFold ? p.toLowerCase() : p;
+}
+var PLATFORM_CASE_INSENSITIVE_DEFAULT = process.platform === "darwin" || process.platform === "win32";
+var wsCaseInsensitiveCache = /* @__PURE__ */ new Map();
+var WS_CASE_PROBE_CACHE_CAP = 64;
+function isWorkspaceCaseInsensitive(wsRealpath) {
+  const cached2 = wsCaseInsensitiveCache.get(wsRealpath);
+  if (cached2 !== void 0) return cached2;
+  let result = PLATFORM_CASE_INSENSITIVE_DEFAULT;
+  let conclusive = false;
+  try {
+    let entries = [];
+    try {
+      entries = import_node_fs.default.readdirSync(wsRealpath, { withFileTypes: true });
+    } catch {
+    }
+    entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    for (const e of entries) {
+      const name = e.name;
+      const flipped = name === name.toLowerCase() ? name.toUpperCase() : name.toLowerCase();
+      if (flipped === name) continue;
+      const orig = import_node_path.default.join(wsRealpath, name);
+      const variant = import_node_path.default.join(wsRealpath, flipped);
+      try {
+        import_node_fs.default.lstatSync(orig);
+      } catch {
+        continue;
+      }
+      try {
+        const aOrig = import_node_fs.default.statSync(orig);
+        if (aOrig.ino === 0) continue;
+        try {
+          const aVar = import_node_fs.default.statSync(variant);
+          if (aVar.ino === 0) continue;
+          result = aOrig.dev === aVar.dev && aOrig.ino === aVar.ino;
+          conclusive = true;
+          break;
+        } catch {
+          result = false;
+          conclusive = true;
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+    if (!conclusive) {
+      const dir = import_node_path.default.dirname(wsRealpath);
+      const base = import_node_path.default.basename(wsRealpath);
+      if (base.length > 0 && dir !== wsRealpath) {
+        const flipped = base === base.toLowerCase() ? base.toUpperCase() : base.toLowerCase();
+        if (flipped !== base) {
+          const variant = import_node_path.default.join(dir, flipped);
+          try {
+            const aOrig = import_node_fs.default.statSync(wsRealpath);
+            const aVar = import_node_fs.default.statSync(variant);
+            if (aOrig.ino !== 0 && aVar.ino !== 0) {
+              result = aOrig.dev === aVar.dev && aOrig.ino === aVar.ino;
+            }
+          } catch {
+            result = false;
+          }
+        }
+      }
+    }
+  } catch {
+  }
+  if (conclusive) {
+    if (wsCaseInsensitiveCache.size >= WS_CASE_PROBE_CACHE_CAP) {
+      const first = wsCaseInsensitiveCache.keys().next().value;
+      if (first !== void 0) wsCaseInsensitiveCache.delete(first);
+    }
+    wsCaseInsensitiveCache.set(wsRealpath, result);
+  }
+  return result;
+}
+
+// lib/scope/trust.ts
+var TRUST_DIR_REL = import_node_path2.default.join(".claude", "agent", "scope-trust");
 var TRUST_DIR_ENV = "CLAW_SCOPE_TRUST_DIR";
-function trustDir() {
+function workspaceFingerprint(workspaceRoot) {
+  if (typeof workspaceRoot !== "string" || workspaceRoot.length === 0) {
+    throw new TypeError(
+      `workspaceFingerprint: workspaceRoot must be a non-empty string, got ${typeof workspaceRoot}`
+    );
+  }
+  if (!import_node_path2.default.isAbsolute(workspaceRoot)) {
+    throw new TypeError(
+      `workspaceFingerprint: workspaceRoot must be absolute, got "${workspaceRoot}"`
+    );
+  }
+  const realpathOnly = canonicalize(workspaceRoot, false);
+  const insensitive = isWorkspaceCaseInsensitive(realpathOnly);
+  const final = insensitive ? realpathOnly.toLowerCase() : realpathOnly;
+  return import_node_crypto.default.createHash("sha256").update(final).digest("hex").slice(0, 32);
+}
+function trustDirBase() {
   const override = process.env[TRUST_DIR_ENV];
   if (override) return override;
-  return import_node_path.default.join(import_node_os.default.homedir(), TRUST_DIR_REL);
+  return import_node_path2.default.join(import_node_os.default.homedir(), TRUST_DIR_REL);
 }
-function trustFilePath(channel, suffix = "owner") {
-  return import_node_path.default.join(trustDir(), `${channel}-${suffix}`);
+function trustDir(workspaceRoot) {
+  return import_node_path2.default.join(trustDirBase(), workspaceFingerprint(workspaceRoot));
 }
-function isOwnerTrusted(channel, suffix = "owner") {
-  const file = trustFilePath(channel, suffix);
+function isOwnerTrusted(workspaceRoot, channel, suffix = "owner") {
+  const dir = trustDir(workspaceRoot);
+  const file = import_node_path2.default.join(dir, `${channel}-${suffix}`);
   let stat;
   try {
-    stat = import_node_fs.default.lstatSync(file);
+    stat = import_node_fs2.default.lstatSync(file);
+  } catch {
+    return false;
+  }
+  if (!stat.isFile()) return false;
+  if (process.platform === "win32") {
+    let dirStat2;
+    try {
+      dirStat2 = import_node_fs2.default.lstatSync(dir);
+    } catch {
+      return false;
+    }
+    if (!dirStat2.isDirectory()) return false;
+    return true;
+  }
+  const pUid = typeof process.getuid === "function" ? process.getuid() : void 0;
+  if (typeof pUid !== "number") return true;
+  if (stat.uid !== pUid) return false;
+  if ((stat.mode & 63) !== 0) return false;
+  let dirStat;
+  try {
+    dirStat = import_node_fs2.default.lstatSync(dir);
+  } catch {
+    return false;
+  }
+  if (!dirStat.isDirectory()) return false;
+  if (dirStat.uid !== pUid) return false;
+  if ((dirStat.mode & 63) !== 0) return false;
+  return true;
+}
+function legacyGlobalTrustExists(channel, suffix = "owner") {
+  const file = import_node_path2.default.join(trustDirBase(), `${channel}-${suffix}`);
+  let stat;
+  try {
+    stat = import_node_fs2.default.lstatSync(file);
   } catch {
     return false;
   }
@@ -200,6 +351,33 @@ function isOwnerTrusted(channel, suffix = "owner") {
   if (stat.uid !== pUid) return false;
   if ((stat.mode & 63) !== 0) return false;
   return true;
+}
+
+// lib/scope/legacy-warn.ts
+var WARNED_CAP = 256;
+var warnedKeys = /* @__PURE__ */ new Set();
+function remember(key) {
+  if (warnedKeys.size >= WARNED_CAP) {
+    const oldest = warnedKeys.values().next().value;
+    if (oldest !== void 0) warnedKeys.delete(oldest);
+  }
+  warnedKeys.add(key);
+}
+function warnLegacyTrustMigrationOnce(workspaceRoot, channel, suffix) {
+  let fp;
+  try {
+    fp = workspaceFingerprint(workspaceRoot);
+  } catch {
+    return;
+  }
+  const key = `${fp}:${channel}:${suffix}`;
+  if (warnedKeys.has(key)) return;
+  if (isOwnerTrusted(workspaceRoot, channel, suffix)) return;
+  if (!legacyGlobalTrustExists(channel, suffix)) return;
+  remember(key);
+  console.warn(
+    `[clawcode] Legacy global scope trust detected for ${channel} (${suffix}). After upgrading to 1.7+, trust is per-workspace \u2014 run /agent:scope wizard in this workspace to re-grant, or scope features will silently degrade.`
+  );
 }
 
 // lib/scope/whatsapp.ts
@@ -251,7 +429,7 @@ var MISSING_GRACE_MS = 5 * 60 * 1e3;
 function loadAccess(accessPath, cache) {
   let stat;
   try {
-    stat = import_node_fs2.default.lstatSync(accessPath);
+    stat = import_node_fs3.default.lstatSync(accessPath);
   } catch {
     const cached3 = cache.get(accessPath);
     if (!cached3) {
@@ -296,7 +474,7 @@ function loadAccess(accessPath, cache) {
   }
   let parsed;
   try {
-    const raw = import_node_fs2.default.readFileSync(accessPath, "utf8");
+    const raw = import_node_fs3.default.readFileSync(accessPath, "utf8");
     parsed = JSON.parse(raw);
   } catch {
     if (cached2) {
@@ -335,12 +513,12 @@ function ownerMatchesProcess(uid) {
   return uid === pUid;
 }
 function loadInboundContext(channelDir, cache, now = Date.now()) {
-  const markerPath = import_node_path2.default.join(channelDir, MARKER_FILENAME);
-  const NOFOLLOW = typeof import_node_fs2.default.constants.O_NOFOLLOW === "number" ? import_node_fs2.default.constants.O_NOFOLLOW : 0;
-  const NONBLOCK = typeof import_node_fs2.default.constants.O_NONBLOCK === "number" ? import_node_fs2.default.constants.O_NONBLOCK : 0;
-  const flags = import_node_fs2.default.constants.O_RDONLY | NOFOLLOW | NONBLOCK;
+  const markerPath = import_node_path3.default.join(channelDir, MARKER_FILENAME);
+  const NOFOLLOW = typeof import_node_fs3.default.constants.O_NOFOLLOW === "number" ? import_node_fs3.default.constants.O_NOFOLLOW : 0;
+  const NONBLOCK = typeof import_node_fs3.default.constants.O_NONBLOCK === "number" ? import_node_fs3.default.constants.O_NONBLOCK : 0;
+  const flags = import_node_fs3.default.constants.O_RDONLY | NOFOLLOW | NONBLOCK;
   try {
-    const lst = import_node_fs2.default.lstatSync(markerPath);
+    const lst = import_node_fs3.default.lstatSync(markerPath);
     if (!lst.isFile()) {
       cache.delete(markerPath);
       return null;
@@ -351,13 +529,13 @@ function loadInboundContext(channelDir, cache, now = Date.now()) {
   }
   let fd;
   try {
-    fd = import_node_fs2.default.openSync(markerPath, flags);
+    fd = import_node_fs3.default.openSync(markerPath, flags);
   } catch {
     cache.delete(markerPath);
     return null;
   }
   try {
-    const stat = import_node_fs2.default.fstatSync(fd);
+    const stat = import_node_fs3.default.fstatSync(fd);
     if (!stat.isFile()) return null;
     if (!ownerMatchesProcess(stat.uid)) return null;
     if ((stat.mode & 63) !== 0) return null;
@@ -378,7 +556,7 @@ function loadInboundContext(channelDir, cache, now = Date.now()) {
     const MAX_MARKER_BYTES = 4096;
     const cap = Math.min(stat.size, MAX_MARKER_BYTES);
     const buf = Buffer.alloc(cap);
-    const read = import_node_fs2.default.readSync(fd, buf, 0, cap, 0);
+    const read = import_node_fs3.default.readSync(fd, buf, 0, cap, 0);
     let parsed;
     try {
       parsed = JSON.parse(buf.subarray(0, read).toString("utf8"));
@@ -402,7 +580,7 @@ function loadInboundContext(channelDir, cache, now = Date.now()) {
     return inbound;
   } finally {
     try {
-      import_node_fs2.default.closeSync(fd);
+      import_node_fs3.default.closeSync(fd);
     } catch {
     }
   }
@@ -410,9 +588,10 @@ function loadInboundContext(channelDir, cache, now = Date.now()) {
 function createWhatsappAdapter(options) {
   const accessCache = /* @__PURE__ */ new Map();
   const inboundCache = /* @__PURE__ */ new Map();
-  const channelDir = import_node_path2.default.dirname(options.accessPath);
+  const channelDir = import_node_path3.default.dirname(options.accessPath);
   const configuredIdentity = options.configuredIdentity ?? "auto";
   const isAutoDiscovered = options.isAutoDiscovered ?? false;
+  const workspaceRoot = options.workspaceRoot;
   const probe = loadAccess(options.accessPath, accessCache);
   if (!probe.resolvable) return null;
   const adapter = {
@@ -440,6 +619,7 @@ function createWhatsappAdapter(options) {
       );
       if (!access) return [];
       void loadInboundContext(channelDir, inboundCache);
+      warnLegacyTrustMigrationOnce(workspaceRoot, "whatsapp", "owner");
       return resolveAllowed(
         context,
         access,
@@ -448,7 +628,7 @@ function createWhatsappAdapter(options) {
         // Codex post-impl 2nd-pass CRITICAL: out-of-band trust file
         // gates the `identity = "owner"` (and background system-owner)
         // unlocks so the agent can't escalate via agent_config alone.
-        isOwnerTrusted("whatsapp"),
+        isOwnerTrusted(workspaceRoot, "whatsapp"),
         // Codex 3rd-pass CRITICAL 2: bootstrap fail-open only honored
         // for auto-discovered upstream paths.
         isAutoDiscovered
@@ -622,7 +802,7 @@ function detectWhatsappArmed(cfg, baseCwd) {
     };
   }
   const accessPathResult = resolveAccessPath(cfg, baseCwd);
-  if (!accessPathResult || !import_node_fs3.default.existsSync(accessPathResult.accessPath)) {
+  if (!accessPathResult || !import_node_fs4.default.existsSync(accessPathResult.accessPath)) {
     return {
       mode,
       configured: true,
@@ -634,6 +814,7 @@ function detectWhatsappArmed(cfg, baseCwd) {
   }
   const adapter = createWhatsappAdapter({
     accessPath: accessPathResult.accessPath,
+    workspaceRoot: baseCwd,
     configuredIdentity: cfg.identity ?? "auto",
     // Codex 3rd-pass CRITICAL 2: bootstrap fail-open is only safe for
     // auto-discovered upstream governance. When the user (or a
@@ -655,6 +836,8 @@ function detectWhatsappArmed(cfg, baseCwd) {
     };
   }
   registerScopeAdapter(adapter);
+  warnLegacyTrustMigrationOnce(baseCwd, "whatsapp", "owner");
+  warnLegacyTrustMigrationOnce(baseCwd, "whatsapp", "exec");
   return {
     mode,
     configured: true,
@@ -673,12 +856,12 @@ function resolveAccessPath(cfg, baseCwd) {
   });
   if (projectDir) {
     return {
-      accessPath: import_node_path3.default.join(projectDir, ".whatsapp", "access.json"),
+      accessPath: import_node_path4.default.join(projectDir, ".whatsapp", "access.json"),
       isAutoDiscovered: true
     };
   }
   return {
-    accessPath: import_node_path3.default.join(home, ".claude", "channels", "whatsapp", "access.json"),
+    accessPath: import_node_path4.default.join(home, ".claude", "channels", "whatsapp", "access.json"),
     isAutoDiscovered: true
   };
 }
@@ -688,7 +871,7 @@ function resolveWhatsappChannelDir(config, workspaceRoot) {
   const baseCwd = workspaceRoot ?? process.cwd();
   const result = resolveAccessPath(cfg, baseCwd);
   if (!result) return null;
-  return import_node_path3.default.dirname(result.accessPath);
+  return import_node_path4.default.dirname(result.accessPath);
 }
 function discoverAllChannelGovernanceDirs(config, workspaceRoot) {
   const out = [];
@@ -698,9 +881,9 @@ function discoverAllChannelGovernanceDirs(config, workspaceRoot) {
     try {
       const result = resolveAccessPath(cfg, baseCwd);
       if (!result) return;
-      const dir = import_node_path3.default.dirname(result.accessPath);
+      const dir = import_node_path4.default.dirname(result.accessPath);
       try {
-        if (!import_node_fs3.default.existsSync(dir)) return;
+        if (!import_node_fs4.default.existsSync(dir)) return;
       } catch {
         return;
       }
@@ -717,9 +900,9 @@ function discoverAllChannelGovernanceDirs(config, workspaceRoot) {
 }
 
 // lib/scope/exec-gate.ts
-var import_node_crypto = __toESM(require("node:crypto"), 1);
+var import_node_crypto2 = __toESM(require("node:crypto"), 1);
 var import_node_fs6 = __toESM(require("node:fs"), 1);
-var import_node_path6 = __toESM(require("node:path"), 1);
+var import_node_path7 = __toESM(require("node:path"), 1);
 
 // lib/scope/envelope.ts
 var import_fs3 = __toESM(require("fs"), 1);
@@ -879,9 +1062,8 @@ var EnvelopeReader = class {
 };
 
 // lib/scope/protected-paths.ts
-var import_node_fs4 = __toESM(require("node:fs"), 1);
 var import_node_os3 = __toESM(require("node:os"), 1);
-var import_node_path4 = __toESM(require("node:path"), 1);
+var import_node_path5 = __toESM(require("node:path"), 1);
 function classifyProtectedPath(rawPath, opts) {
   if (typeof rawPath !== "string" || rawPath.length === 0) return null;
   const home = opts.homeDir ?? import_node_os3.default.homedir();
@@ -889,25 +1071,25 @@ function classifyProtectedPath(rawPath, opts) {
   const caseFold = platform === "darwin" || platform === "win32";
   let expanded = rawPath;
   if (expanded === "~") expanded = home;
-  else if (expanded.startsWith("~/")) expanded = import_node_path4.default.join(home, expanded.slice(2));
-  const absResolved = import_node_path4.default.resolve(opts.workspaceRoot, expanded);
+  else if (expanded.startsWith("~/")) expanded = import_node_path5.default.join(home, expanded.slice(2));
+  const absResolved = import_node_path5.default.resolve(opts.workspaceRoot, expanded);
   const abs = canonicalize(absResolved, caseFold);
   const specificFiles = [
-    [import_node_path4.default.join(opts.pluginRoot, ".claude-plugin", "plugin.json"), "plugin-manifest"],
-    [import_node_path4.default.join(opts.pluginRoot, ".mcp.json"), "plugin-mcp-config"],
-    [import_node_path4.default.join(opts.workspaceRoot, ".mcp.json"), "workspace-mcp-config"],
-    [import_node_path4.default.join(opts.workspaceRoot, "agent-config.json"), "workspace-agent-config"],
-    [import_node_path4.default.join(opts.pluginRoot, "lib", "scope", "exec-gate.ts"), "exec-gate-source"],
-    [import_node_path4.default.join(opts.pluginRoot, "lib", "scope", "exec-gate-hook-entry.ts"), "exec-gate-source"],
-    [import_node_path4.default.join(opts.pluginRoot, "lib", "scope", "agent-config-guard.ts"), "agent-config-guard-source"],
-    [import_node_path4.default.join(opts.pluginRoot, "lib", "scope", "protected-paths.ts"), "exec-gate-source"],
-    [import_node_path4.default.join(opts.pluginRoot, "hooks", "hooks.json"), "plugin-hooks"],
-    [import_node_path4.default.join(opts.pluginRoot, "hooks", "exec-gate-pretool.sh"), "plugin-hooks"],
-    [import_node_path4.default.join(opts.pluginRoot, "dist", "exec-gate-resolver.cjs"), "exec-gate-source"]
+    [import_node_path5.default.join(opts.pluginRoot, ".claude-plugin", "plugin.json"), "plugin-manifest"],
+    [import_node_path5.default.join(opts.pluginRoot, ".mcp.json"), "plugin-mcp-config"],
+    [import_node_path5.default.join(opts.workspaceRoot, ".mcp.json"), "workspace-mcp-config"],
+    [import_node_path5.default.join(opts.workspaceRoot, "agent-config.json"), "workspace-agent-config"],
+    [import_node_path5.default.join(opts.pluginRoot, "lib", "scope", "exec-gate.ts"), "exec-gate-source"],
+    [import_node_path5.default.join(opts.pluginRoot, "lib", "scope", "exec-gate-hook-entry.ts"), "exec-gate-source"],
+    [import_node_path5.default.join(opts.pluginRoot, "lib", "scope", "agent-config-guard.ts"), "agent-config-guard-source"],
+    [import_node_path5.default.join(opts.pluginRoot, "lib", "scope", "protected-paths.ts"), "exec-gate-source"],
+    [import_node_path5.default.join(opts.pluginRoot, "hooks", "hooks.json"), "plugin-hooks"],
+    [import_node_path5.default.join(opts.pluginRoot, "hooks", "exec-gate-pretool.sh"), "plugin-hooks"],
+    [import_node_path5.default.join(opts.pluginRoot, "dist", "exec-gate-resolver.cjs"), "exec-gate-source"]
   ];
   for (const cd of opts.channelDirs ?? []) {
     if (typeof cd !== "string" || cd.length === 0) continue;
-    specificFiles.push([import_node_path4.default.join(cd, "access.json"), "channel-access-json"]);
+    specificFiles.push([import_node_path5.default.join(cd, "access.json"), "channel-access-json"]);
   }
   for (const [target, reason] of specificFiles) {
     if (abs === canonicalize(target, caseFold)) {
@@ -915,13 +1097,13 @@ function classifyProtectedPath(rawPath, opts) {
     }
   }
   const shellInitFiles = [
-    import_node_path4.default.join(home, ".bashrc"),
-    import_node_path4.default.join(home, ".bash_profile"),
-    import_node_path4.default.join(home, ".profile"),
-    import_node_path4.default.join(home, ".zshrc"),
-    import_node_path4.default.join(home, ".zprofile"),
-    import_node_path4.default.join(home, ".zshenv"),
-    import_node_path4.default.join(home, ".config", "fish", "config.fish")
+    import_node_path5.default.join(home, ".bashrc"),
+    import_node_path5.default.join(home, ".bash_profile"),
+    import_node_path5.default.join(home, ".profile"),
+    import_node_path5.default.join(home, ".zshrc"),
+    import_node_path5.default.join(home, ".zprofile"),
+    import_node_path5.default.join(home, ".zshenv"),
+    import_node_path5.default.join(home, ".config", "fish", "config.fish")
   ];
   for (const target of shellInitFiles) {
     if (abs === canonicalize(target, caseFold)) {
@@ -929,32 +1111,32 @@ function classifyProtectedPath(rawPath, opts) {
     }
   }
   const dirRoots = [
-    [import_node_path4.default.join(opts.pluginRoot, "hooks") + import_node_path4.default.sep, "plugin-hooks"],
-    [import_node_path4.default.join(home, ".claude", "agent", "scope-trust") + import_node_path4.default.sep, "scope-trust-dir"],
-    [import_node_path4.default.join(home, ".claude") + import_node_path4.default.sep, "claude-home"],
-    [import_node_path4.default.join(home, ".ssh") + import_node_path4.default.sep, "ssh-dir"],
-    [import_node_path4.default.join(home, ".aws") + import_node_path4.default.sep, "credential-dir"],
-    [import_node_path4.default.join(home, ".gnupg") + import_node_path4.default.sep, "credential-dir"],
-    [import_node_path4.default.join(home, ".kube") + import_node_path4.default.sep, "credential-dir"],
-    [import_node_path4.default.join(home, ".docker") + import_node_path4.default.sep, "credential-dir"]
+    [import_node_path5.default.join(opts.pluginRoot, "hooks") + import_node_path5.default.sep, "plugin-hooks"],
+    [import_node_path5.default.join(home, ".claude", "agent", "scope-trust") + import_node_path5.default.sep, "scope-trust-dir"],
+    [import_node_path5.default.join(home, ".claude") + import_node_path5.default.sep, "claude-home"],
+    [import_node_path5.default.join(home, ".ssh") + import_node_path5.default.sep, "ssh-dir"],
+    [import_node_path5.default.join(home, ".aws") + import_node_path5.default.sep, "credential-dir"],
+    [import_node_path5.default.join(home, ".gnupg") + import_node_path5.default.sep, "credential-dir"],
+    [import_node_path5.default.join(home, ".kube") + import_node_path5.default.sep, "credential-dir"],
+    [import_node_path5.default.join(home, ".docker") + import_node_path5.default.sep, "credential-dir"]
   ];
   if (platform === "darwin") {
     dirRoots.push([
-      import_node_path4.default.join(home, "Library", "LaunchAgents") + import_node_path4.default.sep,
+      import_node_path5.default.join(home, "Library", "LaunchAgents") + import_node_path5.default.sep,
       "launch-agent"
     ]);
   }
   if (platform === "linux") {
     dirRoots.push([
-      import_node_path4.default.join(home, ".config", "systemd", "user") + import_node_path4.default.sep,
+      import_node_path5.default.join(home, ".config", "systemd", "user") + import_node_path5.default.sep,
       "systemd-user"
     ]);
   }
   dirRoots.sort((a, b) => b[0].length - a[0].length);
-  const absWithSep = abs + import_node_path4.default.sep;
+  const absWithSep = abs + import_node_path5.default.sep;
   for (const [prefix, reason] of dirRoots) {
     const canonicalRoot = canonicalize(prefix.slice(0, -1), caseFold);
-    const canonicalRootWithSep = canonicalRoot + import_node_path4.default.sep;
+    const canonicalRootWithSep = canonicalRoot + import_node_path5.default.sep;
     if (abs === canonicalRoot) {
       return { reason, matchedPrefix: prefix };
     }
@@ -963,25 +1145,6 @@ function classifyProtectedPath(rawPath, opts) {
     }
   }
   return null;
-}
-function canonicalize(p, caseFold) {
-  let cur = p;
-  const tail = [];
-  for (let i = 0; i < 64; i++) {
-    try {
-      const real = import_node_fs4.default.realpathSync.native(cur);
-      const joined = tail.length === 0 ? real : import_node_path4.default.join(real, ...tail.reverse());
-      return caseFold ? joined.toLowerCase() : joined;
-    } catch {
-      const parent = import_node_path4.default.dirname(cur);
-      if (parent === cur) {
-        return caseFold ? p.toLowerCase() : p;
-      }
-      tail.push(import_node_path4.default.basename(cur));
-      cur = parent;
-    }
-  }
-  return caseFold ? p.toLowerCase() : p;
 }
 var PROTECTED_PATH_TOOLS = /* @__PURE__ */ new Set([
   "Write",
@@ -1003,7 +1166,7 @@ function extractToolPath(toolName, toolInput) {
 
 // lib/scope/exec-gate-shadow-log.ts
 var import_node_fs5 = __toESM(require("node:fs"), 1);
-var import_node_path5 = __toESM(require("node:path"), 1);
+var import_node_path6 = __toESM(require("node:path"), 1);
 var SHADOW_LOG_MAX_BYTES = 1048576;
 var SHADOW_LOG_LOCK_TIMEOUT_MS = 200;
 var SHADOW_LOG_LOCK_POLL_MS = 5;
@@ -1011,9 +1174,9 @@ var SHADOW_LOG_STALE_LOCK_MS = 3e4;
 var DEFAULT_FILE_NAME = ".execgate-shadow.jsonl";
 function appendShadowEvent(event, opts) {
   const fileName = opts.fileName ?? DEFAULT_FILE_NAME;
-  const logPath = import_node_path5.default.join(opts.logDir, fileName);
+  const logPath = import_node_path6.default.join(opts.logDir, fileName);
   const backupPath = `${logPath}.1`;
-  const lockDir = import_node_path5.default.join(opts.logDir, `${fileName}.lock`);
+  const lockDir = import_node_path6.default.join(opts.logDir, `${fileName}.lock`);
   try {
     import_node_fs5.default.mkdirSync(opts.logDir, { recursive: true });
   } catch {
@@ -1161,6 +1324,7 @@ function resolve(input) {
   };
   const effects = {
     isOwnerTrusted: input.effects?.isOwnerTrusted ?? isOwnerTrusted,
+    legacyGlobalTrustExists: input.effects?.legacyGlobalTrustExists ?? legacyGlobalTrustExists,
     recordShadow: input.effects?.recordShadow ?? ((event, logDir) => {
       try {
         appendShadowEvent(event, { logDir });
@@ -1225,7 +1389,7 @@ function resolve(input) {
     return { decision: "allow" };
   }
   const effectiveHits = nonOwnerHits.filter(
-    (h) => !effects.isOwnerTrusted(h.armed.channel, "exec")
+    (h) => !effects.isOwnerTrusted(input.workspaceRoot, h.armed.channel, "exec")
   );
   if (effectiveHits.length === 0) {
     return { decision: "allow" };
@@ -1242,9 +1406,11 @@ function resolve(input) {
   for (const h of enforceHits) {
     if (wouldBlockUnder(h)) {
       const senderHash = shortHash(h.senderId);
+      const legacy = effects.legacyGlobalTrustExists(h.armed.channel, "exec");
+      const suffix = legacy ? "; legacy global exec trust ignored for this workspace \u2014 run /agent:scope wizard to re-grant" : "";
       return {
         decision: "block",
-        reason: `exec-gate: ${input.toolName} blocked for non-owner inbound in window (${h.armed.channel}:${senderHash})`,
+        reason: `exec-gate: ${input.toolName} blocked for non-owner inbound in window (${h.armed.channel}:${senderHash})${suffix}`,
         channel: h.armed.channel,
         senderHash
       };
@@ -1254,6 +1420,10 @@ function resolve(input) {
   for (const h of shadowHits) {
     if (wouldBlockUnder(h)) {
       const senderHash = shortHash(h.senderId);
+      const legacyIgnored = effects.legacyGlobalTrustExists(
+        h.armed.channel,
+        "exec"
+      );
       const event = {
         ts: new Date(now).toISOString(),
         channel: h.armed.channel,
@@ -1266,12 +1436,14 @@ function resolve(input) {
         hookVersion: EXEC_GATE_HOOK_VERSION,
         configHash: configHash(h.armed.execGate),
         lookbackMs: h.armed.execGate.lookbackMs,
-        windowEnvelopeCount: h.envelopeCount
+        windowEnvelopeCount: h.envelopeCount,
+        legacyGlobalExecTrustIgnored: legacyIgnored
       };
       effects.recordShadow(event, input.memoryDir);
+      const suffix = legacyIgnored ? "; legacy global exec trust ignored for this workspace \u2014 run /agent:scope wizard to re-grant" : "";
       return {
         decision: "shadow",
-        reason: `exec-gate (shadow): ${input.toolName} would block for non-owner inbound in window (${h.armed.channel}:${senderHash})`,
+        reason: `exec-gate (shadow): ${input.toolName} would block for non-owner inbound in window (${h.armed.channel}:${senderHash})${suffix}`,
         channel: h.armed.channel,
         senderHash
       };
@@ -1280,7 +1452,7 @@ function resolve(input) {
   return { decision: "allow" };
 }
 function scanEnvelopeWindow(channelDir, lookbackMs, now, reader, fsImpl) {
-  const envelopeDir = import_node_path6.default.join(channelDir, ENVELOPE_DIR_NAME);
+  const envelopeDir = import_node_path7.default.join(channelDir, ENVELOPE_DIR_NAME);
   let entries;
   try {
     entries = fsImpl.readdirSync(envelopeDir);
@@ -1294,7 +1466,7 @@ function scanEnvelopeWindow(channelDir, lookbackMs, now, reader, fsImpl) {
     const token = name.slice(0, -5);
     let st;
     try {
-      st = fsImpl.statSync(import_node_path6.default.join(envelopeDir, name));
+      st = fsImpl.statSync(import_node_path7.default.join(envelopeDir, name));
     } catch {
       continue;
     }
@@ -1306,7 +1478,7 @@ function scanEnvelopeWindow(channelDir, lookbackMs, now, reader, fsImpl) {
   return out;
 }
 function shortHash(input) {
-  return import_node_crypto.default.createHash("sha256").update(input).digest("hex").slice(0, 8);
+  return import_node_crypto2.default.createHash("sha256").update(input).digest("hex").slice(0, 8);
 }
 function configHash(cfg) {
   const stable = JSON.stringify({
@@ -1315,7 +1487,7 @@ function configHash(cfg) {
     tools: [...cfg.tools].sort(),
     lookbackMs: cfg.lookbackMs
   });
-  return import_node_crypto.default.createHash("sha256").update(stable).digest("hex").slice(0, 16);
+  return import_node_crypto2.default.createHash("sha256").update(stable).digest("hex").slice(0, 16);
 }
 function coerceExecGateConfig(raw) {
   const enforceFallback = {
@@ -1412,9 +1584,25 @@ async function main() {
   const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "";
   if (!toolName) return 0;
   const toolInput = payload.tool_input ?? {};
-  const workspaceRoot = process.env.CLAUDE_PROJECT_DIR ?? (typeof payload.cwd === "string" ? payload.cwd : process.cwd());
-  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? import_node_path7.default.resolve(__dirname, "..", "..");
-  const memoryDir = import_node_path7.default.join(workspaceRoot, "memory");
+  const rawWorkspaceRoot = process.env.CLAUDE_PROJECT_DIR ?? (typeof payload.cwd === "string" ? payload.cwd : "");
+  let workspaceRoot;
+  try {
+    const candidate = typeof rawWorkspaceRoot === "string" && rawWorkspaceRoot.length > 0 ? rawWorkspaceRoot : process.cwd();
+    if (candidate.indexOf("\0") !== -1) {
+      throw new Error("workspaceRoot contains NUL byte");
+    }
+    workspaceRoot = import_node_path8.default.resolve(candidate);
+    if (!import_node_path8.default.isAbsolute(workspaceRoot) || workspaceRoot.length === 0) {
+      throw new Error("workspaceRoot did not resolve to absolute path");
+    }
+  } catch {
+    process.stderr.write(
+      "exec-gate: unable to resolve workspaceRoot (CLAUDE_PROJECT_DIR/cwd invalid) \u2014 fail-closed\n"
+    );
+    return 2;
+  }
+  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? import_node_path8.default.resolve(__dirname, "..", "..");
+  const memoryDir = import_node_path8.default.join(workspaceRoot, "memory");
   const armed = [];
   const protectedChannelDirs = [];
   const accessCache = /* @__PURE__ */ new Map();
@@ -1486,7 +1674,7 @@ async function main() {
         }
         let access;
         try {
-          access = loadAccess(import_node_path7.default.join(channelDir, "access.json"), accessCache);
+          access = loadAccess(import_node_path8.default.join(channelDir, "access.json"), accessCache);
         } catch {
           access = { resolvable: false, access: null };
         }
@@ -1558,7 +1746,7 @@ var KNOWN_SCOPE_CHANNELS = [
   "webchat"
 ];
 function tryLoadConfig(workspaceRoot) {
-  const configPath = import_node_path7.default.join(workspaceRoot, "agent-config.json");
+  const configPath = import_node_path8.default.join(workspaceRoot, "agent-config.json");
   let exists = false;
   try {
     exists = import_node_fs7.default.existsSync(configPath);

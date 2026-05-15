@@ -52,7 +52,7 @@ import {
   extractToolPath,
   type ProtectedPathHit,
 } from "./protected-paths.ts";
-import { isOwnerTrusted } from "./trust.ts";
+import { isOwnerTrusted, legacyGlobalTrustExists, type TrustSuffix } from "./trust.ts";
 import {
   appendShadowEvent,
   type ShadowEvent,
@@ -153,7 +153,24 @@ export interface ArmedChannel {
  * + writing shadow logs through real FS, breaking the "pure" claim).
  */
 export interface ResolverEffects {
-  isOwnerTrusted: (channel: ChannelName, suffix: "exec" | "owner") => boolean;
+  /**
+   * Phase 8 / 1.7.0: workspace-bound trust check. `workspaceRoot` is the
+   * absolute path to the workspace whose fingerprint subdir holds the
+   * trust file. Returns true ONLY when the per-workspace marker exists
+   * with valid uid/mode/non-symlink/regular-file (matches the resolver's
+   * fail-closed posture).
+   */
+  isOwnerTrusted: (workspaceRoot: string, channel: ChannelName, suffix: TrustSuffix) => boolean;
+  /**
+   * Diagnostic helper (Codex Phase 8 round-2 Vector 3 + round-3 Q2):
+   * returns true ONLY when a pre-1.7.0 legacy direct trust file exists
+   * AT THE BASE (no fingerprint subdir) AND would have unlocked under
+   * 1.6 semantics. Used to augment the block-reason string when a
+   * workspace-scoped trust is absent but a legacy global one is present
+   * — so the user sees "legacy global exec trust ignored for this
+   * workspace" instead of degrading silently. NEVER consulted to unlock.
+   */
+  legacyGlobalTrustExists: (channel: ChannelName, suffix: TrustSuffix) => boolean;
   recordShadow: (event: ShadowEvent, logDir: string) => void;
 }
 
@@ -218,6 +235,8 @@ export function resolve(input: ResolverInput): ResolverDecision {
   };
   const effects: ResolverEffects = {
     isOwnerTrusted: input.effects?.isOwnerTrusted ?? isOwnerTrusted,
+    legacyGlobalTrustExists:
+      input.effects?.legacyGlobalTrustExists ?? legacyGlobalTrustExists,
     recordShadow:
       input.effects?.recordShadow ??
       ((event, logDir) => {
@@ -322,8 +341,10 @@ export function resolve(input: ResolverInput): ResolverDecision {
 
   // Step 5: For each hit, check if the channel's <channel>-exec trust file
   //         unlocks it. A channel with trust drops out of the aggregation.
+  //         Phase 8 / 1.7.0: trust is now workspace-bound — `input.workspaceRoot`
+  //         scopes the trust lookup to this workspace's fingerprint subdir.
   const effectiveHits = nonOwnerHits.filter(
-    (h) => !effects.isOwnerTrusted(h.armed.channel, "exec")
+    (h) => !effects.isOwnerTrusted(input.workspaceRoot, h.armed.channel, "exec")
   );
   if (effectiveHits.length === 0) {
     return { decision: "allow" };
@@ -350,9 +371,17 @@ export function resolve(input: ResolverInput): ResolverDecision {
   for (const h of enforceHits) {
     if (wouldBlockUnder(h)) {
       const senderHash = shortHash(h.senderId);
+      // Codex Phase 8 round-2 Vector 3: when the workspace-scoped trust
+      // is missing AND a valid legacy global one exists, augment the
+      // reason string so the user sees the migration hint instead of
+      // a silent degradation.
+      const legacy = effects.legacyGlobalTrustExists(h.armed.channel, "exec");
+      const suffix = legacy
+        ? "; legacy global exec trust ignored for this workspace — run /agent:scope wizard to re-grant"
+        : "";
       return {
         decision: "block",
-        reason: `exec-gate: ${input.toolName} blocked for non-owner inbound in window (${h.armed.channel}:${senderHash})`,
+        reason: `exec-gate: ${input.toolName} blocked for non-owner inbound in window (${h.armed.channel}:${senderHash})${suffix}`,
         channel: h.armed.channel,
         senderHash,
       };
@@ -364,6 +393,15 @@ export function resolve(input: ResolverInput): ResolverDecision {
   for (const h of shadowHits) {
     if (wouldBlockUnder(h)) {
       const senderHash = shortHash(h.senderId);
+      // Codex Phase 8 round-1 MEDIUM: surface the legacy-trust diagnostic
+      // in shadow mode too. A 1.6 user with a global exec-trust file who
+      // upgrades to 1.7+ and runs in shadow would otherwise see "shadow:
+      // would block" events with no explanation that exec trust would
+      // have unlocked under 1.6 but doesn't anymore.
+      const legacyIgnored = effects.legacyGlobalTrustExists(
+        h.armed.channel,
+        "exec"
+      );
       const event: ShadowEvent = {
         ts: new Date(now).toISOString(),
         channel: h.armed.channel,
@@ -377,11 +415,15 @@ export function resolve(input: ResolverInput): ResolverDecision {
         configHash: configHash(h.armed.execGate),
         lookbackMs: h.armed.execGate.lookbackMs,
         windowEnvelopeCount: h.envelopeCount,
+        legacyGlobalExecTrustIgnored: legacyIgnored,
       };
       effects.recordShadow(event, input.memoryDir);
+      const suffix = legacyIgnored
+        ? "; legacy global exec trust ignored for this workspace — run /agent:scope wizard to re-grant"
+        : "";
       return {
         decision: "shadow",
-        reason: `exec-gate (shadow): ${input.toolName} would block for non-owner inbound in window (${h.armed.channel}:${senderHash})`,
+        reason: `exec-gate (shadow): ${input.toolName} would block for non-owner inbound in window (${h.armed.channel}:${senderHash})${suffix}`,
         channel: h.armed.channel,
         senderHash,
       };

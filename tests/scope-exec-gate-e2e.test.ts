@@ -21,6 +21,29 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { workspaceFingerprint } from "../lib/scope/trust.ts";
+
+/**
+ * Phase 8 helper: plant `<channel>-<suffix>` under the workspace-bound
+ * fingerprint sub-dir so the resolver finds it via `isOwnerTrusted`.
+ * Pre-Phase-8 tests planted at `<trustDir>/<channel>-<suffix>` (legacy
+ * flat layout); that path is now ignored by the resolver.
+ */
+function plantTrustE2E(
+  trustDir: string,
+  workspaceRoot: string,
+  channel: string,
+  suffix: "owner" | "exec" = "owner"
+): string {
+  const fp = workspaceFingerprint(workspaceRoot);
+  const fpDir = path.join(trustDir, fp);
+  fs.mkdirSync(fpDir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(fpDir, 0o700);
+  const filePath = path.join(fpDir, `${channel}-${suffix}`);
+  fs.writeFileSync(filePath, "", { mode: 0o600 });
+  fs.chmodSync(filePath, 0o600);
+  return filePath;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -280,9 +303,8 @@ check("E2E-C3 armed enforce + non-owner + trust file <channel>-exec → allow", 
   });
   writeChannelDetectorOverride(f.workspaceRoot, f.channelDir);
   writeEnvelope(f.channelDir, NON_OWNER);
-  // Create the exec trust file.
-  fs.writeFileSync(path.join(f.trustDir, "whatsapp-exec"), "", { mode: 0o600 });
-  fs.chmodSync(path.join(f.trustDir, "whatsapp-exec"), 0o600);
+  // Create the exec trust file (Phase 8: workspace-bound sub-dir).
+  plantTrustE2E(f.trustDir, f.workspaceRoot, "whatsapp", "exec");
   const r = runHook({
     workspaceRoot: f.workspaceRoot,
     trustDir: f.trustDir,
@@ -420,8 +442,7 @@ check("E2E-F1 (FAIL A) enforce + access.json missing → block Bash (fail-closed
 
 check("E2E-F2 (FAIL A) enforce + access.json missing + trust file <channel>-exec → allow", () => {
   const fx = mkFixture();
-  fs.writeFileSync(path.join(fx.trustDir, "whatsapp-exec"), "", { mode: 0o600 });
-  fs.chmodSync(path.join(fx.trustDir, "whatsapp-exec"), 0o600);
+  plantTrustE2E(fx.trustDir, fx.workspaceRoot, "whatsapp", "exec");
   writeAgentConfig(fx.workspaceRoot, {
     whatsapp: {
       mode: "enforce",
@@ -702,6 +723,89 @@ check("E2E-F7 (FAIL B) execGate.mode == 'off' still hot-paths (no resolver invoc
   });
   assert(r.status === 0, `mode=off must allow, got status=${r.status} stderr=${r.stderr}`);
   assert(r.stderr === "", `mode=off should produce no stderr, got "${r.stderr}"`);
+});
+
+// ---------------------------------------------------------------------------
+// Group G — Phase 8 round-2 NEW-HIGH: hook fail-closed on invalid workspace
+// ---------------------------------------------------------------------------
+
+check("E2E-G1 (Phase 8 round-2 NEW-HIGH) empty CLAUDE_PROJECT_DIR does NOT silent-allow", () => {
+  // Codex round-2 NEW-HIGH context: pre-fix, an empty/relative
+  // CLAUDE_PROJECT_DIR caused `workspaceFingerprint` to throw inside the
+  // resolver. The top-level catch at exec-gate-hook-entry.ts:420 is
+  // fail-OPEN — so the gate silently un-armed. The fix normalizes via
+  // `path.resolve(raw || cwd())` so the resolver always gets a valid
+  // absolute path. With the fix, the resolver runs normally and the
+  // non-owner envelope BLOCKS Bash (exit 2). The CRITICAL invariant is
+  // NOT exit 0 from a silent fail-open path.
+  const fx = mkFixture();
+  writeAccessJson(fx.channelDir, [OWNER]);
+  writeAgentConfig(fx.workspaceRoot, {
+    whatsapp: { mode: "enforce", execGate: { mode: "enforce" } },
+  });
+  writeChannelDetectorOverride(fx.workspaceRoot, fx.channelDir);
+  writeEnvelope(fx.channelDir, NON_OWNER);
+  // Spawn the hook with empty CLAUDE_PROJECT_DIR AND cwd set to the
+  // fixture's workspaceRoot (so the path.resolve fallback finds the
+  // right agent-config.json).
+  const r = spawnSync("bash", [HOOK_PATH], {
+    input: JSON.stringify({
+      tool_name: "Bash",
+      tool_input: { command: "echo hi" },
+    }),
+    env: {
+      ...process.env,
+      CLAUDE_PROJECT_DIR: "",
+      CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT,
+      CLAW_SCOPE_TRUST_DIR: fx.trustDir,
+    },
+    cwd: fx.workspaceRoot,
+    encoding: "utf-8",
+    timeout: 15_000,
+  });
+  assert(
+    r.status === 2,
+    `expected block (resolver ran, found non-owner) — pre-fix this would have been exit 0 silent fail-open. got status=${r.status} stderr=${r.stderr}`
+  );
+  assert(
+    /exec-gate:/.test(r.stderr),
+    `expected exec-gate stderr (proves resolver ran, not silent catch), got "${r.stderr}"`
+  );
+});
+
+check("E2E-G2 (Phase 8 round-3 LOW) NUL byte in CLAUDE_PROJECT_DIR → fail-closed", () => {
+  // path.resolve + isAbsolute both accept NUL bytes silently on POSIX,
+  // so without the boundary check the path would propagate through
+  // workspaceFingerprint into filesystem calls where it errors out at
+  // a confusing point. Round-3 LOW: reject at the hook boundary.
+  if (process.platform === "win32") return; // env var with \0 unsupported
+  const fx = mkFixture();
+  writeAccessJson(fx.channelDir, [OWNER]);
+  writeAgentConfig(fx.workspaceRoot, {
+    whatsapp: { mode: "enforce", execGate: { mode: "enforce" } },
+  });
+  writeChannelDetectorOverride(fx.workspaceRoot, fx.channelDir);
+  writeEnvelope(fx.channelDir, NON_OWNER);
+  const r = spawnSync("bash", [HOOK_PATH], {
+    input: JSON.stringify({
+      tool_name: "Bash",
+      tool_input: { command: "echo hi" },
+      cwd: `${fx.workspaceRoot}\0/poison`,
+    }),
+    env: {
+      ...process.env,
+      CLAUDE_PROJECT_DIR: "",
+      CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT,
+      CLAW_SCOPE_TRUST_DIR: fx.trustDir,
+    },
+    cwd: fx.workspaceRoot,
+    encoding: "utf-8",
+    timeout: 15_000,
+  });
+  assert(
+    r.status === 2,
+    `NUL-byte workspaceRoot should fail-closed (exit 2), got status=${r.status} stderr=${r.stderr}`
+  );
 });
 
 // ---------------------------------------------------------------------------

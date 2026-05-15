@@ -49,12 +49,12 @@ function mkChannelDir(access: AccessShape): {
   return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
-function withTrustForTest(_scope: string, fn: () => void): void {
+function withTrustForTest(workspaceRoot: string, fn: () => void): void {
   const prior = process.env.CLAW_SCOPE_TRUST_DIR;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "claw-trust-"));
   process.env.CLAW_SCOPE_TRUST_DIR = tmp;
   try {
-    writeTrustMarker("whatsapp");
+    writeTrustMarker(workspaceRoot, "whatsapp");
     fn();
   } finally {
     if (prior === undefined) delete process.env.CLAW_SCOPE_TRUST_DIR;
@@ -111,7 +111,7 @@ check("envelope owner senderId → null (unlimited, regardless of chat)", () => 
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -134,7 +134,7 @@ check("envelope owner under @lid form recognized → null", () => {
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -156,7 +156,7 @@ check("non-owner group default 'own' → [chatId] when chatId is in universe (gr
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -179,7 +179,7 @@ check("group historyScope='all' (non-owner) → null", () => {
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -204,7 +204,7 @@ check("group historyScope=string[] (non-owner) → [chatId, ...] universe-filter
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -234,7 +234,7 @@ check("group historyScope=string[] extends own with universe-allowed extras", ()
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -260,7 +260,7 @@ check("DM default 'own' → [chatId] (chatId === senderId for DM, in allowFrom)"
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -285,7 +285,7 @@ check("DM historyScope='all' → null", () => {
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -307,7 +307,7 @@ check("unknown historyScope value falls back to 'own' (forward-compat)", () => {
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -334,7 +334,7 @@ check("env bypass WINS over envelope: WHATSAPP_OWNER_BYPASS=1 + non-owner envelo
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -366,7 +366,7 @@ check("bootstrap WINS over envelope: ownerJids=[] + auto-discovered → null eve
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -388,7 +388,7 @@ check("identity='guest' WINS over envelope (explicit deny)", () => {
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "guest",
         isAutoDiscovered: true,
       });
@@ -407,10 +407,10 @@ check("identity='owner' + trust WINS over envelope (out-of-band owner)", () => {
     groups: { [GROUP_A]: {} },
   });
   try {
-    withTrustForTest("whatsapp", () => {
+    withTrustForTest(f.dir, () => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "owner",
         isAutoDiscovered: true,
       });
@@ -432,7 +432,7 @@ check("envelope ABSENT + non-owner + auto + ownerJids set → [] (Phase 3 ceilin
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -455,7 +455,7 @@ check("envelope with chat NOT in universe → [] (universe filter)", () => {
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -482,7 +482,7 @@ check("group historyScope=[GROUP_B, GROUP_B, GROUP_A] deduplicates via Set (Code
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });
@@ -515,7 +515,7 @@ check("background context (not foreground) ignores envelope, uses identity rule"
     withoutTrustForTest(() => {
       const adapter = createWhatsappAdapter({
         accessPath: path.join(f.dir, "access.json"),
-        channelDir: f.dir,
+        workspaceRoot: f.dir,
         configuredIdentity: "auto",
         isAutoDiscovered: true,
       });

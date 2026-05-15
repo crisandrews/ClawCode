@@ -75,13 +75,13 @@ First validate `<channel>` is one of the shipped channel names (`whatsapp`, `tel
 Bash('node -e "const fs=require(\"fs\"),p=\"agent-config.json\";const c=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,\"utf-8\")):{};c.scope=c.scope||{};const cur=c.scope.<channel>||{};c.scope.<channel>=Object.assign({},cur,{mode:\"off\",execGate:{mode:\"off\"}});fs.writeFileSync(p,JSON.stringify(c,null,2));console.log(\"disabled\");"')
 ```
 
-Also remove BOTH trust files (read-scope owner trust AND exec trust):
+Also remove BOTH trust files (read-scope owner trust AND exec trust) for THIS workspace. As of 1.7.0 the trust files live under a per-workspace fingerprint subdir; the fingerprint is computed by the bridge script `scripts/print-workspace-fingerprint.mjs` so Bash and TS agree byte-exact:
 
 ```
-Bash('rm -f ~/.claude/agent/scope-trust/<channel>-owner ~/.claude/agent/scope-trust/<channel>-exec')
+Bash('set -euo pipefail; [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || { echo "CLAUDE_PLUGIN_ROOT unset"; exit 1; }; TS_HASH=$(node "$CLAUDE_PLUGIN_ROOT/node_modules/tsx/dist/cli.mjs" "$CLAUDE_PLUGIN_ROOT/scripts/print-workspace-fingerprint.mjs" "$PWD"); [[ "$TS_HASH" =~ ^[0-9a-f]{32}$ ]] || { echo "bad TS_HASH=$TS_HASH"; exit 1; }; rm -f -- "$HOME/.claude/agent/scope-trust/$TS_HASH/<channel>-owner" "$HOME/.claude/agent/scope-trust/$TS_HASH/<channel>-exec"')
 ```
 
-so both unlocks are dropped along with the mode flip. Both Bash calls surface a permission prompt — intentional: turning scope off and dropping trust are user-visible state changes.
+so both unlocks are dropped along with the mode flip. Both Bash calls surface a permission prompt — intentional: turning scope off and dropping trust are user-visible state changes. Cross-workspace isolation: this only removes THIS workspace's trust; other workspaces are untouched.
 
 ### Step 5 — `wizard` (interactive)
 
@@ -100,7 +100,7 @@ Then walk the user through the choices, ONE question per `AskUserQuestion` call.
    - "Cancel" → exit
 
 3. **¿Sos el owner de este WhatsApp?** (owner-unlock primitive — two-factor: `identity = "owner"` config + out-of-band trust file)
-   - "Sí, soy el owner — quiero que ClawCode pueda buscar en mis chats sin restricción" → `identity: owner` AND step 6 will run `Bash('mkdir -p ~/.claude/agent/scope-trust && touch ~/.claude/agent/scope-trust/whatsapp-owner && chmod 600 ~/.claude/agent/scope-trust/whatsapp-owner')`. Both writes are required: config alone (which the agent can write) does NOT unlock — the trust file (a separate `Bash` call the user approves) is what makes the unlock real. This closes the prompt-injection escalation surface where an agent could otherwise write a config and simulate being the owner.
+   - "Sí, soy el owner — quiero que ClawCode pueda buscar en mis chats sin restricción" → `identity: owner` AND step 6 will create a **per-workspace** trust file (as of 1.7.0) under `~/.claude/agent/scope-trust/<workspace-fingerprint>/whatsapp-owner` via Bash. Both writes are required: config alone (which the agent can write) does NOT unlock — the trust file (a separate `Bash` call the user approves) is what makes the unlock real. The trust is scoped to THIS workspace; granting in workspace A does NOT unlock workspace B. This closes the prompt-injection escalation surface where an agent could otherwise write a config and simulate being the owner.
    - "No / no estoy seguro — mantener el techo conservador" → `identity: auto` (default; user still has to set `WHATSAPP_OWNER_BYPASS=1` env if they want unlock, or pick "Sí" later)
    - "Soy un guest explícito — denegar siempre canales WA" → `identity: guest` (NO trust file needed — guest is a deny posture, no escalation surface)
    - "Cancel" → exit
@@ -122,7 +122,7 @@ Then walk the user through the choices, ONE question per `AskUserQuestion` call.
    - "Cancel" → exit
 
 4c. **¿Confiar este equipo para ejecutar tools cuando un no-owner mensaje vino del canal armado?** (only if execGate mode is shadow/enforce — this creates the `<channel>-exec` trust file, separate from the `<channel>-owner` read-scope trust file)
-   - "Sí, soy el owner — confío en que este equipo puede ejecutar tools incluso cuando un mensaje de otro entró en el window de 60s" → step 6 will run `Bash('mkdir -p ~/.claude/agent/scope-trust && touch ~/.claude/agent/scope-trust/<channel>-exec && chmod 600 ...')`. The exec-trust file is SEPARATE from the read-scope owner trust file (`<channel>-owner`) — having one does NOT imply the other. This is intentional: a user can read their own chats without granting the agent the right to run shell commands from non-owner-triggered turns.
+   - "Sí, soy el owner — confío en que este equipo puede ejecutar tools incluso cuando un mensaje de otro entró en el window de 60s" → step 6 will create a **per-workspace** exec trust file (as of 1.7.0) under `~/.claude/agent/scope-trust/<workspace-fingerprint>/<channel>-exec` via Bash. The exec-trust file is SEPARATE from the read-scope owner trust file (`<channel>-owner`) — having one does NOT imply the other. This is intentional: a user can read their own chats without granting the agent the right to run shell commands from non-owner-triggered turns. The trust is scoped to THIS workspace; if you have execGate enforce in multiple workspaces, you must opt-in to exec-trust in each one independently.
    - "No, dejar el gate firmado — bloquear cualquier no-owner-inducido tool destructivo hasta que cree el archivo manualmente" → no exec trust file. Useful when the user wants to observe shadow events first before deciding.
    - "Cancel" → exit
 
@@ -156,8 +156,16 @@ Then walk the user through the choices, ONE question per `AskUserQuestion` call.
      - `cwdExactMatchOnly` preserves the prior value if the user had it `true` — never silently flipped to false.
      - `execGate.tools` is intentionally OMITTED so the resolver applies defaults (`DEFAULT_DENYLIST_TOOLS` / `DEFAULT_ALLOWLIST_TOOLS` from `lib/scope/exec-gate.ts`). If the user picked custom tools in a future wizard branch, set `next.execGate.tools = ["…"]` accordingly.
      - `execGate.mode = "off"` is ALWAYS written so `/agent:scope status` surfaces the explicit "currently off" state and a later wizard run can detect intent.
-   - If `identity = "owner"` OR `background.identity = "system-owner"`: `Bash('mkdir -p ~/.claude/agent/scope-trust && touch ~/.claude/agent/scope-trust/<channel>-owner && chmod 600 ~/.claude/agent/scope-trust/<channel>-owner')`
-   - If user opted to trust the machine for execGate (step 4c "Sí"): `Bash('mkdir -p ~/.claude/agent/scope-trust && touch ~/.claude/agent/scope-trust/<channel>-exec && chmod 600 ~/.claude/agent/scope-trust/<channel>-exec')`. SEPARATE trust file from the read-scope owner trust; agent cannot create either via MCP — both go through Bash + user permission prompt. The doctor row `scope-execgate-status` reflects trust validity (mode/uid/symlink checks), not just file presence.
+   - If `identity = "owner"` OR `background.identity = "system-owner"`, create the per-workspace owner trust file. As of 1.7.0 trust files live under a fingerprint subdir keyed by `realpath(workspaceRoot)` so trust in workspace A does NOT unlock workspace B. The bridge script computes the same hex the runtime uses — no Bash-side crypto reimplementation:
+
+     ```
+     Bash('set -euo pipefail; [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || { echo "CLAUDE_PLUGIN_ROOT unset"; exit 1; }; TS_HASH=$(node "$CLAUDE_PLUGIN_ROOT/node_modules/tsx/dist/cli.mjs" "$CLAUDE_PLUGIN_ROOT/scripts/print-workspace-fingerprint.mjs" "$PWD"); [[ "$TS_HASH" =~ ^[0-9a-f]{32}$ ]] || { echo "bad TS_HASH=$TS_HASH"; exit 1; }; umask 077; DIR="$HOME/.claude/agent/scope-trust/$TS_HASH"; mkdir -p -- "$DIR"; chmod 700 -- "$DIR"; touch -- "$DIR/<channel>-owner"; chmod 600 -- "$DIR/<channel>-owner"; echo "trust file created: $DIR/<channel>-owner"')
+     ```
+   - If user opted to trust the machine for execGate (step 4c "Sí"), create the per-workspace exec trust file. SEPARATE trust file from the read-scope owner trust; agent cannot create either via MCP — both go through Bash + user permission prompt. The doctor row `scope-execgate-status` reflects trust validity (mode/uid/symlink checks), not just file presence:
+
+     ```
+     Bash('set -euo pipefail; [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || { echo "CLAUDE_PLUGIN_ROOT unset"; exit 1; }; TS_HASH=$(node "$CLAUDE_PLUGIN_ROOT/node_modules/tsx/dist/cli.mjs" "$CLAUDE_PLUGIN_ROOT/scripts/print-workspace-fingerprint.mjs" "$PWD"); [[ "$TS_HASH" =~ ^[0-9a-f]{32}$ ]] || { echo "bad TS_HASH=$TS_HASH"; exit 1; }; umask 077; DIR="$HOME/.claude/agent/scope-trust/$TS_HASH"; mkdir -p -- "$DIR"; chmod 700 -- "$DIR"; touch -- "$DIR/<channel>-exec"; chmod 600 -- "$DIR/<channel>-exec"; echo "trust file created: $DIR/<channel>-exec"')
+     ```
 
 7. After applying, run `status` to display the new state. Then ALSO surface the **first-run banner** to the user once, in their language:
 
@@ -198,10 +206,10 @@ Show what the execution gate would decide for a given sender + tool combo. Usefu
 1. Parse `<senderJid> <toolName>` from `$ARGS`. If missing, prompt the user for both.
 2. Invoke the real pure-function resolver (`lib/scope/exec-gate.ts:resolve`) with an injected envelope reader that returns a synthetic non-owner envelope. The resolver honors the actual trust-file check, hard-deny set (`Bash`, `Task`), and protected-paths logic.
 
-   IMPORTANT: this snippet calls into `.ts` files directly — it MUST run under tsx (`npx tsx -e ...`), not plain `node -e`. Plain `node` cannot require TypeScript files; using tsx ensures the loader resolves the imports correctly:
+   IMPORTANT: this snippet calls into `.ts` files directly so it MUST run under tsx, but invoking via `npx tsx` from the user's workspace cwd is unreliable (npx searches the local `node_modules/.bin` first and fetches from the registry on miss). Use the plugin-local tsx CLI explicitly via `node "$CLAUDE_PLUGIN_ROOT/node_modules/tsx/dist/cli.mjs"`:
 
    ```
-   Bash('npx tsx -e "
+   Bash('node "$CLAUDE_PLUGIN_ROOT/node_modules/tsx/dist/cli.mjs" -e "
 const eg = require(\"./lib/scope/exec-gate.ts\");
 const c = require(\"./lib/config.ts\");
 const r = require(\"./lib/scope/runtime.ts\");
@@ -268,7 +276,7 @@ Pass-through to `mcp__clawcode__agent_doctor(action='check')`. Filter the doctor
 
 ## Limitations
 
-- **Owner unlock for WhatsApp**: set `scope.whatsapp.identity = "owner"` via wizard for declarative per-machine unlock. The wizard also creates the out-of-band trust file `~/.claude/agent/scope-trust/whatsapp-owner` (Bash-prompted). Both are required: config alone does NOT unlock. `WHATSAPP_OWNER_BYPASS=1` env is an alternative escape-hatch. Without any of these, foreground calls hit the owner-only ceiling.
+- **Owner unlock for WhatsApp**: set `scope.whatsapp.identity = "owner"` via wizard for declarative per-workspace unlock. The wizard also creates the out-of-band trust file `~/.claude/agent/scope-trust/<workspace-fingerprint>/whatsapp-owner` (Bash-prompted; per-workspace as of 1.7.0). Both are required: config alone does NOT unlock. `WHATSAPP_OWNER_BYPASS=1` env is an alternative escape-hatch. Without any of these, foreground calls hit the owner-only ceiling. Trust granted in one workspace does NOT unlock another workspace.
 - **Per-chat binding for non-owner senders**: claude-whatsapp publishes a per-inbound `requestEnvelopeToken` in the MCP notification meta. The agent forwards the token to ClawCode memory tools, ClawCode validates the envelope file under `<channel-dir>/.request-envelopes/<token>.json` and emits a per-chat allowlist mirroring upstream `claude-whatsapp/scope.ts:scopedAllowedChats` byte-exact.
 - **Residual risks (mirror of `docs/scope-envelope-contract.md` threat model, both kept in sync)**:
   - **Same-uid filesystem forge** (architectural, out of scope): any code running as your user can plant or tamper with channel-state files including the request envelope. The uid match check in the reader rules out cross-user tampering but not same-user adversaries. Scope is a privacy/safety layer between MCP tool calls and the agent, NOT a defense against OS-level adversaries already running as you.

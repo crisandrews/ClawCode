@@ -1,13 +1,13 @@
 /**
- * Tier 1 tests for the out-of-band trust primitive (Phase 4a-2.5 v3,
- * Codex 2nd-pass CRITICAL fix).
+ * Tier 1 tests for the out-of-band trust primitive (workspace-bound).
  *
- * The trust file at `~/.claude/agent/scope-trust/<channel>-owner` (or
- * the `CLAW_SCOPE_TRUST_DIR` override) is the proof that an owner
- * declaration in `config.scope.<channel>.identity = "owner"` was
- * intentional and not a prompt-injection escalation via
- * `agent_config`. This test file validates the helper itself and its
- * test-override seam.
+ * Phase 8 / 1.7.0: trust file lives at
+ *   `<CLAW_SCOPE_TRUST_DIR>/<workspace-fingerprint>/<channel>-<suffix>`
+ * (was: `<CLAW_SCOPE_TRUST_DIR>/<channel>-<suffix>` flat in 1.5/1.6).
+ *
+ * The trust file is the proof that an owner declaration in
+ * `config.scope.<channel>.identity = "owner"` (or the execGate analog)
+ * was intentional and not a prompt-injection escalation via `agent_config`.
  *
  * Run: `npx tsx tests/scope-trust.test.ts`
  */
@@ -20,6 +20,8 @@ import {
   removeTrustMarker,
   trustFilePath,
   writeTrustMarker,
+  workspaceFingerprint,
+  _resolvedTrustDirBaseForTests,
   _resolvedTrustDirForTests,
 } from "../lib/scope/trust.ts";
 
@@ -38,116 +40,152 @@ function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
 }
 
-function withTmpTrustDir(fn: (tmp: string) => void) {
+function withTmpTrustDir(fn: (base: string, workspace: string) => void) {
   const prior = process.env.CLAW_SCOPE_TRUST_DIR;
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "claw-trust-test-"));
-  process.env.CLAW_SCOPE_TRUST_DIR = tmp;
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "claw-trust-test-"));
+  // Use a stable workspace path for the duration of the test.
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "claw-trust-ws-"));
+  process.env.CLAW_SCOPE_TRUST_DIR = base;
   try {
-    fn(tmp);
+    fn(base, workspace);
   } finally {
     if (prior === undefined) delete process.env.CLAW_SCOPE_TRUST_DIR;
     else process.env.CLAW_SCOPE_TRUST_DIR = prior;
-    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(base, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
   }
 }
 
-check("trust dir override via CLAW_SCOPE_TRUST_DIR env", () => {
-  withTmpTrustDir((tmp) => {
-    assert(_resolvedTrustDirForTests() === tmp, "env override applies");
+check("trust dir base override via CLAW_SCOPE_TRUST_DIR env", () => {
+  withTmpTrustDir((base, workspace) => {
     assert(
-      trustFilePath("whatsapp") === path.join(tmp, "whatsapp-owner"),
-      "trustFilePath uses override"
+      _resolvedTrustDirBaseForTests() === base,
+      "env override applies to BASE"
+    );
+    const fp = workspaceFingerprint(workspace);
+    assert(
+      _resolvedTrustDirForTests(workspace) === path.join(base, fp),
+      "trust dir nests under fingerprint subdir"
+    );
+    assert(
+      trustFilePath(workspace, "whatsapp") === path.join(base, fp, "whatsapp-owner"),
+      "trustFilePath uses workspace fingerprint + override"
     );
   });
 });
 
 check("isOwnerTrusted: false when no file present", () => {
-  withTmpTrustDir(() => {
-    assert(isOwnerTrusted("whatsapp") === false, "no file → false");
+  withTmpTrustDir((_base, workspace) => {
+    assert(
+      isOwnerTrusted(workspace, "whatsapp") === false,
+      "no file → false"
+    );
   });
 });
 
 check("isOwnerTrusted: true after writeTrustMarker", () => {
-  withTmpTrustDir(() => {
-    writeTrustMarker("whatsapp");
-    assert(isOwnerTrusted("whatsapp") === true, "after touch → true");
+  withTmpTrustDir((_base, workspace) => {
+    writeTrustMarker(workspace, "whatsapp");
+    assert(
+      isOwnerTrusted(workspace, "whatsapp") === true,
+      "after touch → true"
+    );
   });
 });
 
 check("removeTrustMarker clears trust", () => {
-  withTmpTrustDir(() => {
-    writeTrustMarker("whatsapp");
-    removeTrustMarker("whatsapp");
-    assert(isOwnerTrusted("whatsapp") === false, "after remove → false");
+  withTmpTrustDir((_base, workspace) => {
+    writeTrustMarker(workspace, "whatsapp");
+    removeTrustMarker(workspace, "whatsapp");
+    assert(
+      isOwnerTrusted(workspace, "whatsapp") === false,
+      "after remove → false"
+    );
   });
 });
 
 check("removeTrustMarker is idempotent", () => {
-  withTmpTrustDir(() => {
-    // No file exists yet; remove should not throw.
-    removeTrustMarker("whatsapp");
-    assert(isOwnerTrusted("whatsapp") === false, "still false");
+  withTmpTrustDir((_base, workspace) => {
+    removeTrustMarker(workspace, "whatsapp");
+    assert(
+      isOwnerTrusted(workspace, "whatsapp") === false,
+      "still false"
+    );
   });
 });
 
 check("isOwnerTrusted: false for symlink (lstat path)", () => {
-  if (process.platform === "win32") return; // symlinks vary on Windows
-  withTmpTrustDir((tmp) => {
-    // Make a real file elsewhere, then symlink the trust path to it.
+  if (process.platform === "win32") return;
+  withTmpTrustDir((base, workspace) => {
+    // Make a real file at the base, then symlink the trust path to it.
     // lstat-based check should reject the symlink.
-    const realFile = path.join(tmp, "real");
+    const realFile = path.join(base, "real");
     fs.writeFileSync(realFile, "");
-    const linkPath = trustFilePath("whatsapp");
+    fs.chmodSync(realFile, 0o600);
+    // Ensure the fingerprint subdir exists before planting the symlink.
+    const dir = _resolvedTrustDirForTests(workspace);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(dir, 0o700);
+    const linkPath = trustFilePath(workspace, "whatsapp");
     fs.symlinkSync(realFile, linkPath);
     assert(
-      isOwnerTrusted("whatsapp") === false,
+      isOwnerTrusted(workspace, "whatsapp") === false,
       "symlinked trust file rejected"
     );
   });
 });
 
 check("isOwnerTrusted: false for directory at trust path", () => {
-  withTmpTrustDir(() => {
+  withTmpTrustDir((_base, workspace) => {
     // Place a directory where the trust file should be.
-    fs.mkdirSync(trustFilePath("whatsapp"));
+    const dir = _resolvedTrustDirForTests(workspace);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(dir, 0o700);
+    fs.mkdirSync(trustFilePath(workspace, "whatsapp"));
     assert(
-      isOwnerTrusted("whatsapp") === false,
+      isOwnerTrusted(workspace, "whatsapp") === false,
       "directory at trust path rejected"
     );
   });
 });
 
 check("trust per-channel isolation: whatsapp vs telegram", () => {
-  withTmpTrustDir(() => {
-    writeTrustMarker("whatsapp");
-    assert(isOwnerTrusted("whatsapp") === true, "whatsapp trusted");
+  withTmpTrustDir((_base, workspace) => {
+    writeTrustMarker(workspace, "whatsapp");
     assert(
-      isOwnerTrusted("telegram") === false,
+      isOwnerTrusted(workspace, "whatsapp") === true,
+      "whatsapp trusted"
+    );
+    assert(
+      isOwnerTrusted(workspace, "telegram") === false,
       "telegram not trusted (independent file)"
     );
   });
 });
 
 check("writeTrustMarker creates parent dir if missing", () => {
-  withTmpTrustDir((tmp) => {
-    // Trust dir is the override itself; writeTrustMarker creates
-    // `dirname(trustFilePath)` which IS the override. But verify
-    // mkdir recursive works under nested override too.
-    const nested = path.join(tmp, "deeper", "still-deeper");
-    process.env.CLAW_SCOPE_TRUST_DIR = nested;
-    writeTrustMarker("whatsapp");
+  withTmpTrustDir((base, workspace) => {
+    // Nest the override deeper than expected; writeTrustMarker must
+    // create the fingerprint subdir too.
+    const nestedBase = path.join(base, "deeper", "still-deeper");
+    process.env.CLAW_SCOPE_TRUST_DIR = nestedBase;
+    writeTrustMarker(workspace, "whatsapp");
+    const fp = workspaceFingerprint(workspace);
     assert(
-      fs.existsSync(path.join(nested, "whatsapp-owner")),
-      "trust file created in nested override"
+      fs.existsSync(path.join(nestedBase, fp, "whatsapp-owner")),
+      "trust file created in nested override + fingerprint subdir"
     );
   });
 });
 
-const passed = results.filter((r) => r.pass).length;
-const failed = results.filter((r) => !r.pass);
+// ---------------------------------------------------------------------------
+// Report
+// ---------------------------------------------------------------------------
 
-console.log(`\nscope-trust tests: ${passed}/${results.length} passed`);
-for (const r of failed) {
-  console.log(`  FAIL: ${r.name} — ${r.msg}`);
+const passed = results.filter((r) => r.pass).length;
+const failed = results.filter((r) => !r.pass).length;
+for (const r of results) {
+  if (!r.pass) console.error(`  FAIL ${r.name}: ${r.msg}`);
 }
-if (failed.length > 0) process.exit(1);
+console.log(`scope-trust tier1: ${passed}/${results.length} passed`);
+if (failed > 0) process.exit(1);

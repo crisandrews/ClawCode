@@ -26,7 +26,12 @@ import {
   DEFAULT_DENYLIST_TOOLS,
   DEFAULT_ALLOWLIST_TOOLS,
 } from "./scope/exec-gate.ts";
-import { trustFilePath, isOwnerTrusted } from "./scope/trust.ts";
+import {
+  trustFilePath,
+  isOwnerTrusted,
+  legacyGlobalTrustExists,
+  trustDirBase,
+} from "./scope/trust.ts";
 
 export type CheckStatus = "ok" | "warn" | "error" | "info" | "off";
 
@@ -1188,12 +1193,12 @@ export function checkScopeOwnerAssertion(
   for (const channel of ["whatsapp"] as const) {
     const sc = cfg.scope[channel];
     if (!sc || sc.identity !== "owner") continue;
-    // Check for the out-of-band trust file
-    const trustPath =
-      process.env.CLAW_SCOPE_TRUST_DIR
-        ? path.join(process.env.CLAW_SCOPE_TRUST_DIR, `${channel}-owner`)
-        : path.join(os.homedir(), ".claude", "agent", "scope-trust", `${channel}-owner`);
-    if (fs.existsSync(trustPath)) {
+    // Phase 8 / Codex round-1 HIGH #7: use the same workspace-bound
+    // trust predicate the resolver consults so the doctor row agrees
+    // with the actual unlock state. Building the legacy direct path
+    // here would surface "acting as owner" even when the resolver
+    // ignores it (hard cutover semantics).
+    if (isOwnerTrusted(workspace, channel, "owner")) {
       owners.push(channel);
     }
   }
@@ -1394,9 +1399,9 @@ export function checkScopeExecGateStatus(workspace: string): DiagnosticCheck {
     let trustValid = false;
     let trustFileExists = false;
     try {
-      const tp = trustFilePath(channel, "exec");
+      const tp = trustFilePath(workspace, channel, "exec");
       trustFileExists = fs.existsSync(tp);
-      trustValid = isOwnerTrusted(channel, "exec");
+      trustValid = isOwnerTrusted(workspace, channel, "exec");
     } catch {
       /* ignore */
     }
@@ -1536,6 +1541,109 @@ export function checkScopeExecGateShadowEvents(
   };
 }
 
+/**
+ * Phase 8 Step 2: detect pre-1.7.0 flat-layout legacy trust markers under
+ * `<scope-trust-dir>/<channel>-{owner,exec}`. Reports a warn with the
+ * exact paths + an `rm` recovery hint until the user removes them. The
+ * 1.7+ workspace-bound layout is `<scope-trust-dir>/<fingerprint>/...`
+ * so any FILE at the direct-child level is a 1.6 leftover.
+ *
+ * Codex Phase 8 Step 2 pre-impl Q3 semantics:
+ *   - Base dir absent → "ok" (clean post-1.7 install, no migration debt).
+ *   - Base dir is a symlink → advisory "warn" (don't follow — security boundary).
+ *   - Walk direct children only (no recursion).
+ *   - Match `<channel>-owner` or `<channel>-exec` exactly.
+ *   - Gate each match through `legacyGlobalTrustExists` so stale 0o644
+ *     leftovers or symlinked markers don't surface noise.
+ *   - Hint includes the literal `rm` command the user should run.
+ */
+export function checkScopeTrustLegacy(_workspace: string): DiagnosticCheck {
+  const base = trustDirBase();
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(base);
+  } catch {
+    return {
+      id: "scope-trust-legacy",
+      label: "Scope trust legacy files",
+      status: "ok",
+      message: "no scope-trust dir (clean post-1.7 state)",
+    };
+  }
+  if (stat.isSymbolicLink()) {
+    return {
+      id: "scope-trust-legacy",
+      label: "Scope trust legacy files",
+      status: "warn",
+      message: `scope-trust dir is a symlink (${base}) — not following`,
+      hint:
+        "If you intentionally symlinked this dir, ignore. Otherwise replace it with a regular directory: " +
+        `rm "${base}" && mkdir -p "${base}" && chmod 700 "${base}"`,
+    };
+  }
+  if (!stat.isDirectory()) {
+    return {
+      id: "scope-trust-legacy",
+      label: "Scope trust legacy files",
+      status: "warn",
+      message: `scope-trust path exists but is not a directory: ${base}`,
+      hint: `Remove the non-directory and re-run /agent:scope wizard: rm "${base}"`,
+    };
+  }
+
+  // Direct children only — no recursion. The 1.7+ layout puts files
+  // under <fingerprint>/<channel>-<suffix>, so direct-level FILES are
+  // the 1.6 legacy artifacts we're looking for.
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(base, { withFileTypes: true });
+  } catch {
+    return {
+      id: "scope-trust-legacy",
+      label: "Scope trust legacy files",
+      status: "warn",
+      message: `scope-trust dir unreadable: ${base}`,
+      hint: "Check filesystem permissions on the scope-trust dir.",
+    };
+  }
+
+  const FLAT_NAME = /^([a-z]+)-(owner|exec)$/;
+  const detected: string[] = [];
+  for (const e of entries) {
+    if (!e.isFile()) continue; // 1.7+ fingerprint subdirs are dirs — skip
+    const m = e.name.match(FLAT_NAME);
+    if (!m) continue;
+    const channel = m[1] as ChannelName;
+    const suffix = m[2] as "owner" | "exec";
+    // Gate through the same predicate the resolver would use under 1.6
+    // semantics. Skip stale 0o644 leftovers + symlinked markers so we
+    // don't surface noise for files that wouldn't have unlocked anyway.
+    if (!legacyGlobalTrustExists(channel, suffix)) continue;
+    detected.push(path.join(base, e.name));
+  }
+
+  if (detected.length === 0) {
+    return {
+      id: "scope-trust-legacy",
+      label: "Scope trust legacy files",
+      status: "ok",
+      message: "no 1.6 legacy trust files detected",
+    };
+  }
+
+  const list = detected.map((p) => `  ${p}`).join("\n");
+  const rmCmd = `rm -f ${detected.map((p) => `"${p}"`).join(" ")}`;
+  return {
+    id: "scope-trust-legacy",
+    label: "Scope trust legacy files",
+    status: "warn",
+    message: `${detected.length} legacy global trust file(s) detected (1.6 layout — no longer unlock in 1.7+):\n${list}`,
+    hint:
+      "These files no longer grant trust. Run `/agent:scope wizard` from each workspace where you want trust re-granted, then remove the legacy files: " +
+      rmCmd,
+  };
+}
+
 export async function runDoctor(
   workspace: string
 ): Promise<DiagnosticReport> {
@@ -1564,6 +1672,8 @@ export async function runDoctor(
   // Phase 7 Step 3: execGate per-channel status + shadow-event review.
   checks.push(checkScopeExecGateStatus(workspace));
   checks.push(checkScopeExecGateShadowEvents(workspace));
+  // Phase 8 Step 2: 1.6 → 1.7 trust-file migration advisory.
+  checks.push(checkScopeTrustLegacy(workspace));
 
   const summary = { ok: 0, warn: 0, error: 0, info: 0, off: 0 };
   for (const c of checks) summary[c.status]++;
