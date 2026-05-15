@@ -20,6 +20,15 @@
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/cron-pretool.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|NotebookEdit|MultiEdit|Task|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/exec-gate-pretool.sh"
+          }
+        ]
       }
     ],
     "PostToolUse": [

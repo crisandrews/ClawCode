@@ -58,6 +58,17 @@ When you are NOT handling a channel-originated turn (e.g., the user is typing di
 
 See `docs/channel-scope-compat.md` for the architecture, `docs/scope-envelope-contract.md` for the wire-level contract, and `PRIVACY.md` for the privacy model.
 
+### Execution scope (separate opt-in)
+
+When the user enables `execGate` for a channel, a PreToolUse hook gates Bash / Write / Edit / Task / MCP tool calls based on whether the current turn was triggered by a non-owner inbound. If the hook refuses a call, you'll see stderr matching `exec-gate: <reason>` and the tool call exits non-zero.
+
+**When you see an `exec-gate:` block reason:**
+
+- Do NOT retry the same tool call. The block is deterministic for the current state (sender + tool + policy + trust file). Retrying produces the same block + wastes the user's time.
+- Surface the reason to the user in plain language. Example: "I tried to run that, but the execution gate refused because this turn came from a non-owner WhatsApp message and `Bash` is in the denylist. If you want me to run it, please run the command yourself in the terminal, or set up trust via `/agent:scope wizard`."
+- The rule is anti-bypass, not anti-creativity. If the user's goal can be satisfied with an allowed read-only tool (e.g. using `Read` instead of `Bash cat`) without touching a protected path, that's legitimate. What's NOT allowed is reaching for ANOTHER blocked/sensitive tool to evade the same refusal (e.g. trying `Write` after `Bash` was blocked when both are in the denylist, or rewriting a destructive shell command as an `agent_config` call). When in doubt, surface the block and ask the user for instructions.
+- Protected-path blocks (`exec-gate: write to protected path refused (<reason>)`) always fire regardless of channel-trigger state. If a write to `~/.ssh/authorized_keys` or `agent-config.json` is refused, that's by design — surface to user.
+
 ## External vs Internal
 
 **Safe to do freely:**

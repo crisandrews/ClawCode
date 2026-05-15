@@ -19,6 +19,19 @@ export interface ChannelScopeConfig {
   identity?: "auto" | "owner" | "guest";
   /** Background lane (dreams + indexer) identity per channel. */
   background?: { identity?: "deny" | "system-owner" };
+  /**
+   * Execution gate — restricts which tools the agent can invoke when
+   * the current turn was triggered by a non-owner inbound from this
+   * channel. Independent of the read-scope `mode` above. Default
+   * `mode: "off"` (no execution restrictions). See
+   * `lib/scope/exec-gate.ts` for the resolver and policy semantics.
+   */
+  execGate?: {
+    mode?: "off" | "shadow" | "enforce";
+    policy?: "denylist" | "allowlist";
+    tools?: string[];
+    lookbackMs?: number;
+  };
 }
 
 export interface WhatsappScopeConfig extends ChannelScopeConfig {
@@ -346,6 +359,11 @@ function mergeScopeConfig(raw: unknown): ScopeConfigTree | undefined {
           (cv.background as { identity?: unknown })?.identity
         ),
       },
+      // execGate is stored as the raw block (not coerced here) and
+      // resolved at read time via `execGateConfigForChannel`. This
+      // mirrors the read-scope mode handling: the merge layer keeps
+      // user intent, and the resolver coerces fail-closed.
+      ...(cv.execGate !== undefined ? { execGate: cv.execGate as ChannelScopeConfig["execGate"] } : {}),
     };
     if (channel === "whatsapp") {
       const w = v as Record<string, unknown>;

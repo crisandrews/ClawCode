@@ -1,6 +1,6 @@
 # Privacy Policy
 
-_Last updated: 2026-04-28_
+_Last updated: 2026-05-14_
 
 ClawCode is a local-first plugin for [Claude Code](https://claude.com/claude-code). It runs entirely on the user's machine. This document explains what data the plugin handles, where it is stored, and which third-party services it may contact — but only when the user explicitly enables them.
 
@@ -51,6 +51,30 @@ Three modes per channel:
 Activation goes through `/agent:scope wizard`, which writes both `agent-config.json: scope.<channel>` (via Bash, surfacing a permission prompt) and an out-of-band trust file (also via Bash). Both writes are required for owner-level unlock — config alone does not escalate.
 
 **Important — what scope does NOT cover**: even at `mode: enforce`, the filter operates at the MCP boundary. Native `Read`, `Grep`, and direct SQLite reads over channel log files always bypass the filter by design. If hard isolation is required, that lives at the OS / filesystem-permissions layer. Same-uid filesystem forging (any other process running as your user could plant or tamper with channel-state files, including the cross-plugin request envelope) is also out of scope — scope is a privacy/safety layer between MCP tool calls and the agent, not a defense against OS-level adversaries already running as you. See `docs/channel-scope-compat.md` and `docs/scope-envelope-contract.md` for the full design.
+
+### Execution scope (separate opt-in, layered on top of read scope)
+
+Read scope filters what the agent SEES. Execution scope (`execGate`) filters what the agent CAN DO when the current Claude Code turn was triggered by a non-owner inbound from a paired channel. The two are independent: a user can enable read scope without exec scope, or vice versa.
+
+When `execGate.mode` is `shadow` or `enforce`, every `Bash`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `Task`, and `mcp__*` tool call passes through a PreToolUse hook. If an envelope file in `<channel-dir>/.request-envelopes/*.json` from a non-owner sender exists with `mtime >= now - lookbackMs` (default 60 seconds), the gate applies the configured policy:
+
+- **`denylist`** (recommended) — blocks the destructive set: `Bash`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `agent_config`, `skill_install`, `skill_remove`, `dream`. Plus `Task` (subagent spawn — hard-denied regardless of policy because hook propagation to subagents is not guaranteed by Claude Code).
+- **`allowlist`** (strict) — allows only the read/messaging set: `Read`, `Grep`, `Glob`, `TodoWrite`, `WebFetch`, `WebSearch`, channel reply/react, memory read tools, voice tools.
+
+Shadow mode logs would-block events to `memory/.execgate-shadow.jsonl` (rotated at 1 MB to `.1` backup; older history dropped). Useful for a one-week observation period before flipping to enforce. Doctor row `scope-execgate-shadow-events` summarizes recent events.
+
+A separate **out-of-band trust file** `~/.claude/agent/scope-trust/<channel>-exec` (mode 0600, same uid as the agent) unlocks the gate when the user explicitly trusts this machine for execution. The trust file is a SEPARATE primitive from the read-scope `<channel>-owner` trust file — having one does NOT imply the other. Both are created via Bash (user permission prompt), never by the agent through MCP.
+
+Always-on protected paths fire regardless of mode: Write/Edit calls targeting plugin internals (`hooks/` directory + the hook script, `dist/exec-gate-resolver.cjs`, and the specific source files that implement the gate — `lib/scope/exec-gate.ts`, `lib/scope/exec-gate-hook-entry.ts`, `lib/scope/protected-paths.ts`, `lib/scope/agent-config-guard.ts`), `agent-config.json`, `.mcp.json`, the scope-trust directory, `~/.ssh/`, credential dirs (`~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`), shell-init files (`.bashrc` etc.), LaunchAgents / user systemd units, and channel governance files (`<channel-dir>/access.json`) are refused. This list is hard-coded; the user cannot opt out via config. It protects the gate's own surface from prompt-injection bootstrap attacks.
+
+**What exec scope does NOT cover**:
+- **Memory poisoning across turns**: content from a past non-owner inbound persists in conversational memory. A subsequent owner-triggered turn could read that content as "instructions" without passing through the gate (the owner turn is authoritative). Mitigation: don't paste untrusted content into owner turns.
+- **Reply egress**: even when Bash is blocked, the agent could exfiltrate data via the channel's own `reply` tool. The destination is bounded by the channel's read-scope `historyScope`, but the boundary is content-aware, not network-aware.
+- **Hook removal by user**: a legitimate user editing `hooks/hooks.json` from the terminal can remove the matcher. The hook self-protects against agent-mediated edits (protected paths refuses MCP-side writes) but cannot defend against terminal-side user actions — which is correct, since the user owns the machine.
+- **Within-lookback replay**: a colluding actor and agent could re-use a valid envelope within its 60-second TTL to drive multiple destructive calls. This is accepted under the agent-trust-boundary model.
+- **Native shell**: the agent's terminal-direct shell (when invoked by the user, not via the Bash tool) is not gated.
+
+See `docs/channel-scope-compat.md` for the full design and threat model.
 
 ### WebChat session model
 

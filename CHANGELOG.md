@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-05-14
+
+### Why this release matters
+
+ClawCode now ships an **execution gate**: an optional guardrail that blocks destructive tools (Bash, Write, Edit, Task, and more) when the current Claude Code turn was triggered by a non-owner message from a paired group chat. Companion to the read-scope filter shipped in 1.5.0 — read scope governs what the agent SEES; the execution gate governs what it CAN DO. Default is `off`, so existing users who don't opt in see zero change. Activate via `/agent:scope wizard` with a denylist (recommended) or allowlist policy, in `shadow` (observe-only) or `enforce` modes. A separate out-of-band trust file (`~/.claude/agent/scope-trust/<channel>-exec`, created via Bash) lets you opt out of the gate on a trusted machine without disabling read scope.
+
+The gate is hardened against agent self-modification: protected-paths refuses MCP writes to plugin internals, the gate's own source files, channel governance, SSH/credential dirs, shell init, and persistence mechanisms (LaunchAgents, systemd user units) — even with the gate set to `off`. Subagent spawn (`Task`) is hard-denied along with `Bash` when the gate fires, closing a Claude-Code-specific bypass surface where hooks don't propagate to subagents.
+
+### Added
+
+- Skills/scope: `/agent:scope wizard` extended with 3 new steps (activate exec gate Y/N → denylist or allowlist policy → trust this machine for exec Y/N). `/agent:scope status` surfaces per-channel `execGate.{mode, policy, tool-set source, trust validity}`. `/agent:scope test exec <senderJid> <toolName>` invokes the real resolver via `npx tsx -e` with injected envelope reader + no-op shadow recorder. `/agent:scope disable` resets BOTH read-scope mode AND execGate to off, removes BOTH `<channel>-owner` and `<channel>-exec` trust files.
+- Hooks/exec-gate-pretool.sh: PreToolUse hook scans recent inbound envelopes from paired messaging channels and applies the configured deny/allow policy. Hot path (mode=off) p95 = 8 ms via conservative jq probe; armed path p95 = ~65 ms via pre-built CJS bundle. Hard-denies `Bash` and `Task` under any non-owner-in-window state regardless of policy.
+- Dist/exec-gate-resolver.cjs: pre-built CommonJS bundle (~52 KB) invoked by the hook. Bundle header carries a SHA256 over the source-file tree so a tier1 test fails CI if anyone hand-edits the bundle or forgets to rebuild after touching scope source. Build via `npm run build:hook`.
+- Lib/scope/exec-gate: pure-function resolver decides allow / block / shadow based on the envelope-window scan + trust-file unlock + policy. Aggregates "any non-owner sender present" across all armed channels (most-restrictive wins: enforce over shadow). Synthesizes a non-owner hit when channel governance is unresolvable (fail-closed under `mode != off`).
+- Lib/scope/protected-paths: always-on classifier (mode-independent). Refuses MCP writes to plugin internals (hooks, resolver bundle, exec-gate source files), `agent-config.json`, scope-trust dir, `~/.claude/`, `~/.ssh/`, credential dirs (`~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`), shell init files, LaunchAgents / user systemd units, `.mcp.json`, `.claude-plugin/plugin.json`, and every configured channel's `access.json`. Realpath canonicalization + case-fold defends against symlink-alias and case-quirk bypasses on darwin/win32.
+- Lib/scope/exec-gate-shadow-log: append-only writer for `memory/.execgate-shadow.jsonl`. Records would-block decisions with full replay metadata (effectiveMode, policy, expandedTools, hookVersion, configHash, lookbackMs, windowEnvelopeCount). Atomic 1 MB rotation with advisory lock + symlink defense.
+- Lib/scope/trust: `isOwnerTrusted(channel, suffix)` extension accepts `"owner" | "exec"`. The two trust files are independent — neither implies the other. Both are created via Bash (user permission prompt), never by the agent through MCP.
+- Lib/config: `ChannelScopeConfig.execGate?` extension (`mode | policy | tools | lookbackMs`). Absent block = `mode: "off"`. Coercion is fail-closed: malformed sub-fields (invalid `policy`, non-string-array `tools`, overflow `lookbackMs`) escalate the whole block to `enforce + denylist + defaults`.
+- Lib/doctor: 2 new checks — `scope-execgate-status` (per-channel info row with mode/policy/tool-source/trust validity from `isOwnerTrusted` — distinguishes `yes` from `invalid` from `no` so the user can see when a trust file exists but won't actually unlock) and `scope-execgate-shadow-events` (parses shadow log defensively, warns when recent events are within 7 days to prompt review before flipping to enforce).
+- Scripts/build-exec-gate-hook.mjs: `npm run build:hook` runs esbuild with `--metafile`, auto-discovers source files via metafile inputs (no hand-maintained list), prepends a SHA256 header, and normalizes Windows backslash paths.
+- Lib/scope/channel-hint: extracted from `lib/scope-audit.ts` so the hook bundle doesn't drag better-sqlite3 in transitively.
+
+### Changes
+
+- Docs/channel-scope-compat: "Execution scope" section expanded with the shadow-log review path, `Task` hard-deny rationale, and the full protected-paths list.
+- PRIVACY.md: new "Execution scope" subsection documents what the gate covers and does NOT cover (memory poisoning across turns, reply egress, terminal-side user actions, within-lookback envelope replay).
+- AGENTS.md: guidance for the agent when a PreToolUse block hits stderr — don't retry, don't rewrite the same intent as a different tool, surface the reason to the user.
+- Package.json: `test` script now also runs `scope-exec-gate`, `scope-exec-gate-e2e`, `scope-exec-gate-doctor` tier1 + tier2 suites. New `build:hook` script.
+
 ## [1.5.0] — 2026-05-13
 
 ### Why this release matters

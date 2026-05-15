@@ -61,7 +61,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { deriveChannelHint } from "../scope-audit.ts";
+import { deriveChannelHint } from "./channel-hint.ts";
 import type { ChannelName } from "../channel-detector.ts";
 import { parseScopedMemoryPath } from "./scoped-paths.ts";
 

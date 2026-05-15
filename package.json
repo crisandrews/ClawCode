@@ -1,12 +1,13 @@
 {
   "name": "clawcode",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "npm install --silent >/dev/null 2>&1; exec npx tsx server.ts",
-    "test": "npx tsx tests/service-generator-smoke.test.ts"
+    "test": "npx tsx tests/service-generator-smoke.test.ts && npx tsx tests/scope-exec-gate.test.ts && npx tsx tests/scope-exec-gate-e2e.test.ts && npx tsx tests/scope-exec-gate-doctor.test.ts",
+    "build:hook": "node scripts/build-exec-gate-hook.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

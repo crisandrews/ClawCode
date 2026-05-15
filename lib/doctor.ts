@@ -20,7 +20,13 @@ import { MemoryDB } from "./memory-db.ts";
 import { QmdManager } from "./qmd-manager.ts";
 import { runScopeAudit } from "./scope-audit.ts";
 import { detectScopeRuntime } from "./scope/runtime.ts";
-import { detectChannels } from "./channel-detector.ts";
+import { detectChannels, type ChannelName } from "./channel-detector.ts";
+import {
+  execGateConfigForChannel,
+  DEFAULT_DENYLIST_TOOLS,
+  DEFAULT_ALLOWLIST_TOOLS,
+} from "./scope/exec-gate.ts";
+import { trustFilePath, isOwnerTrusted } from "./scope/trust.ts";
 
 export type CheckStatus = "ok" | "warn" | "error" | "info" | "off";
 
@@ -1317,6 +1323,219 @@ export function checkScopeSchemaDrift(
 // Runner
 // ---------------------------------------------------------------------------
 
+const EXEC_GATE_CHANNELS: ChannelName[] = [
+  "whatsapp",
+  "telegram",
+  "discord",
+  "imessage",
+  "webchat",
+];
+
+/**
+ * Surface per-channel exec-gate state alongside the read-scope status
+ * row. Distinguishes `mode` (off / shadow / enforce), `policy`
+ * (denylist / allowlist), tool-set source (custom vs defaults), and
+ * the `<channel>-exec` trust file presence.
+ *
+ * Info severity: the gate is opt-in and "off" is a legitimate state
+ * (matches the read-scope plan's per-channel opt-in posture).
+ */
+export function checkScopeExecGateStatus(workspace: string): DiagnosticCheck {
+  let cfg;
+  try {
+    cfg = loadConfig(workspace);
+  } catch {
+    return {
+      id: "scope-execgate-status",
+      label: "Scope execGate status",
+      status: "off",
+      message: "config unreadable",
+    };
+  }
+  if (!cfg.scope) {
+    return {
+      id: "scope-execgate-status",
+      label: "Scope execGate status",
+      status: "off",
+      message: "Channel scope not configured",
+    };
+  }
+  const rows: string[] = [];
+  let anyArmed = false;
+  for (const channel of EXEC_GATE_CHANNELS) {
+    if (!cfg.scope[channel]) continue;
+    const cfgGate = (cfg.scope[channel] as { execGate?: unknown }).execGate;
+    if (cfgGate === undefined) continue; // channel configured but no execGate block
+    const eg = execGateConfigForChannel(cfg.scope, channel);
+    if (eg.mode === "off") {
+      rows.push(`${channel}: off`);
+      continue;
+    }
+    anyArmed = true;
+    // Tool-set source: defaults vs custom. Defaults applied when raw
+    // tools field is omitted/empty; if the raw user list is non-empty
+    // and differs from defaults, surface that.
+    const defaults =
+      eg.policy === "allowlist"
+        ? DEFAULT_ALLOWLIST_TOOLS
+        : DEFAULT_DENYLIST_TOOLS;
+    const isDefault =
+      eg.tools.length === defaults.length &&
+      defaults.every((t) => eg.tools.includes(t));
+    const toolDesc = isDefault ? "defaults" : `custom(${eg.tools.length})`;
+    // Trust file: report VALIDITY (same predicate the resolver uses)
+    // not just file presence. Codex Step 3 round-1 MEDIUM: a present-
+    // but-invalid trust file (wrong mode, wrong uid, symlink) would
+    // surface `trust=yes` in the doctor row while the resolver kept
+    // gating the call — misleading.
+    //
+    // `isOwnerTrusted(channel, "exec")` mirrors the same lstat + uid
+    // + mode 0o077 check the resolver consults via `effects.isOwnerTrusted`.
+    let trustValid = false;
+    let trustFileExists = false;
+    try {
+      const tp = trustFilePath(channel, "exec");
+      trustFileExists = fs.existsSync(tp);
+      trustValid = isOwnerTrusted(channel, "exec");
+    } catch {
+      /* ignore */
+    }
+    // Distinguish three cases for the user: not present / present-but-invalid / valid.
+    const trustLabel = trustValid
+      ? "yes"
+      : trustFileExists
+        ? "invalid"
+        : "no";
+    rows.push(
+      `${channel}: ${eg.mode}/${eg.policy}/${toolDesc}/trust=${trustLabel}`
+    );
+  }
+  if (rows.length === 0) {
+    return {
+      id: "scope-execgate-status",
+      label: "Scope execGate status",
+      status: "off",
+      message: "no channels have execGate configured",
+      hint: "Run `/agent:scope wizard` to opt in to execution-gate protection for a paired channel.",
+    };
+  }
+  return {
+    id: "scope-execgate-status",
+    label: "Scope execGate status",
+    status: "info",
+    message: rows.join("; "),
+    hint: anyArmed
+      ? "ExecGate active: destructive tools blocked for non-owner-inbound turns within the lookback window. Native shell bypass (manual terminal commands) is unaffected — that lives at the OS layer."
+      : undefined,
+  };
+}
+
+/**
+ * Surface recent shadow-mode would-block events from
+ * `memory/.execgate-shadow.jsonl`. Useful right before the user flips
+ * shadow → enforce: they get a count + earliest+latest timestamps so
+ * they can review what enforce would have blocked.
+ *
+ * `warn` severity when there are recent events (within last 7 days);
+ * `ok` when there are none; `off` when shadow log doesn't exist.
+ */
+export function checkScopeExecGateShadowEvents(
+  workspace: string
+): DiagnosticCheck {
+  const logPath = path.join(workspace, "memory", ".execgate-shadow.jsonl");
+  if (!fs.existsSync(logPath)) {
+    return {
+      id: "scope-execgate-shadow-events",
+      label: "Scope execGate shadow events",
+      status: "off",
+      message: "no shadow log (no shadow events recorded)",
+    };
+  }
+  let stat;
+  try {
+    stat = fs.statSync(logPath);
+  } catch {
+    return {
+      id: "scope-execgate-shadow-events",
+      label: "Scope execGate shadow events",
+      status: "off",
+      message: "shadow log unreadable",
+    };
+  }
+  if (!stat.isFile()) {
+    return {
+      id: "scope-execgate-shadow-events",
+      label: "Scope execGate shadow events",
+      status: "off",
+      message: "shadow log path is not a regular file",
+    };
+  }
+  let body = "";
+  try {
+    body = fs.readFileSync(logPath, "utf-8");
+  } catch {
+    return {
+      id: "scope-execgate-shadow-events",
+      label: "Scope execGate shadow events",
+      status: "off",
+      message: "shadow log read failed",
+    };
+  }
+  const lines = body.split("\n").filter((l) => l.trim().length > 0);
+  if (lines.length === 0) {
+    return {
+      id: "scope-execgate-shadow-events",
+      label: "Scope execGate shadow events",
+      status: "ok",
+      message: "shadow log present but empty",
+    };
+  }
+  let firstTs: string | null = null;
+  let lastTs: string | null = null;
+  let parsedCount = 0;
+  let channelMix = new Set<string>();
+  let toolMix = new Set<string>();
+  // Parse each line defensively — a corrupt entry shouldn't crash doctor.
+  for (const line of lines) {
+    try {
+      const obj = JSON.parse(line);
+      const ts = typeof obj.ts === "string" ? obj.ts : null;
+      if (!ts) continue;
+      if (firstTs === null || ts < firstTs) firstTs = ts;
+      if (lastTs === null || ts > lastTs) lastTs = ts;
+      parsedCount++;
+      if (typeof obj.channel === "string") channelMix.add(obj.channel);
+      if (typeof obj.toolName === "string") toolMix.add(obj.toolName);
+    } catch {
+      /* skip malformed line */
+    }
+  }
+  if (parsedCount === 0) {
+    return {
+      id: "scope-execgate-shadow-events",
+      label: "Scope execGate shadow events",
+      status: "warn",
+      message: `${lines.length} non-empty line(s) but none parseable`,
+      hint: "The shadow log appears corrupt. Inspect memory/.execgate-shadow.jsonl manually.",
+    };
+  }
+  // 7-day recency window.
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+  const nowIso = new Date().toISOString();
+  const cutoffIso = new Date(Date.now() - sevenDaysMs).toISOString();
+  const recent = lastTs !== null && lastTs >= cutoffIso;
+  const summary = `${parsedCount} event(s) (${Array.from(channelMix).join(",") || "?"}; tools=${Array.from(toolMix).slice(0, 5).join(",") || "?"}${toolMix.size > 5 ? "…" : ""}; first=${firstTs ?? "?"}; last=${lastTs ?? "?"})`;
+  return {
+    id: "scope-execgate-shadow-events",
+    label: "Scope execGate shadow events",
+    status: recent ? "warn" : "info",
+    message: summary,
+    hint: recent
+      ? "Review these events before flipping to enforce. If they look benign, run `/agent:scope wizard` to upgrade. If unexpected, investigate the channel/sender combo before enforcing."
+      : "No recent shadow events. Safe to consider flipping shadow → enforce via `/agent:scope wizard`.",
+  };
+}
+
 export async function runDoctor(
   workspace: string
 ): Promise<DiagnosticReport> {
@@ -1342,6 +1561,9 @@ export async function runDoctor(
   checks.push(checkScopeStale(workspace));
   checks.push(checkScopeOwnerAssertion(workspace));
   checks.push(checkScopeSchemaDrift(workspace));
+  // Phase 7 Step 3: execGate per-channel status + shadow-event review.
+  checks.push(checkScopeExecGateStatus(workspace));
+  checks.push(checkScopeExecGateShadowEvents(workspace));
 
   const summary = { ok: 0, warn: 0, error: 0, info: 0, off: 0 };
   for (const c of checks) summary[c.status]++;

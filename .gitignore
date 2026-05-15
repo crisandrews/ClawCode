@@ -15,6 +15,9 @@ agent-config.json
 memory/.memory.sqlite
 memory/.memory.sqlite-wal
 memory/.memory.sqlite-shm
+memory/.memory.sqlite.bak.*
+memory/.execgate-shadow.jsonl
+memory/.execgate-shadow.jsonl.*
 memory/.dreams/
 memory/.scoped/
 **/memory/.scoped/

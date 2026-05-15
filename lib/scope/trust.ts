@@ -1,22 +1,20 @@
 /**
- * Out-of-band trust primitive for scope owner unlocks.
+ * Out-of-band trust primitive for scope unlocks.
  *
- * Codex post-impl 2nd-pass CRITICAL: the `agent_config(action='set')` MCP
- * tool accepts any dotted key from the agent without verifying caller
- * authority. If `scope.whatsapp.identity = "owner"` were honored on its
- * own, a prompt-injection attack via untrusted content (a malicious
- * email read in another tool, a webpage in WebFetch, etc.) could trick
- * the agent into writing the unlock and immediately reading scoped
- * WhatsApp memory.
+ * The unlock is gated on a **trust file** that the agent cannot create
+ * through any MCP tool — it must be created via `Bash` (which requires
+ * per-call user permission in Claude Code's default permission model).
+ * The wizard performs the touch as a deliberate user-approved step.
  *
- * Mitigation: the unlock is gated on a **trust file** that the agent
- * cannot create through any MCP tool — it must be created via `Bash`
- * (which requires per-call user permission in Claude Code's default
- * permission model). The wizard performs the touch as a deliberate
- * user-approved step.
+ * Two trust suffixes per channel (orthogonal):
+ *   ~/.claude/agent/scope-trust/<channel>-owner  → unlocks READ scope
+ *   ~/.claude/agent/scope-trust/<channel>-exec   → unlocks EXECUTE gate
  *
- * Layout:
- *   ~/.claude/agent/scope-trust/<channel>-owner
+ * Separated so a user can opt into owner-level read access (sees all
+ * indexed chats from their own machine) without also opting into
+ * inbound-execution authority (granting non-owner group chats the
+ * power to invoke destructive tools). The two trust files are independent
+ * — neither implies the other.
  *
  * Existence + correct ownership = trust. Empty file is sufficient
  * (we don't need a payload). On Windows uid is meaningless; existence
@@ -43,22 +41,39 @@ function trustDir(): string {
   return path.join(os.homedir(), TRUST_DIR_REL);
 }
 
-/** Absolute path to the trust marker for a given channel. */
-export function trustFilePath(channel: ChannelName): string {
-  return path.join(trustDir(), `${channel}-owner`);
+/** Trust suffix selector — read-scope owner vs execute-gate trust. */
+export type TrustSuffix = "owner" | "exec";
+
+/** Absolute path to the trust marker for a given channel + suffix. */
+export function trustFilePath(
+  channel: ChannelName,
+  suffix: TrustSuffix = "owner"
+): string {
+  return path.join(trustDir(), `${channel}-${suffix}`);
 }
 
 /**
- * Returns true when an owner-trust marker exists for this channel and
- * is owned by the running process (or on Windows, just exists).
+ * Returns true when a trust marker exists for this channel + suffix and
+ * is owned by the running process (or on Windows, just exists). The
+ * `<channel>-owner` and `<channel>-exec` files are independent — neither
+ * implies the other.
+ *
+ * Validations:
+ *   - lstat (not stat): a symlinked trust file is suspicious and not
+ *     honored.
+ *   - Regular file (rejects dirs/FIFOs/sockets).
+ *   - uid matches the running process (POSIX only).
+ *   - Mode `& 0o077 === 0` (no group/world bits). A trust marker that's
+ *     world-readable hints at sloppy setup; reject it to keep the contract
+ *     identical to scope's other privileged-file primitives.
  */
-export function isOwnerTrusted(channel: ChannelName): boolean {
-  const file = trustFilePath(channel);
+export function isOwnerTrusted(
+  channel: ChannelName,
+  suffix: TrustSuffix = "owner"
+): boolean {
+  const file = trustFilePath(channel, suffix);
   let stat: fs.Stats;
   try {
-    // lstat (not stat): a symlinked trust file is suspicious and not
-    // honored. The caller-of-this-fn responsibility is "is the trust
-    // file legit"; symlinks shadow that.
     stat = fs.lstatSync(file);
   } catch {
     return false;
@@ -68,7 +83,12 @@ export function isOwnerTrusted(channel: ChannelName): boolean {
   const pUid =
     typeof process.getuid === "function" ? process.getuid() : undefined;
   if (typeof pUid !== "number") return true; // unknown env — be lenient
-  return stat.uid === pUid;
+  if (stat.uid !== pUid) return false;
+  // Reject group/world-readable trust markers. Same defense as voice
+  // output canonicalization + envelope reader — privileged on-disk
+  // signals must be 0o600 (or stricter).
+  if ((stat.mode & 0o077) !== 0) return false;
+  return true;
 }
 
 /**
@@ -80,8 +100,11 @@ export function isOwnerTrusted(channel: ChannelName): boolean {
  * directly so the user gets a permission prompt; we don't want a
  * generic "elevate trust" MCP tool that the agent could call.
  */
-export function writeTrustMarker(channel: ChannelName): void {
-  const file = trustFilePath(channel);
+export function writeTrustMarker(
+  channel: ChannelName,
+  suffix: TrustSuffix = "owner"
+): void {
+  const file = trustFilePath(channel, suffix);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   fs.writeFileSync(file, "", { mode: 0o600 });
   if (process.platform !== "win32") {
@@ -97,8 +120,11 @@ export function _resolvedTrustDirForTests(): string {
 /**
  * Removes the trust marker. Used by the wizard's "disable" path.
  */
-export function removeTrustMarker(channel: ChannelName): void {
-  const file = trustFilePath(channel);
+export function removeTrustMarker(
+  channel: ChannelName,
+  suffix: TrustSuffix = "owner"
+): void {
+  const file = trustFilePath(channel, suffix);
   try {
     fs.unlinkSync(file);
   } catch {

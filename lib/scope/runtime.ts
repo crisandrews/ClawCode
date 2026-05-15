@@ -430,5 +430,64 @@ export function resolveWhatsappChannelDir(
   return path.dirname(result.accessPath);
 }
 
+/**
+ * Codex round-4 MEDIUM: mode-independent channel-dir discovery for the
+ * exec-gate's always-on protected-paths classifier. Unlike
+ * `resolveWhatsappChannelDir`, this function:
+ *   - Does NOT gate on `mode === "off"` — the protected path must fire
+ *     even for read-scope-disabled channels.
+ *   - Does NOT require `cfg` to exist — auto-discovers the project-local
+ *     install via `detectWhatsappProjectDir` so users with a paired
+ *     WhatsApp install but no `scope` block still get governance
+ *     protection.
+ *
+ * Returns the channel-dir (parent of `access.json`) when discoverable,
+ * or null. Caller passes the workspace root for `baseCwd` resolution.
+ */
+export function discoverAllChannelGovernanceDirs(
+  config: AgentConfig | undefined,
+  workspaceRoot: string
+): string[] {
+  const out: string[] = [];
+
+  // WhatsApp — only channel with a real adapter today.
+  const cfgWa = config?.scope?.whatsapp;
+  const baseCwd = workspaceRoot;
+  const tryAdd = (cfg: NonNullable<ScopeConfigTree["whatsapp"]>): void => {
+    try {
+      const result = resolveAccessPath(cfg, baseCwd);
+      if (!result) return;
+      const dir = path.dirname(result.accessPath);
+      // Only protect dirs that actually exist on disk — a bogus
+      // accessJsonPath shouldn't contribute a phantom protected root
+      // that could confuse the classifier.
+      try {
+        if (!fs.existsSync(dir)) return;
+      } catch {
+        return;
+      }
+      out.push(dir);
+    } catch {
+      // best-effort
+    }
+  };
+
+  if (cfgWa) {
+    tryAdd(cfgWa);
+  } else {
+    // No `scope.whatsapp` block at all — try auto-discovery anyway.
+    // A paired install at `~/.claude/plugins/claude-whatsapp/...` or
+    // project-local still hosts an access.json that's worth protecting.
+    tryAdd({});
+  }
+
+  // Telegram / Discord / iMessage / WebChat: no auto-discoverable
+  // governance file today. When those channels publish access-file
+  // contracts, extend this enumeration. Until then, only `accessJsonPath`
+  // is honored.
+
+  return Array.from(new Set(out));
+}
+
 // Re-export adapter accessor so callers don't need two imports.
 export { getScopeAdapter };

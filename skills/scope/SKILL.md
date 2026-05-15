@@ -42,8 +42,12 @@ If `$ARGS` is empty or the subcommand is unknown, default to `status`.
    - `mode` (off / shadow / enforce)
    - `identity` (auto / owner / guest)
    - `background.identity` (deny / system-owner)
+   - `execGate.mode` (off / shadow / enforce), `execGate.policy` (denylist / allowlist), and `execGate.tools` count (or "defaults" when omitted)
    - WhatsApp only: `accessJsonPath`, `cwdExactMatchOnly`
-3. Then call `mcp__clawcode__agent_doctor(action='check')` and surface the scope rows (`scope-pre-enforce-audit`, `scope-bypasses`, `scope-quarantine-pending`).
+3. Surface trust file presence (read scope + exec):
+   - `<channel>-owner` exists? (yes/no) — gates read scope owner unlock
+   - `<channel>-exec` exists? (yes/no) — gates execGate "trust this machine" path
+4. Then call `mcp__clawcode__agent_doctor(action='check')` and surface the scope rows (`scope-pre-enforce-audit`, `scope-bypasses`, `scope-quarantine-pending`, `scope-execgate-status`, `scope-execgate-shadow-events`).
 
 If `scope` is absent in config, say so explicitly and recommend `/agent:scope wizard`.
 
@@ -51,10 +55,10 @@ If `scope` is absent in config, say so explicitly and recommend `/agent:scope wi
 
 **All scope-tree writes are refused by `mcp__clawcode__agent_config(action='set')`** (any key starting with `scope`). The agent cannot silently elevate or relax the policy; every scope key goes through `Bash`, which surfaces a permission prompt to the user.
 
-For `enable whatsapp shadow` the single Bash call covers ALL scope.whatsapp keys:
+For `enable <channel> <mode>` the single Bash call covers ALL scope.<channel> keys. Substitute BOTH `<channel>` (validated against the shipped enum `{whatsapp, telegram, discord, imessage, webchat}`) AND `<mode>` ('shadow' or 'enforce'; default 'shadow' when omitted) from `$ARGS`. Refuse any other literal for either parameter — only those values are valid for enable. `cwdExactMatchOnly` preserves the prior value if the user had it `true`:
 
 ```
-Bash('node -e "const fs=require(\"fs\"),p=\"agent-config.json\";const c=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,\"utf-8\")):{};c.scope=c.scope||{};c.scope.whatsapp=Object.assign({},c.scope.whatsapp,{mode:\"shadow\",identity:\"auto\",accessJsonPath:\"auto\",cwdExactMatchOnly:false,background:Object.assign({},(c.scope.whatsapp||{}).background,{identity:\"deny\"})});fs.writeFileSync(p,JSON.stringify(c,null,2));console.log(\"wrote\",p);"')
+Bash('node -e "const fs=require(\"fs\"),p=\"agent-config.json\";const c=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,\"utf-8\")):{};c.scope=c.scope||{};const ch=\"<channel>\";const cur=c.scope[ch]||{};c.scope[ch]=Object.assign({},cur,{mode:\"<mode>\",identity:\"auto\",accessJsonPath:cur.accessJsonPath||\"auto\",cwdExactMatchOnly:cur.cwdExactMatchOnly===true,background:Object.assign({},cur.background,{identity:\"deny\"})});fs.writeFileSync(p,JSON.stringify(c,null,2));console.log(\"wrote\",p);"')
 ```
 
 The `Bash` call surfaces a permission prompt to the user — that's intentional. Default mode when omitted: `shadow`. Confirm by re-running `status`.
@@ -63,19 +67,21 @@ Tell the user: "Run `/mcp reconnect clawcode` for changes to take effect."
 
 ### Step 4 — `disable <channel>`
 
-`scope.<channel>.mode` is on the security-sensitive blocklist, so this also goes through `Bash`:
+First validate `<channel>` is one of the shipped channel names (`whatsapp`, `telegram`, `discord`, `imessage`, `webchat`). Reject any other value with an error message — this defends against future channel IDs that might contain shell metacharacters. Currently shipped names are alphanumeric and safe.
+
+`scope.<channel>.mode` AND `scope.<channel>.execGate.mode` are both on the security-sensitive blocklist, so this also goes through `Bash`. A `disable` resets BOTH read scope AND execGate to off (the user expected "turn the channel off" — they don't expect read scope to flip but exec scope to remain active):
 
 ```
-Bash('node -e "const fs=require(\"fs\"),p=\"agent-config.json\";const c=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,\"utf-8\")):{};c.scope=c.scope||{};c.scope.<channel>=Object.assign({},c.scope.<channel>,{mode:\"off\"});fs.writeFileSync(p,JSON.stringify(c,null,2));console.log(\"disabled\");"')
+Bash('node -e "const fs=require(\"fs\"),p=\"agent-config.json\";const c=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,\"utf-8\")):{};c.scope=c.scope||{};const cur=c.scope.<channel>||{};c.scope.<channel>=Object.assign({},cur,{mode:\"off\",execGate:{mode:\"off\"}});fs.writeFileSync(p,JSON.stringify(c,null,2));console.log(\"disabled\");"')
 ```
 
-If the trust file exists, also remove it:
+Also remove BOTH trust files (read-scope owner trust AND exec trust):
 
 ```
-Bash('rm -f ~/.claude/agent/scope-trust/<channel>-owner')
+Bash('rm -f ~/.claude/agent/scope-trust/<channel>-owner ~/.claude/agent/scope-trust/<channel>-exec')
 ```
 
-so the unlock is dropped along with the mode flip. Both Bash calls surface a permission prompt — intentional: turning scope off and dropping trust are user-visible state changes.
+so both unlocks are dropped along with the mode flip. Both Bash calls surface a permission prompt — intentional: turning scope off and dropping trust are user-visible state changes.
 
 ### Step 5 — `wizard` (interactive)
 
@@ -104,6 +110,22 @@ Then walk the user through the choices, ONE question per `AskUserQuestion` call.
    - "System-owner — let the dream lane read as if owner (only if you control 100% of the channel and want full dream coverage)" → `background.identity: system-owner` AND step 6 will create the trust file just like the foreground `owner` case. Background `system-owner` without trust file silently degrades to deny in `resolveAllowed`, so the wizard MUST touch the file or the user gets surprising "no dream coverage" behavior.
    - "Cancel" → exit
 
+4a. **¿Activar gate de ejecución?** (execution gate — separate from read scope; blocks destructive tools when the current turn was triggered by a non-owner inbound)
+   - "Sí, recomendado — bloquear Bash y writes destructivos si un mensaje de un no-owner los dispara" → `execGate.mode: shadow` initially (will collect would-block events for review)
+   - "Sí, modo enforce desde el principio (avanzado)" → `execGate.mode: enforce`
+   - "No, dejar abierto (el agente puede ejecutar lo que sea aunque venga de un grupo)" → `execGate.mode: off`
+   - "Cancel" → exit
+
+4b. **¿Qué política?** (only if execGate mode is shadow/enforce)
+   - "Denylist (recomendado) — bloquear solo tools destructivos (Bash, Write, Edit, MultiEdit, NotebookEdit, agent_config, skill_install/remove, dream)" → `execGate.policy: denylist`, `execGate.tools` omitted (defaults applied)
+   - "Allowlist (estricto) — solo permitir tools de lectura/mensajería (Read, Grep, Glob, TodoWrite, WebFetch, WebSearch, reply, react, memory_search/get/context, voice_speak/transcribe)" → `execGate.policy: allowlist`, `execGate.tools` omitted (defaults applied)
+   - "Cancel" → exit
+
+4c. **¿Confiar este equipo para ejecutar tools cuando un no-owner mensaje vino del canal armado?** (only if execGate mode is shadow/enforce — this creates the `<channel>-exec` trust file, separate from the `<channel>-owner` read-scope trust file)
+   - "Sí, soy el owner — confío en que este equipo puede ejecutar tools incluso cuando un mensaje de otro entró en el window de 60s" → step 6 will run `Bash('mkdir -p ~/.claude/agent/scope-trust && touch ~/.claude/agent/scope-trust/<channel>-exec && chmod 600 ...')`. The exec-trust file is SEPARATE from the read-scope owner trust file (`<channel>-owner`) — having one does NOT imply the other. This is intentional: a user can read their own chats without granting the agent the right to run shell commands from non-owner-triggered turns.
+   - "No, dejar el gate firmado — bloquear cualquier no-owner-inducido tool destructivo hasta que cree el archivo manualmente" → no exec trust file. Useful when the user wants to observe shadow events first before deciding.
+   - "Cancel" → exit
+
 5. **Confirmation preview**: show a summary of the writes that will happen, AND a count of currently-visible channel chunks that would be filtered out under the chosen mode.
 
    To compute the count, call:
@@ -124,8 +146,18 @@ Then walk the user through the choices, ONE question per `AskUserQuestion` call.
      - "Cancel" → exit, no changes
 
 6. **Apply**: execute the calls in this order:
-   - `Bash('node -e "..."')` — writes ALL scope.<channel>.* keys (mode, identity, accessJsonPath, background.identity, cwdExactMatchOnly) to `agent-config.json`. All scope writes are consolidated into this single call because `agent_config(action='set')` refuses scope keys.
+   - Single consolidated config write through Bash (because `agent_config(action='set')` refuses scope.* keys). Substitute `<channel>`, `<mode>`, `<identity>`, `<bg>`, `<egMode>`, `<egPolicy>` from the wizard answers:
+
+     ```
+     Bash('node -e "const fs=require(\"fs\"),p=\"agent-config.json\";const c=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,\"utf-8\")):{};c.scope=c.scope||{};const ch=\"<channel>\";const cur=c.scope[ch]||{};const bg=Object.assign({},cur.background,{identity:\"<bg>\"});const next=Object.assign({},cur,{mode:\"<mode>\",identity:\"<identity>\",accessJsonPath:cur.accessJsonPath||\"auto\",cwdExactMatchOnly:cur.cwdExactMatchOnly===true,background:bg});const eg=\"<egMode>\";next.execGate=eg===\"off\"?{mode:\"off\"}:{mode:eg,policy:\"<egPolicy>\"};c.scope[ch]=next;fs.writeFileSync(p,JSON.stringify(c,null,2));console.log(\"wrote\",p);"')
+     ```
+
+     Notes:
+     - `cwdExactMatchOnly` preserves the prior value if the user had it `true` — never silently flipped to false.
+     - `execGate.tools` is intentionally OMITTED so the resolver applies defaults (`DEFAULT_DENYLIST_TOOLS` / `DEFAULT_ALLOWLIST_TOOLS` from `lib/scope/exec-gate.ts`). If the user picked custom tools in a future wizard branch, set `next.execGate.tools = ["…"]` accordingly.
+     - `execGate.mode = "off"` is ALWAYS written so `/agent:scope status` surfaces the explicit "currently off" state and a later wizard run can detect intent.
    - If `identity = "owner"` OR `background.identity = "system-owner"`: `Bash('mkdir -p ~/.claude/agent/scope-trust && touch ~/.claude/agent/scope-trust/<channel>-owner && chmod 600 ~/.claude/agent/scope-trust/<channel>-owner')`
+   - If user opted to trust the machine for execGate (step 4c "Sí"): `Bash('mkdir -p ~/.claude/agent/scope-trust && touch ~/.claude/agent/scope-trust/<channel>-exec && chmod 600 ~/.claude/agent/scope-trust/<channel>-exec')`. SEPARATE trust file from the read-scope owner trust; agent cannot create either via MCP — both go through Bash + user permission prompt. The doctor row `scope-execgate-status` reflects trust validity (mode/uid/symlink checks), not just file presence.
 
 7. After applying, run `status` to display the new state. Then ALSO surface the **first-run banner** to the user once, in their language:
 
@@ -143,9 +175,11 @@ Then walk the user through the choices, ONE question per `AskUserQuestion` call.
 
 If invoked outside an interactive REPL session, abort with: "The wizard requires an interactive REPL — use `/agent:scope enable <channel> [shadow|enforce]` instead."
 
-### Step 6 — `test <chatId>` (dry-run)
+### Step 6 — `test <chatId>` (read-scope dry-run) and `test exec <senderJid> <toolName>` (execGate dry-run)
 
-Show what a given chat-id would resolve to under the current scope config — read-only, no writes.
+Show what a given chat-id (or sender+tool combo) would resolve to under the current scope config — read-only, no writes.
+
+**Read-scope dry-run** (`test <chatId>`):
 
 1. Parse `<chatId>` from `$ARGS`. If missing, prompt the user for one.
 2. Call `mcp__clawcode__agent_config(action='get')` and pull `scope.<channel>` (default `whatsapp`).
@@ -156,6 +190,77 @@ Show what a given chat-id would resolve to under the current scope config — re
    ```
 
 4. Surface the JSON output to the user in their language. Translate `visible: true` to "this chat WOULD be visible to the agent under the current scope" and `visible: false` to "this chat would be hidden". Add a line: "This is a dry-run — no config or memory state changed."
+
+**ExecGate dry-run** (`test exec <senderJid> <toolName>`):
+
+Show what the execution gate would decide for a given sender + tool combo. Useful for verifying allowlist/denylist semantics + hard-deny (Bash/Task) + trust file unlock before flipping shadow → enforce.
+
+1. Parse `<senderJid> <toolName>` from `$ARGS`. If missing, prompt the user for both.
+2. Invoke the real pure-function resolver (`lib/scope/exec-gate.ts:resolve`) with an injected envelope reader that returns a synthetic non-owner envelope. The resolver honors the actual trust-file check, hard-deny set (`Bash`, `Task`), and protected-paths logic.
+
+   IMPORTANT: this snippet calls into `.ts` files directly — it MUST run under tsx (`npx tsx -e ...`), not plain `node -e`. Plain `node` cannot require TypeScript files; using tsx ensures the loader resolves the imports correctly:
+
+   ```
+   Bash('npx tsx -e "
+const eg = require(\"./lib/scope/exec-gate.ts\");
+const c = require(\"./lib/config.ts\");
+const r = require(\"./lib/scope/runtime.ts\");
+const wa = require(\"./lib/scope/whatsapp.ts\");
+const path = require(\"path\");
+
+const cfg = c.loadConfig(process.cwd());
+const senderJid = process.argv[1];
+const toolName = process.argv[2];
+const channel = \"whatsapp\";
+
+const execGate = eg.execGateConfigForChannel(cfg.scope, channel);
+const channelDir = r.resolveWhatsappChannelDir(cfg, process.cwd()) || \"\";
+const ownerJids = [];
+if (channelDir) {
+  try {
+    const access = wa.loadAccess(path.join(channelDir, \"access.json\"), new Map());
+    if (access.resolvable && access.access) ownerJids.push(...(access.access.ownerJids || []));
+  } catch {}
+}
+
+// Inject a fake envelope reader so the resolver \"sees\" the supplied senderId
+// as an in-window non-owner inbound. recordShadow is a no-op for dry-run.
+const fakeReader = {
+  load: (cd, token, now) => ({
+    version: 1, token,
+    chatId: senderJid, senderId: senderJid,
+    ts: now, expiresAt: now + 60000
+  })
+};
+const fakeFs = {
+  readdirSync: () => [\"dryrun.json\"],
+  statSync: () => ({ isFile: () => true, mtimeMs: Date.now() })
+};
+
+const decision = eg.resolve({
+  toolName,
+  toolInput: toolName === \"Bash\" ? { command: \"dryrun\" } : {},
+  pluginRoot: process.cwd(),
+  workspaceRoot: process.cwd(),
+  memoryDir: path.join(process.cwd(), \"memory\"),
+  armed: [{ channel, channelDir: channelDir || \"/tmp/dryrun\", ownerJids, execGate }],
+  reader: fakeReader,
+  fsImpl: fakeFs,
+  effects: { recordShadow: () => {} }
+});
+
+console.log(JSON.stringify({
+  senderJid, toolName, channel,
+  execGateMode: execGate.mode, policy: execGate.policy,
+  ownerJidsKnown: ownerJids.length,
+  isOwner: ownerJids.includes(senderJid),
+  decision: decision.decision,
+  reason: \"reason\" in decision ? decision.reason : null
+}, null, 2));
+" "<senderJid>" "<toolName>"')
+   ```
+
+3. Surface the JSON output. Translate `decision` to plain language (`allow` / `block` / `shadow`). Note: hard-deny tools (`Bash`, `Task`) block regardless of policy. Trust file `<channel>-exec` (if present + valid uid/mode) unlocks any non-owner-induced call. Add: "This is a dry-run — the resolver pure function was invoked but the hook subprocess was NOT spawned. To verify end-to-end including stderr surfacing, send a real test message from `<senderJid>` and observe the agent's response."
 
 ### Step 7 — `audit`
 

@@ -46,6 +46,29 @@ Both are required. The trust file exists because the agent can write the config 
 
 `WHATSAPP_OWNER_BYPASS=1` in the shell env is an alternative escape hatch — agents launched with that env can read scoped content as owner. Useful for owner-launched terminal sessions where no inbound has happened recently.
 
+## Execution scope (optional, separate from read scope)
+
+Read scope filters what the agent **sees**. Execution scope restricts what the agent **does** when the current turn was triggered by a non-owner messaging-channel inbound.
+
+The threat model: a prompt-injected message in a group chat could induce the agent to invoke destructive tools (`Bash`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`) or sensitive MCP tools (`agent_config`, `skill_install`, `dream`). Without execution scope, the only defense is the LLM's safety training plus the system prompt — best-effort, not deterministic.
+
+Execution scope is configured per channel under `scope.<channel>.execGate`, **independent** of the read-scope `mode` above:
+
+- **`mode`** — `off | shadow | enforce` (default `off`). `shadow` logs what would be blocked without actually blocking; `enforce` blocks.
+- **`policy`** — `denylist | allowlist` (default `denylist`). With denylist, the listed tools are blocked when the gate fires; with allowlist, ONLY the listed tools are allowed.
+- **`tools`** — array of tool names. Defaults to a "destructive set" (`Bash`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, plus selected MCP tools) under denylist policy, or a "safe set" (`Read`, `Grep`, `Glob`, `memory_*`, `reply`, `react`, etc.) under allowlist.
+- **`lookbackMs`** — how far back (in ms) the gate looks at the channel-dir's `.request-envelopes/` to decide whether the current turn is influenced by a non-owner inbound. Default `60_000`.
+
+When the gate fires (mode != off + a non-owner envelope exists in the lookback window AND no execution-trust file is present), `Bash` AND `Task` are hard-denied regardless of `tool_input` content. `Bash` because shell command grammar is too rich to safely parse for output redirection; `Task` because it spawns a subagent and Claude Code's hook propagation to subagents is not guaranteed — wholesale deny is the only defensible posture for both. Other tools are blocked or allowed per the policy + `tools[]` list.
+
+`shadow` mode logs would-block decisions to `memory/.execgate-shadow.jsonl` (atomic 1 MB rotation to `.1` backup; older history dropped). Each event captures sender hash, tool name, effective mode, policy, expanded tools, hook version, config hash, lookback window, and envelope count — enough to replay the decision after a config change. The doctor check `scope-execgate-shadow-events` summarizes these events (warns when any are within the last 7 days, prompting review before flipping to enforce).
+
+**Always-on protected paths** (independent of mode/policy, fires even with `mode: off`): writes via `Write`, `Edit`, `MultiEdit`, or `NotebookEdit` to a fixed self-protecting list — `<plugin-root>/hooks/` directory (incl. the PreToolUse hook script `exec-gate-pretool.sh`), `<plugin-root>/dist/exec-gate-resolver.cjs`, the four exec-gate source files (`<plugin-root>/lib/scope/exec-gate.ts`, `exec-gate-hook-entry.ts`, `protected-paths.ts`, `agent-config-guard.ts`), `<workspace>/agent-config.json`, `~/.claude/`, `~/.ssh/`, `~/.aws/`, `~/.gnupg/`, `~/.kube/`, `~/.docker/`, shell init files (`~/.bashrc`, `~/.zshrc`, `~/.profile`, `~/.config/fish/config.fish`, etc.), `~/Library/LaunchAgents/`, `~/.config/systemd/user/`, the `.mcp.json` / `.claude-plugin/plugin.json` files, and every configured channel's `access.json` (regardless of channel mode). The agent cannot self-modify the gate, plant a persistence backdoor through MCP write tools, or corrupt channel governance to soft-DoS the owner.
+
+**Execution-trust file** (separate from read-scope owner trust): `~/.claude/agent/scope-trust/<channel>-exec` unlocks the gate for that channel. Created via `Bash` in the wizard — the agent cannot create it through any MCP tool, ensuring the unlock requires deliberate user consent. The `<channel>-owner` (read scope) and `<channel>-exec` (execution scope) trust files are independent — neither implies the other. You can opt into reading all your channels' content from your own machine without also granting non-owner group chats the power to invoke destructive tools.
+
+**Trade-off — false-positives in mixed-traffic groups**: the gate fires whenever ANY non-owner envelope exists in the lookback window, even if the current turn is responding to a different inbound. Under context-contamination model this is correct: if the agent processed a non-owner message within the last 60s, its working context likely includes that content, and blocking destructive operations prevents action-on-injected content even when authority is ambiguous. Mitigations: create the `<channel>-exec` trust file, tighten `lookbackMs`, or run owner-driven destructive operations from a terminal (where no channel envelope is present → gate doesn't fire).
+
 ## What scope does NOT cover
 
 - **Native filesystem bypass**: `Read`, `Grep`, direct SQLite reads, or any non-MCP tool can read raw channel log files (e.g. `~/claude-whatsapp/extras/<chat>/<date>.md`). MCP scope filters at the MCP boundary, not at the OS layer. If hard isolation is required, use filesystem permissions or sandboxed user accounts.

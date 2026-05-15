@@ -65,6 +65,7 @@ Coming from OpenClaw? `/agent:import` brings your agent's personality, memory, s
 - **[Always-on](#always-on-service)** — launchd / systemd service. Enables dreaming + heartbeat 24/7.
 - **[Webhooks](#webhooks)** — external systems (Cloudflare Workers, GitHub Actions, CI/CD, IoT) can POST events to the agent via HTTP. The agent processes them like any other message.
 - **[Channel scope](#channel-scope)** — opt-in per-channel privacy layer. When you pair WhatsApp, you can choose: agent acts as owner (sees all chats), guest (sees nothing channel-derived), or auto (owner-only ceiling). Default is off — zero behavior change for users who don't opt in.
+- **[Execution gate](#channel-scope)** — opt-in guardrail (companion to channel scope). When the current Claude Code turn was triggered by a non-owner message in a paired group chat, blocks destructive tools (`Bash`, `Write`, `Edit`, `Task`, and more) per a denylist/allowlist policy. Always-on protected paths fire even with the gate off — agent cannot self-modify hooks, agent-config, SSH/credential dirs, shell init, or persistence mechanisms. Default off.
 - **[Doctor](#diagnostics)** — 9+ health checks (config, identity, memory, SQLite, QMD, bootstrap, HTTP, messaging, dreaming, scope). `--fix` auto-repairs safe issues.
 - **[Terse by design](#how-it-works)** — the agent acts, doesn't narrate. Confirmations in 1-2 lines, no preambles, no recaps.
 
@@ -229,6 +230,8 @@ Important caveats:
 - **MCP scope is not a filesystem sandbox.** Native `Read`, `Grep`, or direct SQLite over channel log files always bypass the scope filter by design. Hard isolation lives at the OS/filesystem layer.
 - The filter covers MCP tools (`memory_search`, `memory_get`, `memory_context`, `dream`, `voice_transcribe`, `chat_inbox_read`).
 - A separate per-chat indexer reads upstream `messages.db` read-only and stores chat-id columns locally so per-chat allowlists work.
+
+**Execution gate** (independent opt-in, layered on top of read scope) — same wizard adds a separate question that activates a PreToolUse gate. When the current turn was triggered by a non-owner message in a paired channel, destructive tools (`Bash`, `Write`, `Edit`, `Task`, etc.) are blocked per a denylist (recommended) or allowlist policy. Shadow mode logs would-block decisions for review; enforce mode blocks them outright. Always-on protected paths refuse MCP writes to plugin internals, agent-config, scope-trust dir, SSH/credential dirs, shell init files, and persistence mechanisms — even with the gate off, so the agent cannot self-modify the gate. A separate `<channel>-exec` trust file (created via Bash) unlocks the gate for a trusted machine without disabling read scope.
 
 Full details: [`docs/channel-scope-compat.md`](docs/channel-scope-compat.md) · [`PRIVACY.md`](PRIVACY.md#channel-scope-per-channel-opt-in)
 

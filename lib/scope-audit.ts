@@ -31,8 +31,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { CHANNEL_REGISTRY } from "./channel-detector.ts";
 import type { ChannelName } from "./channel-detector.ts";
+import { deriveChannelHint } from "./scope/channel-hint.ts";
 
 export interface ScopeAuditExtraChunk {
   path: string;
@@ -120,19 +120,12 @@ const MAX_LINE_PREVIEW = 200;
 /**
  * Map a path-like string to a known channel name, using the registry
  * markers as substring hints. Returns null when nothing matches.
+ *
+ * Re-exported from `lib/scope/channel-hint.ts` (split out so the
+ * exec-gate hook bundle doesn't drag better-sqlite3 in just to call
+ * this pure function).
  */
-export function deriveChannelHint(p: string): ChannelName | null {
-  if (!p) return null;
-  const lower = p.toLowerCase();
-  for (const entry of CHANNEL_REGISTRY) {
-    for (const marker of entry.cacheMarkers) {
-      if (marker && lower.includes(marker.toLowerCase())) {
-        return entry.name;
-      }
-    }
-  }
-  return null;
-}
+export { deriveChannelHint };
 
 function auditExtraPathChunks(workspace: string): ScopeAuditExtraChunk[] {
   const dbPath = path.join(workspace, "memory", ".memory.sqlite");
