@@ -1,4 +1,4 @@
-/* scope-exec-gate-bundle@9c23950263a3126039e10f9e2fc03ab726aae6a05e518db7e2ed5a6bb2e07f03 */
+/* scope-exec-gate-bundle@cdae9d932bfb0c867a425f15cd1ee2d528931a15c8db7607c2ea1bdc0e4a3ff0 */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -1345,9 +1345,15 @@ function resolve(input) {
       channelDirs
     });
     if (hit) {
+      let hint = "";
+      if (hit.reason === "workspace-agent-config") {
+        hint = " \u2014 use the Bash heredoc + JSON.parse + atomic tmp/mv pattern for user-driven setup; see AGENTS.md.";
+      } else if (hit.reason === "channel-access-json") {
+        hint = " \u2014 use the channel skill's Bash heredoc + JSON.parse + chmod 600 + atomic mv pattern; see its 'How to save' reference.";
+      }
       return {
         decision: "block",
-        reason: `exec-gate: write to protected path refused (${hit.reason})`,
+        reason: `exec-gate: write to protected path refused (${hit.reason})${hint}`,
         protectedPath: hit
       };
     }

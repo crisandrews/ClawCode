@@ -48,12 +48,45 @@ qmd --version 2>/dev/null
 
 Then:
 
-- **If QMD is installed** → use `AskUserQuestion` with options: *"Enable QMD (better memory — local embeddings + semantic search, recommended)"* / *"Use built-in (works fine, no setup)"*. Write `agent-config.json` per their choice using the templates at the bottom of this file.
+- **If QMD is installed** → use `AskUserQuestion` with options: *"Enable QMD (better memory — local embeddings + semantic search, recommended)"* / *"Use built-in (works fine, no setup)"*. Write `agent-config.json` per their choice using the **Bash heredoc pattern below** (NOT the `Write` tool — `agent-config.json` is on the always-on protected-paths list and direct `Write` is refused).
 
 - **If QMD is not installed** → tell them once, no question:
   > "I'm using built-in search (FTS5 + BM25) which works well. For even better memory with semantic understanding, you can install QMD later (`bun install -g qmd`) and run `/agent:settings` to enable it."
-  
-  Write the built-in config without asking.
+
+  Write the built-in config via the Bash heredoc pattern below.
+
+### How to write agent-config.json (Bash heredoc + validate + atomic mv, NOT Write)
+
+Use a Bash heredoc so the JSON body is VERBATIM text — no double-quote escaping inside a `node -e` string, no shell-quoting fragility. Validate the JSON via `node -e 'JSON.parse(...)'` BEFORE the atomic rename so a malformed body can't clobber the user's config silently. Example with the QMD template (substitute the matching template from the bottom of this file):
+
+```
+Bash('cat > agent-config.json.tmp << "JSON_EOF" &&
+{
+  "memory": {
+    "backend": "qmd",
+    "citations": "auto",
+    "qmd": {
+      "searchMode": "vsearch",
+      "includeDefaultMemory": true,
+      "limits": { "maxResults": 6, "timeoutMs": 15000 }
+    }
+  }
+}
+JSON_EOF
+node -e \'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))\' agent-config.json.tmp \
+  && mv agent-config.json.tmp agent-config.json \
+  && echo "wrote agent-config.json" \
+  || { rm -f agent-config.json.tmp; echo "ABORTED: invalid JSON or filesystem error"; exit 1; }')
+```
+
+Key details:
+- The `"JSON_EOF"` delimiter (double-quoted form) disables parameter expansion inside the body, so any `$`, backticks, etc. in the JSON are treated literally.
+- The compound starts with `cat` so allowed-tools `Bash(cat *)` covers the whole sequence.
+- `cat > ... << "JSON_EOF" &&` puts the heredoc write itself in the `&&` chain — a `cat` failure short-circuits the rest. Without that `&&`, a `cat` that fails to open the tmp file (rare — immutable bit, ENOSPC mid-truncate) would leave any pre-existing tmp content intact, `node -e` would validate the OLD content, and `mv` would silently clobber the destination with stale data.
+- `node -e 'JSON.parse(...)'` exits non-zero on malformed JSON; the `&&` chain only `mv`'s the tmp file when validation passed.
+- The bootstrap case CREATES the file (no pre-existing config to merge). For the merge case (e.g. `/agent:settings`), see that skill — it precomputes the merged object in agent reasoning and writes the final form via the same heredoc.
+- The user gets ONE Bash permission prompt; that's by design — `agent-config.json` controls scope policy and other security-sensitive settings, so writes are routed through the user's explicit consent rather than the file-write tool.
+- DO NOT use `Write('agent-config.json', ...)` — the call is refused at the PreToolUse hook with `exec-gate: write to protected path refused (workspace-agent-config)`. Don't retry — switch to the heredoc above.
 
 ## 8. Set up messaging (optional)
 

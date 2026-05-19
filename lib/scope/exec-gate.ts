@@ -274,9 +274,20 @@ export function resolve(input: ResolverInput): ResolverDecision {
       channelDirs,
     });
     if (hit) {
+      // Codex Phase 8 post-impl LOW: surface a recovery hint for the two
+      // most-commonly-hit reasons during legitimate setup flows. Without
+      // the hint, agents retry `Write` and produce the same block.
+      let hint = "";
+      if (hit.reason === "workspace-agent-config") {
+        hint =
+          " — use the Bash heredoc + JSON.parse + atomic tmp/mv pattern for user-driven setup; see AGENTS.md.";
+      } else if (hit.reason === "channel-access-json") {
+        hint =
+          " — use the channel skill's Bash heredoc + JSON.parse + chmod 600 + atomic mv pattern; see its 'How to save' reference.";
+      }
       return {
         decision: "block",
-        reason: `exec-gate: write to protected path refused (${hit.reason})`,
+        reason: `exec-gate: write to protected path refused (${hit.reason})${hint}`,
         protectedPath: hit,
       };
     }

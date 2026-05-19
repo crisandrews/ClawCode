@@ -284,7 +284,7 @@
       "format": "esm"
     },
     "lib/scope/exec-gate.ts": {
-      "bytes": 23153,
+      "bytes": 23793,
       "imports": [
         {
           "path": "node:crypto",
@@ -532,7 +532,7 @@
           "bytesInOutput": 794
         },
         "lib/scope/exec-gate.ts": {
-          "bytesInOutput": 9489
+          "bytesInOutput": 9899
         },
         "lib/scope/envelope.ts": {
           "bytesInOutput": 5661
@@ -544,7 +544,7 @@
           "bytesInOutput": 3840
         }
       },
-      "bytes": 61475
+      "bytes": 61885
     }
   }
 }

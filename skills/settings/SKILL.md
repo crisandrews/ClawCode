@@ -58,7 +58,11 @@ Show defaults:
    ```
 
 3. **Configure the backend:**
-   Write to `agent-config.json`:
+   Write `agent-config.json` via Bash (NOT the `Write` tool — `agent-config.json` is on the always-on protected-paths list; direct `Write` is refused with `exec-gate: write to protected path refused (workspace-agent-config)`).
+
+   **Step 3a — Read current config** with the `Read` tool: `Read("agent-config.json")`. If it doesn't exist, treat as `{}`.
+
+   **Step 3b — Merge in-memory** in your reasoning: take the existing object, replace the `memory` key with the QMD block:
    ```json
    {
      "memory": {
@@ -67,14 +71,25 @@ Show defaults:
        "qmd": {
          "searchMode": "vsearch",
          "includeDefaultMemory": true,
-         "limits": {
-           "maxResults": 6,
-           "timeoutMs": 15000
-         }
+         "limits": { "maxResults": 6, "timeoutMs": 15000 }
        }
      }
    }
    ```
+   Preserve every other top-level key from the existing config.
+
+   **Step 3c — Write the full merged object via Bash heredoc with validate + atomic mv** (substitute `<FULL_MERGED_JSON>` with the JSON literal from your reasoning):
+   ```
+   Bash('cat > agent-config.json.tmp << "JSON_EOF" &&
+   <FULL_MERGED_JSON>
+   JSON_EOF
+   node -e \'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))\' agent-config.json.tmp \
+     && mv agent-config.json.tmp agent-config.json \
+     && echo "wrote agent-config.json" \
+     || { rm -f agent-config.json.tmp; echo "ABORTED: invalid JSON or filesystem error"; exit 1; }')
+   ```
+
+   The user gets ONE Bash permission prompt. By design — `agent-config.json` controls security-sensitive settings, so writes go through deliberate user consent. The `"JSON_EOF"` (double-quoted delimiter) form disables shell expansion inside the body, so any literal `$` or backtick in the JSON stays untouched. `cat > ... << "JSON_EOF" &&` puts the heredoc write itself in the `&&` chain so a `cat` failure short-circuits the rest (otherwise a `cat` that fails to open the tmp file would leave any pre-existing tmp content intact, `node` would validate stale content, and `mv` would clobber the destination with old data). The `node -e 'JSON.parse(...)'` step rejects malformed JSON before the atomic `mv` — your existing config can never be clobbered by a truncated or syntactically broken write.
 
 4. **If qmd is in a non-standard path**, set the command:
    ```json
@@ -115,10 +130,20 @@ Controls how dated files (memory/YYYY-MM-DD.md) lose relevance over time:
 ## Modifying settings
 
 To change a setting:
-1. Read current `agent-config.json` (or create if it doesn't exist)
-2. Update the relevant field
-3. Write back the full config
-4. Run `/mcp` to apply
+1. Read current `agent-config.json` with the `Read` tool (or treat as `{}` if it doesn't exist).
+2. Compute the full updated object IN YOUR REASONING — preserve every other top-level key, only change the field(s) the user asked about.
+3. Write back via Bash heredoc with validate + atomic mv (NOT the `Write` tool — `agent-config.json` is on the always-on protected-paths list; direct `Write` is refused). Substitute `<FULL_UPDATED_JSON>` with your computed object:
+   ```
+   Bash('cat > agent-config.json.tmp << "JSON_EOF" &&
+   <FULL_UPDATED_JSON>
+   JSON_EOF
+   node -e \'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))\' agent-config.json.tmp \
+     && mv agent-config.json.tmp agent-config.json \
+     && echo "wrote agent-config.json" \
+     || { rm -f agent-config.json.tmp; echo "ABORTED: invalid JSON or filesystem error"; exit 1; }')
+   ```
+   The double-quoted `"JSON_EOF"` delimiter disables shell expansion in the body — JSON literals pass through verbatim, no escaping needed. `cat > ... << "JSON_EOF" &&` puts the heredoc write itself in the `&&` chain so a `cat` failure short-circuits the rest. The `node -e 'JSON.parse(...)'` step rejects malformed JSON BEFORE the atomic `mv`, so a truncated or syntactically broken write can never clobber your config.
+4. Run `/mcp` to apply.
 
 ## Heartbeat settings
 
@@ -212,7 +237,7 @@ Display each configured channel:
 - `identity`: `auto` (default ceiling) / `owner` (sees all — requires out-of-band trust file) / `guest` (sees nothing channel-derived)
 - `background.identity`: `deny` (default — dreams don't see scoped chunks) / `system-owner` (dreams see as owner)
 
-**Cannot modify scope.* via `agent_config(action='set')`** — Codex 4th-pass CRITICAL: any key starting with `scope.` is on the security-sensitive blocklist. Use `/agent:scope wizard` or `/agent:scope enable <channel> [shadow|enforce]` instead — those routes go through `Bash` so the user gets a permission prompt for every scope-policy change.
+**Cannot modify scope.* via `agent_config(action='set')`** — any key starting with `scope.` is on the security-sensitive blocklist. Use `/agent:scope wizard` or `/agent:scope enable <channel> [shadow|enforce]` instead — those routes go through `Bash` so the user gets a permission prompt for every scope-policy change.
 
 Full feature description: `docs/channel-scope-compat.md` · `PRIVACY.md#channel-scope-per-channel-opt-in`.
 
@@ -222,4 +247,4 @@ Full feature description: `docs/channel-scope-compat.md` · `PRIVACY.md#channel-
 - The builtin backend is always available as fallback even when QMD is configured
 - QMD first run downloads embedding models (~100MB) — this is a one-time cost
 - Heartbeat active hours are enforced by the agent (instructions), not the cron system
-- Channel-scope (`scope.*`) keys are read-only via `agent_config` — use `/agent:scope wizard` for any changes (Codex 4th-pass CRITICAL)
+- Channel-scope (`scope.*`) keys are read-only via `agent_config` — use `/agent:scope wizard` for any changes (security-sensitive blocklist routes scope-policy changes through Bash for explicit user consent)
