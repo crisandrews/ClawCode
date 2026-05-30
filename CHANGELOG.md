@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [1.7.3] — 2026-05-30
+
+### Why this release matters
+
+The agent importer copies an OpenClaw agent's daily memory logs into the new workspace's top-level `memory/*.md`. Those logs often summarize WhatsApp/Telegram conversations — but once they live under `memory/`, the channel-scope engine classifies them as `local` provenance and passes them through unfiltered, even with scope armed in `enforce`. The scope engine is correct (channel content is meant to arrive via `memory.extraPaths` or the `memory/.scoped/` lane, where it carries `channel` provenance); the gap was that import dropped channel-derived content into the wrong lane, where dreaming never reclassifies it. This release adds a content guard to the import flow so that material is flagged and the user decides its fate before it can silently bypass scope. No change to the scope engine.
+
+### Fixes
+
+- Skills/import: new "channel-content guard" (Step 5a) scans copied dated daily logs for channel markers (WhatsApp/Telegram JIDs, `t.me/`, voice-note phrasing, `wacli`/`baileys`) and, when matched, offers quarantine (to a non-indexed `./import-quarantine/`), skip, or import-as-local-with-acknowledgment — instead of silently landing chat summaries in `memory/*.md` where they'd be mislabeled `local` and bypass channel-scope filtering. `MEMORY.md` is scanned warn-only (never auto-quarantined). Flagged files are recorded in `IMPORT_BACKLOG.md` and surfaced in the import report.
+- Skills/import: Step F now clarifies that adding a messaging plugin's log dir to `memory.extraPaths` is the correct provenance lane for channel history (it gets `channel` provenance via `deriveChannelHint`), in contrast to chat summaries copied into `memory/*.md`.
+
+### Compatibility
+
+- Import-skill instruction text only — no code, schema, config, or tool-signature changes; `lib/scope/*` is untouched. Affects future imports only; already-imported workspaces are unchanged.
+
 ## [1.7.2] — 2026-05-30
 
 ### Why this release matters

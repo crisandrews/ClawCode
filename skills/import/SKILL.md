@@ -62,6 +62,60 @@ Import an existing agent from an OpenClaw installation into this directory, then
    - Create `./memory/.dreams/` directory with empty `short-term-recall.json`
    - **NEVER copy** files with `credential`, `password`, `secret`, `.env` in their name
 
+   **5a. Channel-content guard (privacy / scope provenance) — mandatory.** OpenClaw
+   daily logs often summarize WhatsApp/Telegram chats. Copied verbatim into top-level
+   `memory/*.md` they are classified `local` provenance and **bypass channel-scope
+   filtering** until manually moved or curated — a log imported as local is never
+   promoted to the `.scoped` lane by dreaming, so once scope is later armed in
+   `enforce` that channel content stays visible to operators who should not see it.
+   After copying the dated daily logs, scan their *contents* for channel markers and
+   **flag, never auto-classify**:
+
+      ```bash
+      CHANNEL_MARKERS='whats[[:space:]-]?app|\bwsp\b|\bwacli\b|baileys|@g\.us|@s\.whatsapp\.net|\btelegram\b|t\.me/|(nota|mensaje|audio) de voz|voice (note|message)'
+
+      # Dated daily logs only — `find` avoids the zsh no-match glob error.
+      find ./memory -maxdepth 1 -type f \( -name '????-??-??.md' -o -name '????-??-??-*.md' \) -print0 |
+        while IFS= read -r -d '' f; do
+          if LC_ALL=C grep -qiE "$CHANNEL_MARKERS" "$f"; then
+            markers=$(LC_ALL=C grep -Eio "$CHANNEL_MARKERS" "$f" | sort -fu | paste -sd ', ' -)
+            printf '%s\t%s\n' "$f" "$markers"
+          fi
+        done
+      ```
+
+   If any dated file is flagged, use `AskUserQuestion` (counts + sample file names and
+   matched markers only — **never the content**):
+
+      ```
+      AskUserQuestion(
+        question: "<N> imported memory files contain channel-derived content (e.g. WhatsApp). Kept as plain memory they bypass scope filtering if you later arm enforce. What should I do with them?",
+        options: [
+          { label: "Quarantine (recommended)", description: "Move to ./import-quarantine/ (gitignored, NOT indexed). Preserved for manual curation; no scope leak." },
+          { label: "Skip them", description: "Delete the copies; don't import these files." },
+          { label: "Import as local anyway", description: "Keep as memory/*.md. I accept they bypass scope filtering under enforce." }
+        ]
+      )
+      ```
+
+   Apply the choice to the flagged files only:
+   - **Quarantine**: `mkdir -p ./import-quarantine && mv <flagged> ./import-quarantine/`,
+     then ensure `import-quarantine/` is gitignored in the target project (append it to
+     `.gitignore`, creating the file if absent). Files outside `memory/` are never
+     indexed by builtin or QMD, so `memory_search` won't surface them.
+   - **Skip**: `rm <flagged>`.
+   - **Import as local anyway**: leave in place; record the acknowledged bypass in the backlog.
+
+   **Also scan `./memory/MEMORY.md` warn-only** with the same `CHANNEL_MARKERS`.
+   `MEMORY.md` is the curated index and IS indexed — but never auto-quarantine it
+   (gutting it breaks the agent). If it matches, record it in the backlog for manual
+   curation instead of moving it.
+
+   Record every flagged file in `IMPORT_BACKLOG.md` under
+   `## Memory — Channel-content flagged` (file name + marker matched + chosen action;
+   **never the content**), noting that mixed personal+channel logs need manual
+   split/curation to be both searchable-as-personal and scope-filtered.
+
 6. **Adapt AGENTS.md** for Claude Code:
    After copying, remove or comment out sections referencing OpenClaw-specific tools:
    - `sessions_spawn`, `message tool`, `browser tool`
@@ -490,7 +544,7 @@ AskUserQuestion(
 
 **Wait for the answer.** If the user picks a platform, run the `/agent:messaging` skill flow for that platform. If "Later", skip.
 
-If the user already has a messaging plugin installed (from a previous agent), offer to add its log directory to `memory.extraPaths` so past conversations become searchable.
+If the user already has a messaging plugin installed (from a previous agent), offer to add its log directory to `memory.extraPaths` so past conversations become searchable. This is the **correct lane** for channel history *when the extraPath's logical path contains a known channel marker* (for WhatsApp, e.g. `claude-whatsapp` or `whatsapp`, per `deriveChannelHint`): those paths get `channel` provenance and ARE honored by scope filtering — unlike chat summaries copied into `memory/*.md`, which the Step 5a guard flags because they would be mislabeled `local`.
 
 ### Step G — Path sanity check
 
@@ -556,6 +610,7 @@ Skills:   <G> as-is, <Y> adapted, <R> skipped (or "skipped" if user chose [n])
 Crons:    <G> as-is, <Y> adapted, <R> skipped + 2 default (heartbeat, dreaming)
 Backlog:  IMPORT_BACKLOG.md written (<Sr + Cr> items pending review)  [or: "empty"]
 Memory:   Import event logged to memory/<YYYY-MM-DD>.md
+Memory guard: <Q> quarantined, <S> skipped, <K> kept-as-local, <W> MEMORY.md warn-only (or "none flagged")
 Messaging: <not yet | <platform> | skipped>
 
 Per-item details scrolled above. For any ⚠️ or ❌, read the reason and decide
@@ -590,6 +645,12 @@ Agent: <Name>
 ## Crons — Skipped
 
 <entries from Step D.7 appended here, one H3 per cron>
+
+## Memory — Channel-content flagged
+
+<entries from Step 5a appended here, one H3 per flagged file: file name, marker
+matched, chosen action (quarantined / skipped / kept-as-local / manual-curation).
+Never the content. Mixed personal+channel logs need manual split/curation.>
 ```
 
 ## Important
@@ -601,4 +662,5 @@ Agent: <Name>
 - **Steps C and D are interactive** — always present the menu and respect the user's choice. Don't silently import all skills/crons without asking, and don't silently skip them either.
 - **Per-item "why" messages are mandatory for skipped items** — saying "14 skills were RED" is not useful. Saying "fix-api-keys skipped because it depends on `gateway config.patch` (OpenClaw gateway, no Claude Code equivalent)" is useful.
 - **The backlog is not optional** — every skipped item must end up in `IMPORT_BACKLOG.md` AND in the memory entry at `memory/<date>.md`. That's how the user can later ask "retomemos los crons que no se importaron" and the agent can find the context.
+- **The channel-content guard (Step 5a) is mandatory** — OpenClaw daily logs that summarize WhatsApp/Telegram must be flagged before landing in `memory/*.md`; otherwise they're classified `local` and bypass scope filtering until manually moved or curated. Flag, ask, quarantine/skip/keep per the user's choice, and record in the backlog.
 - If the user is in a hurry, they can skip steps C, D, F and run `/agent:crons`, `/agent:messaging` later — but Step E (backlog + memory) should still run if Steps C or D ran at all.
