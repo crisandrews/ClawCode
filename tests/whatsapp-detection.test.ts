@@ -16,6 +16,10 @@ import path from "node:path";
 import {
   detectChannels,
   detectWhatsappProjectDir,
+  readChannelRuntime,
+  formatStatusTable,
+  CHANNEL_PROBLEM_STATES,
+  type ChannelStatus,
 } from "../lib/channel-detector.ts";
 import { detectWhatsappAudio } from "../lib/voice.ts";
 
@@ -358,6 +362,116 @@ check("detectWhatsappAudio: multi-agent resolution (config lives in project A)",
   } finally {
     fx.cleanup();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Runtime state (status.json) — the loud-surface for the second-instance lockout
+// ---------------------------------------------------------------------------
+
+function writeStatusJson(obj: unknown): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawcode-wa-rt-"));
+  const p = path.join(dir, "status.json");
+  fs.writeFileSync(p, JSON.stringify(obj));
+  return p;
+}
+
+check("runtime: idle_other_instance is a problem and names the holder PID", () => {
+  const p = writeStatusJson({
+    status: "idle_other_instance",
+    holder: 99887,
+    inboundActive: false,
+    remediation: "Close PID 99887 then fully relaunch.",
+  });
+  const rt = readChannelRuntime(p);
+  assert(rt, "expected runtime object");
+  assert(rt!.status === "idle_other_instance", `status=${rt!.status}`);
+  assert(rt!.problem === true, "should be a problem");
+  assert(rt!.holderPid === 99887, `holderPid=${rt!.holderPid}`);
+  assert(rt!.inboundActive === false, "inboundActive should be false");
+  assert(/99887/.test(rt!.detail), `detail should name the PID: ${rt!.detail}`);
+  assert(rt!.remediation === "Close PID 99887 then fully relaunch.", "remediation passthrough");
+});
+
+check("runtime: connected is not a problem", () => {
+  const p = writeStatusJson({ status: "connected", ts: 123 });
+  const rt = readChannelRuntime(p);
+  assert(rt && rt.status === "connected", "status connected");
+  assert(rt!.problem === false, "connected is not a problem");
+});
+
+check("runtime: legacy 1.20.0 status (holder only, no inboundActive/remediation) still flags problem", () => {
+  const p = writeStatusJson({ status: "idle_other_instance", holder: 5 });
+  const rt = readChannelRuntime(p);
+  assert(rt!.problem === true, "still a problem");
+  assert(rt!.holderPid === 5, `holderPid=${rt!.holderPid}`);
+  assert(rt!.inboundActive === undefined, "inboundActive absent in legacy");
+  assert(rt!.remediation === undefined, "remediation absent in legacy");
+});
+
+check("runtime: missing file / garbage / no-status → undefined (never throws)", () => {
+  assert(readChannelRuntime("/no/such/path/status.json") === undefined, "missing → undefined");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawcode-wa-bad-"));
+  const bad = path.join(dir, "status.json");
+  fs.writeFileSync(bad, "not json{");
+  assert(readChannelRuntime(bad) === undefined, "garbage → undefined");
+  const noStatus = path.join(dir, "nostatus.json");
+  fs.writeFileSync(noStatus, JSON.stringify({ ts: 1 }));
+  assert(readChannelRuntime(noStatus) === undefined, "no status field → undefined");
+});
+
+check("runtime: CHANNEL_PROBLEM_STATES covers lockout/logout/lock-error, not connected", () => {
+  assert(CHANNEL_PROBLEM_STATES.has("idle_other_instance"), "idle_other_instance");
+  assert(CHANNEL_PROBLEM_STATES.has("logged_out"), "logged_out");
+  assert(CHANNEL_PROBLEM_STATES.has("lock_error"), "lock_error");
+  assert(!CHANNEL_PROBLEM_STATES.has("connected"), "connected is fine");
+});
+
+check("runtime: a locked-out whatsapp install reports active=no with the lock detail", () => {
+  const fx = makeFixture();
+  try {
+    writeInstalledPlugins(fx.home, [{ scope: "local", projectPath: fx.cwd }]);
+    writeFile(
+      path.join(fx.cwd, ".whatsapp", "status.json"),
+      JSON.stringify({ status: "idle_other_instance", holder: 4242, inboundActive: false })
+    );
+    const w = whatsappStatus(detectChannels({ home: fx.home, cwd: fx.cwd }));
+    assert(w.authenticated === "yes", `authenticated=${w.authenticated} (status.json present)`);
+    assert(w.active === "no", `active should be no on lockout, got ${w.active}`);
+    assert(w.runtime?.problem === true, "runtime.problem should be true");
+    assert(/4242/.test(w.detail.active ?? ""), `active detail should name PID: ${w.detail.active}`);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+check("runtime: formatStatusTable prints a ⚠️ Runtime block + remediation for a locked-out channel", () => {
+  const channels: ChannelStatus[] = [
+    {
+      name: "whatsapp",
+      label: "WhatsApp",
+      kind: "development",
+      pluginId: "plugin:whatsapp@claude-whatsapp",
+      installed: "yes",
+      authenticated: "yes",
+      active: "no",
+      osSupported: true,
+      runtime: {
+        status: "idle_other_instance",
+        holderPid: 4242,
+        inboundActive: false,
+        remediation: "Close PID 4242 then fully relaunch with the channel flag.",
+        detail:
+          "⚠️ inbound NOT active — another instance (PID 4242) holds the single-device lock; this session receives no incoming messages",
+        problem: true,
+      },
+      detail: {},
+      setupHint: "x",
+    },
+  ];
+  const out = formatStatusTable(channels);
+  assert(/⚠️ Runtime:/.test(out), "expected a Runtime section");
+  assert(/PID 4242/.test(out), "expected the holder PID in the table");
+  assert(/Close PID 4242 then fully relaunch/.test(out), "expected remediation line");
 });
 
 // ---------------------------------------------------------------------------

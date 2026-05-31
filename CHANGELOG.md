@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.7.4] — 2026-05-30
+
+### Fixed
+
+- **`/agent:channels` now surfaces a locked-out WhatsApp server instead of reporting it as fine.** The channel detector previously only checked that `status.json` *existed*; it never read the live `status`. So when a second session held the WhatsApp single-device lock (common after an in-session update/reload, or when a background/service/scheduled session was still alive), `/agent:channels` showed `active: ❓` and the agent stayed silent while the user saw "typing…" on their phone but got no reply. The detector now reads `status.json`, exposes a `runtime` field (status, holder PID, `inboundActive`, remediation), marks the channel `active: no` on a problem state (`idle_other_instance` / `logged_out` / `lock_error`), and `channels_detect({ format: "table" })` prints a **⚠️ Runtime** block with the fix. The `channels` skill is updated to lead with this warning and to never suggest `/whatsapp:configure reset` for a lock-ownership problem. Pairs with claude-whatsapp 1.20.1, which writes the enriched status.
+
 ## [1.7.3] — 2026-05-30
 
 ### Why this release matters

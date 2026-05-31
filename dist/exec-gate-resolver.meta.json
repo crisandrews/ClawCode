@@ -17,7 +17,7 @@
       "format": "esm"
     },
     "lib/channel-detector.ts": {
-      "bytes": 15703,
+      "bytes": 21000,
       "imports": [
         {
           "path": "fs",

@@ -24,7 +24,7 @@ This is a CORE feature. See `docs/channels.md` for details.
 ## List flow
 
 1. Call `channels_detect({ format: "table" })`
-2. Print the returned text verbatim — it already has the table, next-steps hints, and launch command
+2. Print the returned text verbatim — it already has the table, next-steps hints, the launch command, and a **⚠️ Runtime** block when a channel server is up but not delivering inbound (see Runtime warnings below)
 3. If any channels show `❌` under **Installed** and the user is new, remind: "Install a channel with `/agent:messaging <name>`"
 
 ## Status flow (single channel)
@@ -42,6 +42,21 @@ This is a CORE feature. See `docs/channels.md` for details.
    active:         <❓ | ❌>  (<detail>)
    next:           <setupHint>
 ```
+
+5. If the entry has a `runtime` field, surface it — see Runtime warnings.
+
+## Runtime warnings
+
+The JSON entry may carry a `runtime` field read from the channel's live `status.json` (currently WhatsApp). When `runtime.problem` is `true`, the channel server is running but inbound is NOT reaching this session — the classic "I see 'typing…' on my phone but the agent never answers" failure, usually after an in-session update/reload or when a second session (interactive, service, or a still-alive scheduled-task session) holds the single-device lock.
+
+When `runtime.problem` is true, do NOT report the channel as healthy. Lead with the warning, verbatim from `runtime.detail`, and then `runtime.remediation` if present. For example:
+
+```
+⚠️ WhatsApp inbound is NOT active in this session — another instance (PID <runtime.holderPid>) holds the single-device lock, so incoming messages go to that session, not this one.
+Fix: <runtime.remediation>
+```
+
+Key `runtime.status` values: `idle_other_instance` (lock held by another session — the main one), `logged_out` (re-link needed), `lock_error` (filesystem/PID-file problem). Never tell the user to run `/whatsapp:configure reset` for `idle_other_instance` — it's a lock-ownership problem, not a link problem; the fix is to get down to one session and fully relaunch. See claude-whatsapp `docs/troubleshooting.md` → "You see 'typing…' but get no reply".
 
 ## Launch flow
 

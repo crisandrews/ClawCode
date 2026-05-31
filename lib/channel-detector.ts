@@ -179,6 +179,47 @@ export const CHANNEL_REGISTRY: ChannelRegistryEntry[] = [
 
 export type TriState = "yes" | "no" | "unknown" | "na";
 
+/**
+ * Runtime state read from a channel's `status.json` (currently WhatsApp only).
+ * The plugin owns this file; we read it without interpreting beyond surfacing
+ * the live `status` and any operator remediation. This is what lets ClawCode
+ * tell the user "inbound is NOT active, another instance holds the lock"
+ * instead of going silently mute when a second session wins the single-device
+ * lock (the classic post-update / cron-session-still-alive failure).
+ */
+export interface ChannelRuntime {
+  /** Raw `status` field from status.json (e.g. "connected", "idle_other_instance"). */
+  status: string;
+  /** Whether inbound delivery is active, when the plugin reports it (whatsapp 1.20.1+). */
+  inboundActive?: boolean;
+  /** PID holding the single-instance lock, when status is idle_other_instance. */
+  holderPid?: number;
+  /** Operator remediation text the plugin wrote (whatsapp 1.20.1+). */
+  remediation?: string;
+  /** Human one-liner derived for display. */
+  detail: string;
+  /** True when this state means the session may be connected but inbound won't reach it. */
+  problem: boolean;
+}
+
+/**
+ * Runtime states where the channel server is up but inbound won't reach this
+ * session AND the user must act to fix it — worth surfacing loudly rather than
+ * reporting a bare "active: unknown".
+ *
+ * Deliberately excludes the self-healing transients `reconnecting` (network blip,
+ * backs off and recovers) and `deps_missing` (first-launch dependency install,
+ * ~60-90s, transitions out automatically). Those are surfaced as informational
+ * runtime detail (not a "problem") so we don't nag the user to act on something
+ * that resolves on its own. The states here all require a human: close a session,
+ * re-link, or fix filesystem perms.
+ */
+export const CHANNEL_PROBLEM_STATES = new Set<string>([
+  "idle_other_instance",
+  "lock_error",
+  "logged_out",
+]);
+
 export interface ChannelStatus {
   name: ChannelName;
   label: string;
@@ -192,6 +233,8 @@ export interface ChannelStatus {
   active: TriState;
   /** OS requirement not met? */
   osSupported: boolean;
+  /** Live runtime state from the channel's status.json, when available. */
+  runtime?: ChannelRuntime;
   /** Human-readable detail per field. */
   detail: {
     installed?: string;
@@ -200,6 +243,72 @@ export interface ChannelStatus {
   };
   /** What to run to configure or set up. */
   setupHint: string;
+}
+
+/**
+ * Read and interpret a channel's `status.json` runtime state. Read-only and
+ * never throws — returns undefined when the file is missing/unparseable or
+ * carries no usable `status`. Exported for direct unit testing.
+ */
+export function readChannelRuntime(statusJsonPath: string): ChannelRuntime | undefined {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(statusJsonPath, "utf8");
+  } catch {
+    return undefined;
+  }
+  let obj: any;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!obj || typeof obj.status !== "string") return undefined;
+
+  const status: string = obj.status;
+  const holderPid = typeof obj.holder === "number" ? obj.holder : undefined;
+  const inboundActive =
+    typeof obj.inboundActive === "boolean" ? obj.inboundActive : undefined;
+  const remediation =
+    typeof obj.remediation === "string" ? obj.remediation : undefined;
+
+  let detail: string;
+  switch (status) {
+    case "idle_other_instance":
+      detail = `⚠️ inbound NOT active — another instance${
+        holderPid ? ` (PID ${holderPid})` : ""
+      } holds the single-device lock; this session receives no incoming messages`;
+      break;
+    case "connected":
+      detail = "server connected";
+      break;
+    case "reconnecting":
+      detail = "reconnecting (transient)";
+      break;
+    case "logged_out":
+      detail = "logged out — re-link with /whatsapp:configure reset";
+      break;
+    case "lock_error":
+      detail = "lock error — see status.json / logs";
+      break;
+    case "deps_missing":
+      detail = "installing dependencies";
+      break;
+    case "qr_ready":
+      detail = "waiting for QR / pairing";
+      break;
+    default:
+      detail = status;
+  }
+
+  return {
+    status,
+    holderPid,
+    inboundActive,
+    remediation,
+    detail,
+    problem: CHANNEL_PROBLEM_STATES.has(status),
+  };
 }
 
 export interface DetectionOptions {
@@ -261,6 +370,9 @@ export function statusFor(
   // Authenticated
   let authenticated: TriState = "unknown";
   let authDetail = "";
+  // Path to a status.json we found while probing auth — reused below to read
+  // live runtime state (whatsapp only).
+  let statusJsonHit: string | undefined;
 
   if (!osSupported) {
     authenticated = "na";
@@ -296,6 +408,7 @@ export function statusFor(
       if (hit) {
         authenticated = "yes";
         authDetail = `path exists: ${hit}`;
+        if (hit.endsWith("status.json")) statusJsonHit = hit;
       } else {
         authenticated = "no";
         authDetail = `no auth artifact at ${resolved.join(" / ")}`;
@@ -303,11 +416,20 @@ export function statusFor(
     }
   }
 
-  // Active — we can't reliably tell from a read-only probe inside the MCP
-  // server. We expose this as "unknown" honestly rather than guessing.
-  const active: TriState =
+  // Live runtime state from status.json (whatsapp only). Read-only; surfaces a
+  // locked-out / logged-out / lock-error server that would otherwise look fine.
+  const runtime =
+    entry.name === "whatsapp" && statusJsonHit
+      ? readChannelRuntime(statusJsonHit)
+      : undefined;
+
+  // Active — normally we can't tell from a read-only probe whether the channel
+  // is loaded in THIS session, so we stay honest with "unknown". But a runtime
+  // "problem" state (e.g. idle_other_instance) is a strong negative signal that
+  // inbound is not reaching us, so we report "no".
+  let active: TriState =
     installed === "yes" && authenticated === "yes" ? "unknown" : "no";
-  const activeDetail =
+  let activeDetail =
     active === "unknown"
       ? "can't be detected — confirm with /mcp or by sending a message"
       : installed === "no"
@@ -315,6 +437,14 @@ export function statusFor(
       : authenticated === "no"
       ? "channel installed but not authenticated"
       : undefined;
+
+  if (runtime?.problem) {
+    active = "no";
+    activeDetail = runtime.detail;
+  } else if (runtime && active === "unknown") {
+    // Non-problem runtime info still beats "can't be detected".
+    activeDetail = `${runtime.detail} (confirm delivery by sending a message)`;
+  }
 
   return {
     name: entry.name,
@@ -325,6 +455,7 @@ export function statusFor(
     authenticated,
     active,
     osSupported,
+    runtime,
     detail: {
       installed: installedDetail || undefined,
       authenticated: authDetail || undefined,
@@ -488,6 +619,18 @@ export function formatStatusTable(channels: ChannelStatus[]): string {
     out.push("Skipped (OS not supported):");
     for (const c of unsupported) {
       out.push(`  · ${c.label}: requires ${CHANNEL_REGISTRY.find((r) => r.name === c.name)?.os}`);
+    }
+  }
+
+  // Runtime problems — a server that's up but not delivering inbound to us.
+  // This is the loud surface for the post-update / second-instance lockout.
+  const runtimeProblems = channels.filter((c) => c.runtime?.problem);
+  if (runtimeProblems.length > 0) {
+    out.push("");
+    out.push("⚠️ Runtime:");
+    for (const c of runtimeProblems) {
+      out.push(`  · ${c.label}: ${c.runtime!.detail}`);
+      if (c.runtime!.remediation) out.push(`      ${c.runtime!.remediation}`);
     }
   }
 
