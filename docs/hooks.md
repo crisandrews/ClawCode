@@ -9,7 +9,7 @@ ClawCode hooks into Claude Code's lifecycle events to inject identity, flush mem
 **What it does:**
 1. Checks for `BOOTSTRAP.md` — if present, this is a first-run; triggers the bootstrap ritual
 2. Injects identity by reading `SOUL.md`, `IDENTITY.md`, and `USER.md` into the conversation context
-3. Checks if default crons exist (`.crons-created` marker) — if not, instructs the agent to create heartbeat (*/30 min) and dreaming (3 AM) crons
+3. Reconciles the cron registry (`memory/crons.json`): seeds the default heartbeat (*/30 min) and dreaming (3 AM) entries, prunes expired one-shot reminders, and emits an envelope instructing the agent to recreate any registry cron missing from the harness — see [crons.md](crons.md) for the full lifecycle
 
 This is how the agent "wakes up as itself" every session. Without this hook, Claude would start as a generic assistant with no personality.
 

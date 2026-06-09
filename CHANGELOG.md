@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+## [1.7.5] — 2026-06-09
+
+### Why this release matters
+
+Two structural fixes for the SessionStart cron reconcile, both hit in the field on 2026-06-09. First, a reconcile interleaved with live channel chat could outlive the 10-minute `.reconciling` marker: the pretool gate then blocked the remaining recreations with a misleading stale-stamp error and the agent had to figure out the recovery by reading hook source. Second, dated one-shot reminders ("remind me tonight at 23:15") were never retired after firing: every reconcile resurrected them verbatim, scheduled for the same date a year later — and annually thereafter. Both fixes follow the 2026-06-09 adversarial design review: expiry is decided only from explicit creation-time metadata, never from date heuristics. Pairs with claude-whatsapp 1.21.0 (single-instance auto-takeover); the channels skill wording is updated accordingly.
+
+### Fixes
+
+- Skills/crons (writeback): `set-alive` now refreshes the `.reconciling` marker mtime (only when the marker already exists), so the hooks' 10-minute bypass window slides as long as the reconcile keeps making real progress. Long reconciles interleaved with chat no longer get blocked mid-flight.
+- Hooks/cron-posttool: ad-hoc capture no longer coerces `recurring: false` to `true` (jq's `//` swallows boolean false). Without this, every captured one-shot was stored as recurring and stayed invisible to `prune-expired` — the resurrection bug would have survived its own fix on the primary path.
+- Hooks/cron-pretool: every rejection (missing stamp, stale stamp, malformed stamp, cron mismatch) now appends a mid-reconcile recovery hint — re-touch the workspace's `memory/.reconciling` (absolute path included in the message) and retry — instead of only pointing at `cron-from.sh`, which is the wrong fix while replaying registry crons.
+- Bin/cron-from: BSD/GNU `date` detection is now value-checked, GNU probed first — previously a file named `1` in the working directory could misclassify GNU `date` as BSD.
+- Lib/doctor: the stale-tombstone warning no longer suggests `/agent:crons reconcile` to "prune old tombstones" (nothing purges tombstones — they are deliberately kept so deletions stay resurrection-proof); the hint now says exactly that.
+
+### Changes
+
+- Bin/cron-from: the `.cron-last-stamp` proof-of-use file gains a third line carrying the one-shot's target epoch (empty for recurring). Hooks/cron-posttool persists it into the registry as `targetEpoch` when the stamp cron matches the captured cron.
+- Skills/crons (writeback): new `prune-expired` subcommand — tombstones `recurring=false` entries whose explicit `targetEpoch` already passed (zero date heuristics, so reminders more than a year out can never be misread as expired), and reports legacy date-shaped entries as suspects without ever mutating them; intentional annuals (created more than 7 days ahead of their date) are never flagged. Hooks/reconcile-crons runs it right after seed-defaults, best-effort (a prune failure can never abort the reconcile), and surfaces pruned/suspect lines in the session banner. The registry transform is shape-validated before the atomic write so a failed jq can never replace the registry with an empty file.
+- Skills/channels: `idle_other_instance` guidance updated for claude-whatsapp ≥ 1.21 — the waiting session now takes over the lock automatically when the holder exits; a full relaunch is only needed on older channel versions.
+- Lib/channel-detector: recognizes claude-whatsapp 1.21's new `connect_error` runtime status as a problem state (WhatsApp side could not start, server retrying), so `/agent:channels` and doctor surface it instead of showing an unknown status.
+- Skills/crons (import): OpenClaw `schedule.kind: "at"` jobs now register with `--target-epoch`, so imported dated reminders are properly retired by `prune-expired` after they fire instead of relying on the suspect report.
+- Docs/crons: `targetEpoch` field, sliding-marker semantics, prune flow and new failure-mode rows documented; removed the stale "tombstones purged after 30 days" claim (nothing purges; doctor warns). Docs/hooks: SessionStart description updated to the registry reconcile (the legacy `.crons-created` marker flow is long gone). Docs/INDEX: added the missing cron-persistence row to the Core table.
+
+### Compatibility
+
+- Registry schema change is additive only (`targetEpoch`, default `null`); `version` stays 1 and existing registries are untouched until entries are created or updated. The stamp file stays backward-compatible — the pretool gate still reads only lines 1-2. No tool-signature, config, or scope changes.
+
 ## [1.7.4] — 2026-05-30
 
 ### Fixed

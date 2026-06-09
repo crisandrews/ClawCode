@@ -95,6 +95,30 @@ if ! bash "$WRITEBACK" seed-defaults 2>&1; then
   fallback_warn "seed-defaults returned non-zero"
 fi
 
+# --- 4b. PRUNE EXPIRED ONE-SHOTS (best-effort; never blocks the reconcile) ---
+# Tombstones recurring=false entries whose explicit targetEpoch already
+# passed, so fired dated reminders stop being resurrected every session, and
+# reports legacy date-shaped entries (created before targetEpoch existed) as
+# suspects for the user to verify. Failures here must NOT route through
+# fallback_warn — that would abort the envelope and skip the whole reconcile,
+# strictly worse than reconciling with unpruned entries.
+PRUNE_OUT=$(bash "$WRITEBACK" prune-expired 2>&1) || {
+  echo "[clawcode] prune-expired failed (non-fatal): $PRUNE_OUT" >&2
+  PRUNE_OUT=""
+}
+if [[ -n "$PRUNE_OUT" ]]; then
+  PRUNED_LINES=$(printf '%s\n' "$PRUNE_OUT" | grep '^pruned key=' || true)
+  SUSPECT_LINES=$(printf '%s\n' "$PRUNE_OUT" | grep '^suspect key=' || true)
+  if [[ -n "$PRUNED_LINES" ]]; then
+    echo "[clawcode] Pruned expired one-shot reminder(s) from the registry:"
+    printf '%s\n' "$PRUNED_LINES" | sed 's/^/  /'
+  fi
+  if [[ -n "$SUSPECT_LINES" ]]; then
+    echo "[clawcode] Date-shaped reminders that look already expired (NOT auto-removed — verify with the user, then /agent:crons delete <key>):"
+    printf '%s\n' "$SUSPECT_LINES" | sed 's/^/  /'
+  fi
+fi
+
 # --- 5. LEGACY MARKER CLEANUP (after we know registry exists) ---
 if [[ -f "$REGISTRY" && -f "$LEGACY_MARKER" ]]; then
   rm -f "$LEGACY_MARKER" 2>/dev/null || true

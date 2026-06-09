@@ -77,7 +77,8 @@ The helper supports BSD `date` (macOS) and GNU `date` (Linux) — detected at ru
       "harnessTaskId": "abc12345",
       "paused": false,
       "tombstone": null,
-      "adoptedAt": null
+      "adoptedAt": null,
+      "targetEpoch": null
     }
   ]
 }
@@ -95,18 +96,19 @@ The helper supports BSD `date` (macOS) and GNU `date` (Linux) — detected at ru
 | `harnessTaskId` | The 8-hex ID assigned by Claude Code when the cron was created. Changes every reconcile. |
 | `lastSeenAlive` | Last time the reconcile flow confirmed this cron was alive in `CronList`. |
 | `paused` | `true` → skipped by reconcile until resumed. |
-| `tombstone` | ISO timestamp if user deleted. Non-null entries are skipped by reconcile (resurrection-proof). Purged after 30 days. |
+| `tombstone` | ISO timestamp set when the user deletes the entry or `prune-expired` retires a fired one-shot. Non-null entries are skipped by reconcile (resurrection-proof). Kept indefinitely; `/agent:doctor` warns when tombstones are older than 30 days. |
 | `adoptedAt` | Non-null if the entry came from `adopt-unknown` (a cron that existed in harness but not in registry — e.g., hook crashed). |
+| `targetEpoch` | For one-shots: epoch seconds of the intended firing time, recorded at creation from `cron-from.sh`'s real date math (stamp line 3). `null` for recurring entries and for entries created before this field existed. This is what lets `prune-expired` retire fired one-shots safely — a 5-field cron carries no year, so date math alone cannot decide expiry. |
 
 ## How it works
 
 ### Components
 
 - **`bin/cron-from.sh`** — deterministic cron expression generator (see "Time arithmetic" above). Pure bash + jq; no LLM math. Single source of truth for converting natural-language times into cron expressions in host-local TZ.
-- **`skills/crons/writeback.sh`** — the sole writer to the registry. Subcommands: `seed-defaults`, `upsert`, `tombstone`, `set-alive`, `adopt-unknown`, `pause`, `resume`, `migration-mark`. Atomic write (tmp-file + mv), lockfile-protected (`memory/.crons-lock/`).
-- **`hooks/reconcile-crons.sh`** — SessionStart. Seeds defaults, cleans legacy `.crons-created`, detects migration need, emits a reconcile envelope for the agent to execute.
-- **`hooks/cron-posttool.sh`** — PostToolUse. Captures ad-hoc `CronCreate` (as `source: ad-hoc`) and tombstones on `CronDelete`. Tolerant of v2.1.114 and legacy harness response formats. Suppressed when `memory/.reconciling` marker is present (prevents duplicates during reconcile / import batches).
-- **`hooks/cron-pretool.sh`** — PreToolUse. Gates `CronCreate` so the cron expression must come from a recent `bin/cron-from.sh` invocation. Reads `memory/.cron-last-stamp` (written by the helper), exits 2 with a pedagogical stderr message if the stamp is missing, stale (>120s), or its cron doesn't match `tool_input.cron`. Same `.reconciling` bypass as the posttool hook — SessionStart reconcile replays crons from the registry and must not be gated.
+- **`skills/crons/writeback.sh`** — the sole writer to the registry. Subcommands: `seed-defaults`, `upsert`, `tombstone`, `set-alive`, `adopt-unknown`, `pause`, `resume`, `migration-mark`, `prune-expired`. Atomic write (tmp-file + mv), lockfile-protected (`memory/.crons-lock/`). `set-alive` also refreshes the `.reconciling` marker mtime when the marker exists, so the hooks' 10-minute bypass window slides as long as a reconcile keeps making real progress. `prune-expired` tombstones `recurring=false` entries whose `targetEpoch` already passed, and reports legacy date-shaped entries (no `targetEpoch`) as suspects without mutating them.
+- **`hooks/reconcile-crons.sh`** — SessionStart. Seeds defaults, prunes expired one-shots (best-effort, never blocks the reconcile), cleans legacy `.crons-created`, detects migration need, emits a reconcile envelope for the agent to execute.
+- **`hooks/cron-posttool.sh`** — PostToolUse. Captures ad-hoc `CronCreate` (as `source: ad-hoc`) and tombstones on `CronDelete`. Also persists the helper's target epoch (stamp line 3) as `targetEpoch` when the stamp cron matches the created cron. Tolerant of v2.1.114 and legacy harness response formats. Suppressed when `memory/.reconciling` marker is fresh (prevents duplicates during reconcile / import batches).
+- **`hooks/cron-pretool.sh`** — PreToolUse. Gates `CronCreate` so the cron expression must come from a recent `bin/cron-from.sh` invocation. Reads `memory/.cron-last-stamp` (three lines: cron, epoch, target epoch; the gate consumes the first two), exits 2 with a pedagogical stderr message if the stamp is missing, stale (>120s), or its cron doesn't match `tool_input.cron` — every rejection also teaches the mid-reconcile recovery (re-touch the marker and retry). Same `.reconciling` bypass as the posttool hook — SessionStart reconcile replays crons from the registry and must not be gated.
 - **`skills/crons/SKILL.md`** — agent-facing dispatcher. Routes subcommand phrasings (and natural-language requests) to the right flow, calls `bin/cron-from.sh` for time math, then `CronCreate` / `CronDelete` as needed.
 
 ### Session-start flow
@@ -115,13 +117,18 @@ The helper supports BSD `date` (macOS) and GNU `date` (Linux) — detected at ru
 1. hooks/reconcile-crons.sh (SessionStart)
    a. Inject identity (SOUL/IDENTITY/USER)
    b. writeback.sh seed-defaults  (idempotent if valid; quarantines+rebuilds if corrupt)
+   b2. writeback.sh prune-expired  (best-effort: tombstones one-shots whose
+       targetEpoch passed; reports legacy date-shaped suspects in the banner)
    c. Remove legacy .crons-created marker
    d. Detect migration (IMPORT_BACKLOG.md + ~/.openclaw/cron/jobs.json + unanswered)
    e. touch memory/.reconciling  (recursion guard for PostToolUse)
    f. Build reconcile envelope with EXPECTED entries; emit atomically
 
 2. Agent executes the envelope
-   - ToolSearch → CronList → CronCreate missing → writeback.sh set-alive → adopt-unknown → print summary → rm .reconciling
+   - ToolSearch → CronList → CronCreate missing → writeback.sh set-alive (each
+     set-alive also refreshes the .reconciling marker, so the bypass window
+     slides while the reconcile progresses) → adopt-unknown → print summary →
+     rm .reconciling
    - If migration STEP 7 is present, agent calls AskUserQuestion and handles answer
 ```
 
@@ -131,8 +138,9 @@ The helper supports BSD `date` (macOS) and GNU `date` (Linux) — detected at ru
 User: "remind me in 4 hours to exercise"
   → Agent calls CronCreate(cron="...", prompt="...", durable=true)
   → PostToolUse hook fires → cron-posttool.sh
-    - If memory/.reconciling is fresh (<10 min): skip (we're reconciling)
-    - Else: parse task_id from response → upsert into registry as source=ad-hoc
+    - If memory/.reconciling is fresh (<10 min since last refresh): skip (we're reconciling)
+    - Else: parse task_id from response → upsert into registry as source=ad-hoc,
+      carrying targetEpoch from the stamp's line 3 (when the stamp cron matches)
 ```
 
 ### Failure modes (all non-blocking)
@@ -146,7 +154,9 @@ User: "remind me in 4 hours to exercise"
 | `CronList` format changes upstream | Regex parser aborts loudly (`harness shape drift`). |
 | Two sessions on same workspace | Lock (`memory/.crons-lock/`) prevents race; second session skips its reconcile. |
 | Same cron + prompt re-inserted under a different key | `writeback.sh upsert` refuses with exit 5 and a pedagogical message pointing at the existing entry. Prevents the "hook captured as `harness-<id>` then manual upsert with custom key" duplicate pattern. `--source openclaw-import` is exempt (batch imports may carry repeated payloads). |
-| `CronCreate` called without a fresh `cron-from.sh` stamp | `hooks/cron-pretool.sh` blocks with exit 2 and a stderr message instructing the agent to run the helper. Covers the three failure modes of skipping the helper: no stamp at all, stamp stale (>120s), or stamp cron doesn't match `tool_input.cron`. Bypassed only when `memory/.reconciling` marker is fresh (<10 min). |
+| `CronCreate` called without a fresh `cron-from.sh` stamp | `hooks/cron-pretool.sh` blocks with exit 2 and a stderr message instructing the agent to run the helper. Covers the three failure modes of skipping the helper: no stamp at all, stamp stale (>120s), or stamp cron doesn't match `tool_input.cron`. Bypassed only when `memory/.reconciling` marker is fresh (<10 min since its last refresh). |
+| Reconcile outlives the 10-min marker (chat interleaved between batches) | `writeback.sh set-alive` refreshes the marker mtime on every recreated entry, so the bypass window slides with real progress. If it still expires, every pretool rejection teaches the recovery: re-touch `memory/.reconciling` and retry. Note the sliding window also extends PostToolUse capture suppression for ad-hoc creates issued mid-reconcile. |
+| One-shot reminder already fired | `prune-expired` (run by every SessionStart reconcile) tombstones `recurring=false` entries whose `targetEpoch` passed, so they stop being resurrected a year later. Legacy date-shaped entries without `targetEpoch` are only REPORTED as suspects in the banner — the year of a 5-field cron is ambiguous, so they are never auto-removed; the user verifies and runs `/agent:crons delete <key>`. Intentional annuals (created >7 days before their date) are not flagged. |
 
 ## Harness assumptions (verified empirically 2026-04-13)
 
@@ -177,7 +187,7 @@ Cron registry · 5 active · 1 paused · 2 tombstoned
 jq · jq available in PATH
 ```
 
-If stale tombstones (>30 days) are found, doctor flags as warn and suggests `/agent:crons reconcile` to prune.
+If stale tombstones (>30 days) are found, doctor flags a warn. This is informational: tombstoned entries are inert and deliberately kept (they are what makes deletion resurrection-proof). Nothing purges them automatically; remove them from `memory/crons.json` by hand only if the list bothers you.
 
 ### Audit trail
 

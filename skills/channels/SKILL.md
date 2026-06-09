@@ -56,7 +56,7 @@ When `runtime.problem` is true, do NOT report the channel as healthy. Lead with 
 Fix: <runtime.remediation>
 ```
 
-Key `runtime.status` values: `idle_other_instance` (lock held by another session — the main one), `logged_out` (re-link needed), `lock_error` (filesystem/PID-file problem). Never tell the user to run `/whatsapp:configure reset` for `idle_other_instance` — it's a lock-ownership problem, not a link problem; the fix is to get down to one session and fully relaunch. See claude-whatsapp `docs/troubleshooting.md` → "You see 'typing…' but get no reply".
+Key `runtime.status` values: `idle_other_instance` (lock held by another session — the main one), `logged_out` (re-link needed), `lock_error` (filesystem/PID-file problem). Never tell the user to run `/whatsapp:configure reset` for `idle_other_instance` — it's a lock-ownership problem, not a link problem; the fix is to get down to one session. On claude-whatsapp ≥ 1.21 the waiting session takes over the lock automatically (within ~15 s of the holder exiting), so closing the extra session is enough; on older channel versions the waiting session stays idle forever and needs a full relaunch after the holder is closed. See claude-whatsapp `docs/troubleshooting.md` → "You see 'typing…' but get no reply".
 
 ## Launch flow
 

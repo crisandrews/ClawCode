@@ -370,6 +370,8 @@ bash "$CLAUDE_PLUGIN_ROOT/skills/crons/writeback.sh" upsert \
   --recurring <true|false>
 ```
 
+For `schedule.kind: "at"` jobs ALSO pass `--target-epoch <epoch-seconds>` on the upsert (convert the job's ISO timestamp: macOS `date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "<iso>" +%s`, Linux `date -u -d "<iso>" +%s`). That explicit-expiry metadata is what lets `prune-expired` retire the reminder after it fires instead of reconcile resurrecting it for next year.
+
 The explicit `--key openclaw-<uuid>` + `--source openclaw-import` overrides what PostToolUse would have captured (which we're suppressing via `.reconciling` marker anyway).
 
 Running upsert with `--source openclaw-import` also auto-marks `migration.openclawAnsweredAt = "auto-imported"` in the registry — prevents the SessionStart migration offer from re-appearing next session.

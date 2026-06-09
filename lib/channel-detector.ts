@@ -218,6 +218,10 @@ export const CHANNEL_PROBLEM_STATES = new Set<string>([
   "idle_other_instance",
   "lock_error",
   "logged_out",
+  // claude-whatsapp ≥ 1.21.0: the WhatsApp side could not start (e.g. corrupt
+  // auth state) — the server stays up and keeps retrying, but inbound is down
+  // until a retry succeeds, so surface it like the other problem states.
+  "connect_error",
 ]);
 
 export interface ChannelStatus {
@@ -290,6 +294,9 @@ export function readChannelRuntime(statusJsonPath: string): ChannelRuntime | und
       break;
     case "lock_error":
       detail = "lock error — see status.json / logs";
+      break;
+    case "connect_error":
+      detail = "server could not start the WhatsApp connection (retrying) — see status.json error / logs";
       break;
     case "deps_missing":
       detail = "installing dependencies";

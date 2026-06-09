@@ -404,6 +404,8 @@ bash "$CLAUDE_PLUGIN_ROOT/skills/crons/writeback.sh" upsert \
   --recurring <true|false>
 ```
 
+For `schedule.kind: "at"` jobs ALSO pass `--target-epoch <epoch-seconds>` (convert the job's ISO timestamp: macOS `date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "<iso>" +%s`, Linux `date -u -d "<iso>" +%s`). Without it the imported reminder has no explicit expiry, so after it fires it is only suspect-reported instead of auto-retired by `prune-expired`.
+
 The `--source openclaw-import` also auto-marks `migration.openclawAnsweredAt = "auto-imported"` if it was null, preventing future SessionStart migration offers.
 
 For RED crons the user forced via `s`, include a warning in the prompt: `"[WARNING: this cron depends on <specific reason> which has no Claude Code equivalent — it may fail at runtime]"`.

@@ -16,6 +16,7 @@ Master index of every capability. The agent reads this first when it needs to re
 | Skill manager | [skill-manager.md](skill-manager.md) | `/agent:skill install\|list\|remove` | `skill_install`, `skill_list`, `skill_remove` |
 | Command discovery | [command-discovery.md](command-discovery.md) | `/help` (uses it) | `list_commands` |
 | Channels | [channels.md](channels.md) | `/agent:channels [list\|status\|launch]` | `channels_detect` |
+| Cron persistence | [crons.md](crons.md) | `/agent:crons [list\|add\|delete\|pause\|resume\|reconcile\|import]` | — |
 | Channel-scope compat | [channel-scope-compat.md](channel-scope-compat.md) | `/agent:scope wizard` (opt-in) · audit via `/agent:doctor` | `agent_config` (refuses scope keys; use wizard) |
 | Hooks (lifecycle) | [hooks.md](hooks.md) | — (automatic) | — |
 

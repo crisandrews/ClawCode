@@ -516,7 +516,7 @@ export function checkCronRegistry(workspace: string): DiagnosticCheck {
       label: "Cron registry",
       status: "warn",
       message: `${parts.join(" · ")} (${staleTombstones} stale >30d)`,
-      hint: "run /agent:crons reconcile to prune old tombstones",
+      hint: "informational: tombstoned entries are inert (kept so reconcile never resurrects them); remove them from memory/crons.json by hand only if the list bothers you",
     };
   }
 

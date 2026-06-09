@@ -53,7 +53,11 @@ fi
 if [[ "$TOOL_NAME" == "CronCreate" ]]; then
   CRON=$(printf '%s' "$PAYLOAD"       | jq -r '.tool_input.cron // empty'      2>/dev/null || true)
   PROMPT=$(printf '%s' "$PAYLOAD"     | jq -r '.tool_input.prompt // empty'    2>/dev/null || true)
-  RECURRING=$(printf '%s' "$PAYLOAD"  | jq -r '.tool_input.recurring // true'  2>/dev/null || echo "true")
+  # NOT `.tool_input.recurring // true`: jq's `//` swallows boolean false, so
+  # that idiom stored every one-shot as recurring=true — which made fired
+  # one-shots invisible to writeback.sh prune-expired (it requires
+  # recurring==false) and resurrected them on every reconcile.
+  RECURRING=$(printf '%s' "$PAYLOAD"  | jq -r 'if (.tool_input | has("recurring")) then (.tool_input.recurring | tostring) else "true" end' 2>/dev/null || echo "true")
 
   [[ -z "$CRON" || -z "$PROMPT" ]] && exit 0
 
@@ -86,12 +90,42 @@ if [[ "$TOOL_NAME" == "CronCreate" ]]; then
     "$(printf '%s' "$PROMPT" | jq -Rs .)" \
     >> "$PENDING_LOG" 2>/dev/null || true
 
-  bash "$WRITEBACK" upsert \
-    --harness-task-id "$TASK_ID" \
-    --source ad-hoc \
-    --cron "$CRON" \
-    --prompt "$PROMPT" \
-    --recurring "$RECURRING" >/dev/null 2>&1 || exit 0
+  # Explicit expiry metadata: bin/cron-from.sh stamps line 3 of
+  # memory/.cron-last-stamp with the one-shot's target epoch (empty for
+  # recurring). Trust it only when the stamp's cron matches the captured
+  # cron — the same binding rule the pretool gate enforces. This is what
+  # lets writeback.sh prune-expired retire fired one-shots instead of
+  # reconcile resurrecting them a year later.
+  TARGET_EPOCH=""
+  STAMP_FILE="$MEMORY_DIR/.cron-last-stamp"
+  if [[ -f "$STAMP_FILE" ]]; then
+    STAMP_CRON=$(sed -n 1p "$STAMP_FILE" 2>/dev/null || true)
+    STAMP_TARGET=$(sed -n 3p "$STAMP_FILE" 2>/dev/null || true)
+    if [[ "$STAMP_CRON" == "$CRON" && "$STAMP_TARGET" =~ ^[0-9]+$ ]]; then
+      TARGET_EPOCH="$STAMP_TARGET"
+    fi
+  fi
+
+  # Two explicit invocations instead of a ${VAR:+...} conditional expansion:
+  # bash word-splits that correctly (two argv words) but zsh would pass a
+  # single "--target-epoch <n>" word — this hook is bash, but the explicit
+  # form costs nothing and can't be mis-run or mis-read.
+  if [[ -n "$TARGET_EPOCH" ]]; then
+    bash "$WRITEBACK" upsert \
+      --harness-task-id "$TASK_ID" \
+      --source ad-hoc \
+      --cron "$CRON" \
+      --prompt "$PROMPT" \
+      --recurring "$RECURRING" \
+      --target-epoch "$TARGET_EPOCH" >/dev/null 2>&1 || exit 0
+  else
+    bash "$WRITEBACK" upsert \
+      --harness-task-id "$TASK_ID" \
+      --source ad-hoc \
+      --cron "$CRON" \
+      --prompt "$PROMPT" \
+      --recurring "$RECURRING" >/dev/null 2>&1 || exit 0
+  fi
 
 elif [[ "$TOOL_NAME" == "CronDelete" ]]; then
   TASK_ID=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.id // empty' 2>/dev/null || true)

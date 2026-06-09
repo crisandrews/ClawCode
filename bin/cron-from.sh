@@ -28,8 +28,12 @@
 # the schedule ("daily at 09:00", "weekly on mon at 08:00", "every 30 minutes").
 #
 # Side effect: every successful call writes $CLAUDE_PROJECT_DIR/memory/.cron-last-stamp
-# with two lines: the cron expression and current epoch seconds. This stamp is
-# the proof-of-helper-use that hooks/cron-pretool.sh consumes to gate CronCreate.
+# with three lines: the cron expression, current epoch seconds, and — for
+# one-shots — the target epoch (empty line for recurring expressions). Lines
+# 1-2 are the proof-of-helper-use that hooks/cron-pretool.sh consumes to gate
+# CronCreate; line 3 is the explicit-expiry metadata that hooks/cron-posttool.sh
+# persists into the registry as targetEpoch (consumed by writeback.sh
+# prune-expired so fired one-shots stop being resurrected by reconcile).
 #
 # Exit codes:
 #   0 — success
@@ -38,10 +42,14 @@
 set -uo pipefail
 
 # --- platform detection (BSD vs GNU date) ---
-if date -r 1 +%s >/dev/null 2>&1; then
-  DATE_FLAVOR="bsd"
-elif date -d "@1" +%s >/dev/null 2>&1; then
+# Value-checked probes, GNU first: on GNU `date -r 1` means "reference the
+# mtime of a file named 1", so an exit-code-only probe misclassifies GNU as
+# BSD whenever such a file exists in $PWD. Requiring the OUTPUT to equal
+# epoch 1 is unambiguous on both flavors.
+if [[ "$(date -u -d "@1" +%s 2>/dev/null)" == "1" ]]; then
   DATE_FLAVOR="gnu"
+elif [[ "$(date -u -r 1 +%s 2>/dev/null)" == "1" ]]; then
+  DATE_FLAVOR="bsd"
 else
   echo "cron-from.sh: cannot detect date flavor (neither BSD nor GNU)" >&2
   exit 3
@@ -85,16 +93,18 @@ fail_date() { echo "cron-from.sh: date arithmetic failed: $1" >&2; exit 3; }
 is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
 
 # Write the "proof of helper use" stamp consumed by hooks/cron-pretool.sh.
-# Two-line format: cron expression, then current epoch seconds. Best-effort:
-# if the workspace dir is unwritable we silently skip (helper output is still
-# correct; the pretool hook will block until the user fixes the workspace).
+# Three-line format: cron expression, current epoch seconds, then the target
+# epoch for one-shots (empty for recurring). Best-effort: if the workspace
+# dir is unwritable we silently skip (helper output is still correct; the
+# pretool hook will block until the user fixes the workspace).
 write_stamp() {
   local cron="$1"
+  local target_epoch="${2:-}"
   local agent_root="${CLAUDE_PROJECT_DIR:-$PWD}"
   local stamp_dir="$agent_root/memory"
   local stamp_file="$stamp_dir/.cron-last-stamp"
   mkdir -p "$stamp_dir" 2>/dev/null || return 0
-  printf '%s\n%s\n' "$cron" "$(date +%s)" > "$stamp_file" 2>/dev/null || return 0
+  printf '%s\n%s\n%s\n' "$cron" "$(date +%s)" "$target_epoch" > "$stamp_file" 2>/dev/null || return 0
 }
 
 # Validate HH:MM form, return "HH MM" with leading zeros stripped (for cron).
@@ -136,7 +146,7 @@ emit_oneshot() {
   local human iso
   human=$(epoch_fmt "$epoch" "%H:%M (%a %d %b)")
   iso=$(epoch_fmt "$epoch" "%Y-%m-%dT%H:%M:%S%z")
-  write_stamp "$cron"
+  write_stamp "$cron" "$epoch"
   jq -nc \
     --arg cron "$cron" \
     --arg human "$human" \

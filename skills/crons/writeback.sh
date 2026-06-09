@@ -19,6 +19,32 @@ shift || true
 
 iso_now() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
+# --- BSD/GNU date shims (used by prune-expired's suspect report) ---
+# Value-checked probes, GNU first: on GNU `date -r 1` means "mtime of a file
+# named 1", so an exit-code-only probe misclassifies GNU as BSD when such a
+# file exists in $PWD. Same convention as bin/cron-from.sh.
+_detect_date_flavor() {
+  if [[ "$(date -u -d "@1" +%s 2>/dev/null)" == "1" ]]; then echo gnu
+  elif [[ "$(date -u -r 1 +%s 2>/dev/null)" == "1" ]]; then echo bsd
+  else echo none; fi
+}
+
+_epoch_fmt() { # <epoch> <fmt>
+  if [[ "$DATE_FLAVOR" == "bsd" ]]; then
+    date -r "$1" +"$2" 2>/dev/null
+  else
+    date -d "@$1" +"$2" 2>/dev/null
+  fi
+}
+
+_parse_local_to_epoch() { # "YYYY-MM-DD HH:MM" (host-local time)
+  if [[ "$DATE_FLAVOR" == "bsd" ]]; then
+    date -j -f "%Y-%m-%d %H:%M" "$1" +%s 2>/dev/null
+  else
+    date -d "$1" +%s 2>/dev/null
+  fi
+}
+
 ensure_memory_dir() {
   mkdir -p "$MEMORY_DIR"
 }
@@ -78,7 +104,8 @@ _write_fresh_registry() {
       "harnessTaskId": null,
       "paused": false,
       "tombstone": null,
-      "adoptedAt": null
+      "adoptedAt": null,
+      "targetEpoch": null
     },
     {
       "key": "dreaming-default",
@@ -92,7 +119,8 @@ _write_fresh_registry() {
       "harnessTaskId": null,
       "paused": false,
       "tombstone": null,
-      "adoptedAt": null
+      "adoptedAt": null,
+      "targetEpoch": null
     }
   ]
 }
@@ -133,7 +161,8 @@ _add_default_if_missing() {
       harnessTaskId: null,
       paused: false,
       tombstone: null,
-      adoptedAt: null
+      adoptedAt: null,
+      targetEpoch: null
     }] end |
     .updatedAt = $now
   ' "$REGISTRY" | write_atomic
@@ -149,7 +178,7 @@ cmd_seed_defaults() {
 }
 
 cmd_upsert() {
-  local key="" harness_id="" source="" cron="" prompt="" recurring="true" note=""
+  local key="" harness_id="" source="" cron="" prompt="" recurring="true" note="" target_epoch=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --key) key="$2"; shift 2;;
@@ -159,6 +188,7 @@ cmd_upsert() {
       --prompt) prompt="$2"; shift 2;;
       --recurring) recurring="$2"; shift 2;;
       --note) note="$2"; shift 2;;
+      --target-epoch) target_epoch="$2"; shift 2;;
       *) echo "writeback.sh upsert: unknown flag $1" >&2; exit 2;;
     esac
   done
@@ -166,6 +196,9 @@ cmd_upsert() {
   [[ -z "$cron" ]] && { echo "upsert: --cron required" >&2; exit 2; }
   [[ -z "$prompt" ]] && { echo "upsert: --prompt required" >&2; exit 2; }
   [[ -z "$source" ]] && { echo "upsert: --source required" >&2; exit 2; }
+  if [[ -n "$target_epoch" && ! "$target_epoch" =~ ^[0-9]+$ ]]; then
+    echo "upsert: --target-epoch must be epoch seconds (got '$target_epoch')" >&2; exit 2
+  fi
 
   if [[ -z "$key" ]]; then
     [[ -z "$harness_id" ]] && { echo "upsert: either --key or --harness-task-id required" >&2; exit 2; }
@@ -204,6 +237,7 @@ cmd_upsert() {
 
   jq --arg key "$key" --arg src "$source" --arg cron "$cron" --arg prompt "$prompt" \
      --arg recurring "$recurring" --arg note "$note" --arg harness "$harness_id" \
+     --arg tepoch "$target_epoch" \
      --arg now "$now" '
     ((.entries | any(.key == $key)) as $exists |
     (if $exists then
@@ -215,6 +249,7 @@ cmd_upsert() {
           .recurring = ($recurring == "true") |
           .source = $src |
           .note = (if $note == "" then .note else $note end) |
+          .targetEpoch = (if $tepoch == "" then (.targetEpoch // null) else ($tepoch | tonumber) end) |
           .lastSeenAlive = $now |
           (if .tombstone != null then
              .tombstone = null | .createdAt = $now
@@ -234,7 +269,8 @@ cmd_upsert() {
         harnessTaskId: (if $harness == "" then null else $harness end),
         paused: false,
         tombstone: null,
-        adoptedAt: null
+        adoptedAt: null,
+        targetEpoch: (if $tepoch == "" then null else ($tepoch | tonumber) end)
       }]
     end)) |
     (if $src == "openclaw-import" and (.migration.openclawAnsweredAt == null) then
@@ -304,6 +340,16 @@ cmd_set_alive() {
     ) |
     .updatedAt = $now
   ' "$REGISTRY" | write_atomic
+
+  # Sliding reconcile marker: set-alive runs after every recreated cron
+  # during the SessionStart reconcile envelope, so refreshing the marker
+  # here keeps the hooks' 10-minute bypass window open exactly as long as
+  # the reconcile keeps making real progress (chat interleaving between
+  # batches no longer expires it). Refresh ONLY if present — set-alive
+  # outside a reconcile must never create the bypass.
+  if [[ -f "$MEMORY_DIR/.reconciling" ]]; then
+    touch "$MEMORY_DIR/.reconciling" 2>/dev/null || true
+  fi
 }
 
 cmd_adopt_unknown() {
@@ -358,7 +404,8 @@ cmd_adopt_unknown() {
           harnessTaskId: $id,
           paused: false,
           tombstone: null,
-          adoptedAt: $now
+          adoptedAt: $now,
+          targetEpoch: null
         }] |
         .updatedAt = $now
       ' "$REGISTRY" | write_atomic
@@ -459,6 +506,115 @@ cmd_migration_mark() {
   ' "$REGISTRY" | write_atomic
 }
 
+cmd_prune_expired() {
+  # Tombstones one-shot entries whose explicit targetEpoch already passed,
+  # and reports (NEVER mutates) legacy date-shaped entries that look expired
+  # but predate the targetEpoch field. Shaped by the 2026-06-09 adversarial
+  # review: a 5-field cron carries no year, so date-math alone cannot safely
+  # decide expiry — only explicit creation-time metadata can. Without this,
+  # every SessionStart reconcile resurrects already-fired dated reminders
+  # (they next fire a full year later).
+  acquire_lock
+  [[ -f "$REGISTRY" ]] || { echo "prune-expired: pruned=0 suspects=0 (no registry)"; return 0; }
+  if ! jq -e '.version == 1 and has("entries")' "$REGISTRY" >/dev/null 2>&1; then
+    echo "prune-expired: registry invalid; skipped (next seed-defaults quarantines it)" >&2
+    return 0
+  fi
+
+  local now_epoch now_iso
+  now_epoch=$(date +%s)
+  now_iso=$(iso_now)
+
+  # --- 1. Epoch-based prune (authoritative, zero heuristics) ---
+  local pruned_keys
+  pruned_keys=$(jq -r --argjson now "$now_epoch" '
+    [ .entries[]
+      | select(.paused == false and .tombstone == null and .recurring == false)
+      | select((.targetEpoch // null) != null and .targetEpoch < $now)
+      | .key
+    ] | .[]
+  ' "$REGISTRY" 2>/dev/null || true)
+
+  local pruned_count=0
+  if [[ -n "$pruned_keys" ]]; then
+    local updated
+    updated=$(jq --arg now "$now_iso" --argjson nowE "$now_epoch" '
+      .entries |= map(
+        if .paused == false and .tombstone == null and .recurring == false
+           and ((.targetEpoch // null) != null) and .targetEpoch < $nowE then
+          .tombstone = $now
+          | .note = (((.note // "") | if . == "" then "" else . + " " end)
+                     + "[auto-pruned " + $now + ": one-shot targetEpoch passed]")
+        else . end
+      ) |
+      .updatedAt = $now
+    ' "$REGISTRY" 2>/dev/null || true)
+    # Write safety: only install a full, valid registry — a failed jq piped
+    # straight into write_atomic would replace the registry with an empty
+    # file (later quarantined, all tombstone history lost).
+    if [[ -n "$updated" ]] && printf '%s' "$updated" \
+        | jq -e '.version == 1 and (.entries | type == "array")' >/dev/null 2>&1; then
+      printf '%s\n' "$updated" | write_atomic
+      while IFS= read -r _k; do
+        [[ -z "$_k" ]] && continue
+        pruned_count=$((pruned_count + 1))
+        echo "pruned key=$_k"
+      done <<< "$pruned_keys"
+    else
+      log_error "prune-expired: transform produced invalid registry; write aborted"
+      echo "prune-expired: transform failed; registry left untouched" >&2
+    fi
+  fi
+
+  # --- 2. Legacy suspect report (REPORT-ONLY) ---
+  # Entries created before targetEpoch existed: date-shaped cron (numeric
+  # min/hour/dom/month, dow *) whose first occurrence after createdAt has
+  # already passed. The year is genuinely ambiguous for these, so they are
+  # surfaced for the user to verify and delete — never auto-tombstoned.
+  # Annual-protection: recurring entries are flagged only when created
+  # within 7 days of the computed occurrence (a "remind me tonight" that
+  # the capture default marked recurring); intentional annuals stay quiet.
+  local suspect_count=0
+  DATE_FLAVOR=$(_detect_date_flavor)
+  if [[ "$DATE_FLAVOR" != "none" ]]; then
+    local entry key cron created_iso created_epoch recurring cy
+    local m h d mo y cand rt_m rt_d first_occ
+    while IFS= read -r entry; do
+      [[ -z "$entry" ]] && continue
+      cron=$(jq -r '.cron' <<<"$entry" 2>/dev/null) || continue
+      [[ "$cron" =~ ^([0-9]{1,2})\ ([0-9]{1,2})\ ([0-9]{1,2})\ ([0-9]{1,2})\ \*$ ]] || continue
+      m="${BASH_REMATCH[1]}"; h="${BASH_REMATCH[2]}"; d="${BASH_REMATCH[3]}"; mo="${BASH_REMATCH[4]}"
+      key=$(jq -r '.key' <<<"$entry" 2>/dev/null)
+      recurring=$(jq -r '.recurring' <<<"$entry" 2>/dev/null)
+      created_iso=$(jq -r '.createdAt // empty' <<<"$entry" 2>/dev/null)
+      [[ -z "$created_iso" ]] && continue
+      created_epoch=$(jq -rn --arg t "$created_iso" '($t | fromdateiso8601?) // empty' 2>/dev/null)
+      [[ -z "$created_epoch" ]] && continue
+      cy=$(_epoch_fmt "$created_epoch" "%Y")
+      [[ -z "$cy" ]] && continue
+      first_occ=""
+      for y in "$cy" "$((cy + 1))" "$((cy + 2))"; do
+        cand=$(_parse_local_to_epoch "$(printf '%04d-%02d-%02d %02d:%02d' "$y" "$((10#$mo))" "$((10#$d))" "$((10#$h))" "$((10#$m))")")
+        [[ -z "$cand" ]] && continue
+        # Round-trip guard, month/day only (the hour may legally shift
+        # across a DST gap): BSD `date -j -f` NORMALIZES invalid calendar
+        # dates (Feb 30 → Mar 2) instead of failing like GNU.
+        rt_m=$(_epoch_fmt "$cand" "%-m"); rt_d=$(_epoch_fmt "$cand" "%-d")
+        [[ "$rt_m" == "$((10#$mo))" && "$rt_d" == "$((10#$d))" ]] || continue
+        if (( cand > created_epoch )); then first_occ="$cand"; break; fi
+      done
+      [[ -z "$first_occ" ]] && continue
+      (( now_epoch > first_occ )) || continue
+      if [[ "$recurring" == "false" ]] || (( first_occ - created_epoch <= 604800 )); then
+        suspect_count=$((suspect_count + 1))
+        echo "suspect key=$key cron=\"$cron\" expected=$(_epoch_fmt "$first_occ" "%Y-%m-%d %H:%M")"
+      fi
+    done < <(jq -c '.entries[] | select(.paused == false and .tombstone == null and ((.targetEpoch // null) == null))' "$REGISTRY" 2>/dev/null || true)
+  fi
+
+  echo "prune-expired: pruned=$pruned_count suspects=$suspect_count"
+}
+
 # ------------------- dispatch -------------------
 
 ensure_jq
@@ -472,6 +628,7 @@ case "$SUBCMD" in
   pause)          cmd_pause "$@";;
   resume)         cmd_resume "$@";;
   migration-mark) cmd_migration_mark "$@";;
+  prune-expired)  cmd_prune_expired "$@";;
   ""|-h|--help)
     cat <<USAGE
 writeback.sh — sole writer for memory/crons.json
@@ -480,12 +637,14 @@ Usage:
   writeback.sh seed-defaults
   writeback.sh upsert --source <src> --cron <expr> --prompt <p> --recurring <bool>
                       [--key <k>] [--harness-task-id <id>] [--note <n>]
+                      [--target-epoch <epoch-seconds>]
   writeback.sh tombstone {--key <k> | --harness-task-id <id>}
   writeback.sh set-alive --key <k> --harness-task-id <id>
   writeback.sh adopt-unknown < <cronlist-output>
   writeback.sh pause --key <k>
   writeback.sh resume --key <k> [--harness-task-id <id>]
   writeback.sh migration-mark --value <imported|declined|auto-imported>
+  writeback.sh prune-expired
 
 Env:
   CLAUDE_PROJECT_DIR  Root of the agent workspace (default: \$PWD).
