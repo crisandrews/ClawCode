@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [1.7.6] — 2026-06-11
+
+### Why these changes matter
+
+Issue #32 (reported from the field): after a session reset, the agent-executed reconcile envelope re-created only 13 of 40 registry crons, and the other 27 stayed silently dead for 9 days — registry said `alive`, the harness fired nothing, and no alert existed anywhere. The completion summary was computed by the agent itself and persisted nowhere, `lastSeenAlive` only moved when an entry was re-created, and a long-running session never re-checked. This round makes the completion check mechanical, persists it, surfaces it (doctor + envelope + list), and adds in-session self-healing via the heartbeat. Design and amendments adversarially reviewed (gpt-5.5 xhigh, consensus).
+
+### Fixes
+
+- Skills/crons (writeback): new `audit` subcommand — the mechanical reconcile completion check. Takes the FULL `CronList` output on stdin (STRICT: blank input or any unparseable non-empty line is format drift, exit 4, nothing persisted — a broken pipe can never mark every reminder orphaned), refreshes `lastSeenAlive` for every confirmed-alive entry (not just re-created ones), safely relinks an orphaned entry when exactly one unclaimed live cron matches its (cron, prompt, recurring) triple — the "CronCreate succeeded but set-alive never ran" partial-failure case — and classifies the rest as `orphan` (no live match; safe to auto-recreate) or `blocked` (ambiguous live duplicates; never auto-recreated, and adoption is skipped while any exist, so a partial success can never be tripled). Persists a top-level `.audit` summary (`at/expected/alive/orphaned/relinked/blocked/unknown/orphanKeys/blockedKeys`) in the registry for offline readers. Output: `orphan key=…` / `relinked key=…` / `blocked key=…` lines plus `audit: alive=K/N orphaned=X relinked=L blocked=B unknown=M`.
+- Hooks/reconcile-crons: the envelope is now audit-first and mechanically verified — CronList → audit (relink survivors before any create) → re-create only the reported orphan keys, continuing past individual failures → re-audit → one bounded retry → adopt-unknown only when the audit saw unknown ids → final audit → the completion line quotes the audit summary verbatim (no agent-computed counts), and remaining orphans are reported to the user in plain language. The envelope is declared a SINGLE unit of work: an interleaved chat reply must resume the pending steps in the same turn (hardens the 2026-06-09 mid-reconcile stall).
+- Skills/heartbeat: new always-on cron-health step that runs even outside active hours — `prune-expired` first (so repair can never resurrect fired one-shots), then CronList → audit, then re-create any orphans with the `.reconciling` marker held only for the duration of the repair. This is what self-heals a long-running session: orphaned reminders now wait at most one heartbeat (30 min), not days for the next SessionStart. Notifications are throttled (only when the same keys stay orphaned across two consecutive beats).
+- Skills/crons (writeback): `set-alive` (and `audit`) now refresh the `.reconciling` marker only while it is still fresh (<10 min) — a stale marker left behind by a crashed reconcile is no longer silently resurrected, which would have re-opened the CronCreate stamp bypass and suppressed ad-hoc capture for whoever wrote next.
+- Lib/doctor: the cron-registry check reads the persisted `.audit` — warns with the orphaned and/or blocked keys (and the audit timestamp) whenever the last audit recorded either, reports `last audit … K/N alive` when clean, and `not yet audited` before the first audit. Doctor stays offline; it never calls CronList itself. The `/agent:doctor` skill now refreshes the audit (CronList → `writeback.sh audit`) BEFORE printing the card, so the offline card and the live cron section can't contradict each other.
+- Skills/crons (skill): LIST now runs `prune-expired` and pipes the CronList output it already fetched through `audit` (free `lastSeenAlive` refresh; never auto-repairs — orphans render as ⚠️ with a `/agent:crons reconcile` suggestion). The manual RECONCILE flow mirrors the envelope's repair loop and now touches/removes the `.reconciling` marker explicitly instead of relying on the pretool rejection hint to teach it. Skills/doctor: the CronList call now feeds `audit` first so the rendered cron section and the offline `.audit` state can't contradict each other.
+- Docs/crons: corrected the two-sessions failure-mode row — the writeback lock serializes individual registry writes only; it never made the second session skip its reconcile (that remains a known limitation; a registry session-lease is the planned fix).
+
+### Changes
+
+- CI: new `.github/workflows/ci.yml` — validates the plugin on every push/PR across ubuntu + macos (Node 20): dependency install, jq availability, and shell-entrypoint parse checks for the hooks, `writeback.sh`, and `cron-from.sh`.
+
+### Compatibility
+
+- Registry schema change is additive only (top-level `audit` object, absent until the first audit runs); `version` stays 1, the writeback shape validation (`version == 1 and has("entries")`) is unaffected, and existing registries work untouched. The only behavior change to existing subcommands is the stale-marker guard in `set-alive`, which narrows a bypass window — it never widens anything.
+
 ## [1.7.5] — 2026-06-09
 
 ### Why this release matters

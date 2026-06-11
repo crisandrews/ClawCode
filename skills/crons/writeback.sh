@@ -45,6 +45,24 @@ _parse_local_to_epoch() { # "YYYY-MM-DD HH:MM" (host-local time)
   fi
 }
 
+# Refresh the .reconciling marker ONLY while it is still fresh (<10 min,
+# matching hooks/cron-pretool.sh MAX_RECONCILE_AGE_SEC). A blind touch would
+# resurrect a STALE marker left by a crashed reconcile — silently reopening
+# the CronCreate stamp bypass and the PostToolUse capture suppression for
+# whoever runs set-alive/audit next (e.g. a routine LIST). Stale markers are
+# left alone; cron-pretool removes them on its next gated call.
+_refresh_reconciling_if_fresh() {
+  local marker="$MEMORY_DIR/.reconciling"
+  [[ -f "$marker" ]] || return 0
+  local marker_mtime now_s age
+  marker_mtime=$(stat -f %m "$marker" 2>/dev/null || stat -c %Y "$marker" 2>/dev/null || echo 0)
+  now_s=$(date +%s)
+  age=$((now_s - marker_mtime))
+  if [[ $age -ge 0 && $age -lt 600 ]]; then
+    touch "$marker" 2>/dev/null || true
+  fi
+}
+
 ensure_memory_dir() {
   mkdir -p "$MEMORY_DIR"
 }
@@ -345,11 +363,173 @@ cmd_set_alive() {
   # during the SessionStart reconcile envelope, so refreshing the marker
   # here keeps the hooks' 10-minute bypass window open exactly as long as
   # the reconcile keeps making real progress (chat interleaving between
-  # batches no longer expires it). Refresh ONLY if present — set-alive
-  # outside a reconcile must never create the bypass.
-  if [[ -f "$MEMORY_DIR/.reconciling" ]]; then
-    touch "$MEMORY_DIR/.reconciling" 2>/dev/null || true
+  # batches no longer expires it). Refresh ONLY if present AND still fresh —
+  # set-alive outside a reconcile must never create the bypass, and a stale
+  # marker from a crashed reconcile must not be silently resurrected.
+  _refresh_reconciling_if_fresh
+}
+
+cmd_audit() {
+  # Mechanical diff of CronList output (stdin) against the registry.
+  # This is the completion check Issue #32 asked for: the agent-executed
+  # reconcile can partially fail (turn budget, interleaved chat, per-entry
+  # errors), and until now nothing verified the post-reconcile state.
+  #
+  # stdin contract: the FULL CronList output — one line per alive job
+  #   "<8hex-id> — <cron-expr> (recurring|one-shot) [session-only|durable]: <prompt>"
+  # or the literal "No scheduled jobs.". STRICT: blank stdin and any
+  # unparseable non-empty line are format drift (exit 4, nothing persisted) —
+  # a broken pipe must never mark every reminder orphaned.
+  #
+  # Effects (single jq pass, atomic, lock-held):
+  #   - active entries whose harnessTaskId is alive → lastSeenAlive=now
+  #   - safe relink: an orphaned entry whose (cron,prompt,recurring) triple
+  #     matches EXACTLY ONE unclaimed live row — and is itself the only
+  #     orphan with that triple — gets that row's id instead of a recreate
+  #     (handles "CronCreate succeeded, set-alive never ran").
+  #   - BLOCKED (never guess, never auto-recreate): an orphaned entry whose
+  #     triple matches ≥1 unclaimed live row but can't be relinked
+  #     unambiguously (multiple candidates, or multiple orphan twins). Auto-
+  #     recreating those would add a THIRD copy next to live duplicates from
+  #     prior partial successes — they are surfaced for manual resolution.
+  #   - persists top-level .audit = {at, expected, alive, orphaned, relinked,
+  #     blocked, unknown, orphanKeys[], blockedKeys[]} for offline readers.
+  # stdout: "relinked key=… id=…" / "orphan key=… cron=…" /
+  #   "blocked key=… cron=… reason=ambiguous-live-match" lines, then one
+  #   "audit: alive=K/N orphaned=X relinked=L blocked=B unknown=M" summary.
+  # Repair contract for callers: recreate ONLY "orphan key=" lines; report
+  #   "blocked key=" lines to the user; skip adopt-unknown while blocked>0.
+  # Exit 0 (report-only; orphans are data, not an error). Exit 4 on drift.
+  acquire_lock
+  if [[ ! -f "$REGISTRY" ]]; then
+    echo "audit: alive=0/0 orphaned=0 relinked=0 blocked=0 unknown=0 (no registry)"
+    return 0
   fi
+  if ! jq -e '.version == 1 and has("entries")' "$REGISTRY" >/dev/null 2>&1; then
+    echo "audit: registry invalid; skipped (next seed-defaults quarantines it)" >&2
+    return 0
+  fi
+
+  local input
+  input=$(cat)
+
+  local stripped
+  stripped=$(printf '%s\n' "$input" | sed -e 's/[[:space:]]*$//' | grep -v '^$' || true)
+
+  local live_rows="[]"
+  if [[ -z "$stripped" ]]; then
+    log_error "audit: blank stdin (expected CronList output or 'No scheduled jobs.')"
+    echo "writeback.sh audit: blank input — pipe the FULL CronList output (or the literal 'No scheduled jobs.'). Nothing was persisted." >&2
+    exit 4
+  fi
+
+  if [[ "$stripped" != "No scheduled jobs." ]]; then
+    local line rows_jsonl=""
+    while IFS= read -r line; do
+      line="${line%$'\r'}"
+      [[ -z "${line//[[:space:]]/}" ]] && continue
+      if [[ "$line" =~ ^([0-9a-f]{8})\ —\ (.+)\ \((recurring|one-shot)\)\ \[(session-only|durable)\]:\ (.+)$ ]]; then
+        local task_id="${BASH_REMATCH[1]}"
+        local cron_expr="${BASH_REMATCH[2]}"
+        local kind="${BASH_REMATCH[3]}"
+        local cron_prompt="${BASH_REMATCH[5]}"
+        local rec="false"
+        [[ "$kind" == "recurring" ]] && rec="true"
+        rows_jsonl+=$(jq -nc --arg id "$task_id" --arg cron "$cron_expr" \
+          --arg prompt "$cron_prompt" --argjson recurring "$rec" \
+          '{id:$id,cron:$cron,prompt:$prompt,recurring:$recurring}')$'\n'
+      else
+        log_error "audit: harness shape drift: unparseable CronList line"
+        echo "writeback.sh audit: harness shape drift — a non-empty line did not match the CronList contract:" >&2
+        echo "  $line" >&2
+        echo "Nothing was persisted. See docs/crons.md." >&2
+        exit 4
+      fi
+    done <<< "$input"
+    live_rows=$(printf '%s' "$rows_jsonl" | jq -sc '.' 2>/dev/null || echo "[]")
+  fi
+
+  local now
+  now=$(iso_now)
+  local updated
+  updated=$(jq --argjson live "$live_rows" --arg now "$now" '
+    def triple(e): {cron: e.cron, prompt: e.prompt, recurring: e.recurring};
+    ($live | map(.id)) as $liveIds |
+    ([.entries[].harnessTaskId | select(. != null)]) as $claimed |
+    ([.entries[] | select(.paused == false and .tombstone == null)]) as $active |
+    ([$active[] | select((.harnessTaskId == null) or (.harnessTaskId as $h | ($liveIds | any(. == $h)) | not))]) as $orphans |
+    ([$live[] | select(.id as $i | ($claimed | any(. == $i)) | not)]) as $unclaimed |
+    .entries |= map(
+      if (.paused == false and .tombstone == null) then
+        if ((.harnessTaskId != null) and (.harnessTaskId as $h | ($liveIds | any(. == $h)))) then
+          .lastSeenAlive = $now
+        else
+          triple(.) as $t |
+          ([$orphans[] | select(triple(.) == $t)]) as $twins |
+          ([$unclaimed[] | select(.cron == $t.cron and .prompt == $t.prompt and .recurring == $t.recurring)]) as $cands |
+          if (($twins | length) == 1 and ($cands | length) == 1) then
+            .harnessTaskId = $cands[0].id | .lastSeenAlive = $now | ._relinked = true
+          elif (($cands | length) >= 1) then
+            ._blocked = true
+          else
+            .
+          end
+        end
+      else . end
+    ) |
+    ([.entries[] | select(.paused == false and .tombstone == null)]) as $activeAfter |
+    ([$activeAfter[] | select(._blocked == true) | {key: .key, cron: .cron}]) as $blockedRows |
+    ([$activeAfter[] | select((._blocked != true) and ((.harnessTaskId == null) or (.harnessTaskId as $h | ($liveIds | any(. == $h)) | not))) | {key: .key, cron: .cron}]) as $orphanRows |
+    ([.entries[].harnessTaskId | select(. != null)]) as $claimedAfter |
+    ([$liveIds[] | select(. as $i | ($claimedAfter | any(. == $i)) | not)]) as $unknownIds |
+    ([.entries[] | select(._relinked == true) | {key: .key, id: .harnessTaskId}]) as $relinked |
+    .entries |= map(del(._relinked) | del(._blocked)) |
+    .audit = {
+      at: $now,
+      expected: ($activeAfter | length),
+      alive: (($activeAfter | length) - ($orphanRows | length) - ($blockedRows | length)),
+      orphaned: ($orphanRows | length),
+      relinked: ($relinked | length),
+      blocked: ($blockedRows | length),
+      unknown: ($unknownIds | length),
+      orphanKeys: ($orphanRows | map(.key)),
+      blockedKeys: ($blockedRows | map(.key))
+    } |
+    ._report = {orphanRows: $orphanRows, blockedRows: $blockedRows, relinked: $relinked, audit: .audit} |
+    .updatedAt = $now
+  ' "$REGISTRY" 2>/dev/null || true)
+
+  # Write safety (same rationale as prune-expired): only install a full,
+  # valid registry — a failed jq piped into write_atomic would replace the
+  # registry with an empty file.
+  if [[ -z "$updated" ]] || ! printf '%s' "$updated" \
+      | jq -e '.version == 1 and (.entries | type == "array") and has("_report")' >/dev/null 2>&1; then
+    log_error "audit: transform produced invalid registry; write aborted"
+    echo "writeback.sh audit: transform failed; registry left untouched" >&2
+    exit 1
+  fi
+
+  local report final
+  report=$(printf '%s' "$updated" | jq -c '._report')
+  final=$(printf '%s' "$updated" | jq 'del(._report)' 2>/dev/null || true)
+  if [[ -z "$final" ]] || ! printf '%s' "$final" \
+      | jq -e '.version == 1 and (.entries | type == "array")' >/dev/null 2>&1; then
+    log_error "audit: report strip produced invalid registry; write aborted"
+    echo "writeback.sh audit: transform failed; registry left untouched" >&2
+    exit 1
+  fi
+  printf '%s\n' "$final" | write_atomic
+
+  # Keep the reconcile bypass window sliding through verification + retry,
+  # but never resurrect a stale marker (see _refresh_reconciling_if_fresh).
+  _refresh_reconciling_if_fresh
+
+  printf '%s' "$report" | jq -r '
+    (.relinked[] | "relinked key=\(.key) id=\(.id)"),
+    (.orphanRows[] | "orphan key=\(.key) cron=\"\(.cron)\""),
+    (.blockedRows[] | "blocked key=\(.key) cron=\"\(.cron)\" reason=ambiguous-live-match"),
+    "audit: alive=\(.audit.alive)/\(.audit.expected) orphaned=\(.audit.orphaned) relinked=\(.audit.relinked) blocked=\(.audit.blocked) unknown=\(.audit.unknown)"
+  '
 }
 
 cmd_adopt_unknown() {
@@ -625,6 +805,7 @@ case "$SUBCMD" in
   tombstone)      cmd_tombstone "$@";;
   set-alive)      cmd_set_alive "$@";;
   adopt-unknown)  cmd_adopt_unknown "$@";;
+  audit)          cmd_audit "$@";;
   pause)          cmd_pause "$@";;
   resume)         cmd_resume "$@";;
   migration-mark) cmd_migration_mark "$@";;
@@ -641,6 +822,7 @@ Usage:
   writeback.sh tombstone {--key <k> | --harness-task-id <id>}
   writeback.sh set-alive --key <k> --harness-task-id <id>
   writeback.sh adopt-unknown < <cronlist-output>
+  writeback.sh audit < <cronlist-output>
   writeback.sh pause --key <k>
   writeback.sh resume --key <k> [--harness-task-id <id>]
   writeback.sh migration-mark --value <imported|declined|auto-imported>

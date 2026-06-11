@@ -461,7 +461,22 @@ export function checkCronRegistry(workspace: string): DiagnosticCheck {
     };
   }
 
-  let parsed: { version?: number; entries?: unknown[]; migration?: unknown };
+  let parsed: {
+    version?: number;
+    entries?: unknown[];
+    migration?: unknown;
+    audit?: {
+      at?: string;
+      expected?: number;
+      alive?: number;
+      orphaned?: number;
+      relinked?: number;
+      blocked?: number;
+      unknown?: number;
+      orphanKeys?: string[];
+      blockedKeys?: string[];
+    };
+  };
   try {
     parsed = JSON.parse(fs.readFileSync(registryPath, "utf-8"));
   } catch (err) {
@@ -509,6 +524,57 @@ export function checkCronRegistry(workspace: string): DiagnosticCheck {
     ...(paused > 0 ? [`${paused} paused`] : []),
     ...(tombstoned > 0 ? [`${tombstoned} tombstoned`] : []),
   ];
+
+  // Last persisted audit (written by `writeback.sh audit` — the mechanical
+  // CronList-vs-registry diff). Doctor stays offline: it reports the stored
+  // result, it does not call CronList itself. Orphaned commitments are the
+  // issue-#32 failure mode (registry says alive, harness fires nothing), so
+  // they warn regardless of how old the audit is — staleness is part of the
+  // message, not an excuse.
+  const audit = parsed.audit;
+  const auditAt = typeof audit?.at === "string" ? audit.at.slice(0, 16) : null;
+  const orphaned = typeof audit?.orphaned === "number" ? audit.orphaned : 0;
+  const blocked = typeof audit?.blocked === "number" ? audit.blocked : 0;
+  if (audit && (orphaned > 0 || blocked > 0)) {
+    const fmtKeys = (keys: unknown) =>
+      Array.isArray(keys)
+        ? keys.slice(0, 8).join(", ") + (keys.length > 8 ? ", …" : "")
+        : "";
+    const problems = [
+      ...(orphaned > 0
+        ? [`${orphaned} ORPHANED (${fmtKeys(audit.orphanKeys)}) — not firing`]
+        : []),
+      ...(blocked > 0
+        ? [
+            `${blocked} BLOCKED (${fmtKeys(audit.blockedKeys)}) — ambiguous live duplicates`,
+          ]
+        : []),
+    ];
+    return {
+      id: "cron-registry",
+      label: "Cron registry",
+      status: "warn",
+      message: `${parts.join(" · ")} — last audit ${auditAt ?? "?"}: ${problems.join(" · ")}`,
+      hint:
+        orphaned > 0
+          ? "run /agent:crons reconcile to re-create orphans (heartbeat also self-heals them)" +
+            (blocked > 0
+              ? "; blocked entries need manual review via /agent:crons list (link or CronDelete the duplicates)"
+              : "")
+          : "blocked entries need manual review via /agent:crons list (link the right live id with writeback.sh set-alive, or CronDelete the extras)",
+    };
+  }
+
+  if (audit && auditAt) {
+    parts.push(
+      `last audit ${auditAt}: ${audit.alive ?? "?"}/${audit.expected ?? "?"} alive` +
+        (typeof audit.unknown === "number" && audit.unknown > 0
+          ? ` · ${audit.unknown} live-but-unregistered (adopt pending)`
+          : "")
+    );
+  } else {
+    parts.push("not yet audited (runs on reconcile/heartbeat/list)");
+  }
 
   if (staleTombstones > 0) {
     return {

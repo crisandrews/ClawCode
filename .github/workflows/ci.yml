@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # package-lock.json is deliberately gitignored in this repo, so no
+      # `npm ci` and no setup-node `cache: npm` (both require a lockfile).
+      - run: npm install --no-fund --no-audit
+      # The cron hooks + writeback.sh require jq; preinstalled on both runner
+      # images — fail loudly here rather than mid-run if that ever changes.
+      - run: jq --version
+      # Shell entrypoints must at least parse on both platforms.
+      - run: bash -n hooks/*.sh skills/crons/writeback.sh bin/cron-from.sh
+      - run: npm test

@@ -61,24 +61,35 @@ Parse the user's phrasing and route to the right flow:
 
 ## LIST — show current reminders
 
-1. Call `CronList`. Output is plain text, one line per live job:
+1. Retire fired one-shots first so they don't render as falsely missing:
+   ```bash
+   bash "$CLAUDE_PLUGIN_ROOT/skills/crons/writeback.sh" prune-expired
+   ```
+
+2. Call `CronList`. Output is plain text, one line per live job:
    ```
    <8hex-id> — <cron-expr> (recurring|one-shot) [session-only|durable]: <prompt>
    ```
    Empty state is the literal string `No scheduled jobs.`.
 
-2. Read the registry:
+3. Pipe the FULL CronList output (verbatim, including a literal `No scheduled jobs.`) to the mechanical auditor — it refreshes `lastSeenAlive`, relinks entries that survived under a new task id, and persists `.audit` for doctor/status to read offline:
+   ```bash
+   printf '%s\n' "<full CronList output>" | bash "$CLAUDE_PLUGIN_ROOT/skills/crons/writeback.sh" audit
+   ```
+   Exit 4 = format drift or blank input — surface it and render from raw data; don't retry. **LIST never auto-repairs:** if the audit reports `orphaned>0`, render those entries as ⚠️ and suggest `/agent:crons reconcile`; if it prints `blocked key=` lines (ambiguous live duplicates), render those as ⚠️dup and explain: link the right live id with `writeback.sh set-alive --key <key> --harness-task-id <id>` or delete the extras with `CronDelete`.
+
+4. Read the registry:
    ```bash
    cat "$CLAUDE_PROJECT_DIR/memory/crons.json" | jq -c '.entries[]'
    ```
 
-3. For each registry entry (skip `tombstone != null` unless the user asks for audit):
+5. For each registry entry (skip `tombstone != null` unless the user asks for audit):
    - **✅ alive** — `harnessTaskId` appears in CronList.
    - **⚠️ missing** — expected (paused:false, tombstone:null) but not alive.
    - **⏸ paused** — `paused: true`.
    - **🪦 tombstoned** — `tombstone != null` (only show if user asked).
 
-4. Render a compact table. Example:
+6. Render a compact table. Example:
    ```
    #  STATUS  KEY                         CRON              PROMPT
    1  ✅      heartbeat-default           */30 * * * *      Run /agent:heartbeat
@@ -253,12 +264,25 @@ Pause keeps the registry entry but removes the cron from the harness. Useful for
 
 ## RECONCILE — force a sync
 
-Run the same logic as SessionStart reconcile, on demand:
+Run the same repair loop as the SessionStart envelope, on demand. These steps are a SINGLE unit of work — if you reply to an interleaved message, resume at the next pending step in the same turn.
 
-1. Call `CronList`.
-2. For each registry entry (paused:false, tombstone:null) whose `harnessTaskId` is not in CronList output: `CronCreate` + `writeback.sh set-alive`.
-3. Pipe CronList output to `writeback.sh adopt-unknown` to capture any live-but-unknown crons.
-4. Print summary.
+1. Suppress the hooks for the replay batch (registry crons are replayed verbatim; the cron-from.sh stamp gate must not fire):
+   ```bash
+   touch "$CLAUDE_PROJECT_DIR/memory/.reconciling"
+   ```
+2. Retire fired one-shots so they can't be resurrected:
+   ```bash
+   bash "$CLAUDE_PLUGIN_ROOT/skills/crons/writeback.sh" prune-expired
+   ```
+3. Call `CronList` and pipe its FULL output to `writeback.sh audit`. Exit 4 (format drift / blank input) → STOP, remove the marker, surface the drift.
+4. If `orphaned=0`, skip to step 6. Otherwise, for each `orphan key=` line (orphan lines ONLY — `blocked key=` lines have ambiguous live duplicates and must NEVER be recreated): `CronCreate` with that entry's cron/prompt/recurring from the registry + `writeback.sh set-alive --key <key> --harness-task-id <new id>`. Continue past individual failures.
+5. `CronList` → `audit` again; if still `orphaned>0`, retry step 4 once for the remaining keys, then audit once more.
+6. If the latest audit reported `unknown>0` AND `blocked=0`: pipe the latest CronList output to `writeback.sh adopt-unknown`, then one final `CronList` → `audit`. If `blocked>0`, skip adoption — adopting ambiguous duplicates would cement them as separate reminders.
+7. Remove the marker:
+   ```bash
+   rm -f "$CLAUDE_PROJECT_DIR/memory/.reconciling"
+   ```
+8. Report the LAST audit summary line verbatim. If orphans remain, say so in plain language with the keys. If `blocked>0`, list those keys and explain the resolution: review duplicates with LIST, link the right live id (`writeback.sh set-alive`) or `CronDelete` the extras.
 
 ---
 

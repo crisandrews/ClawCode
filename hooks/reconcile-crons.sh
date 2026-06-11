@@ -203,18 +203,30 @@ PLAN_ID: $PLAN_ID
 
 The cron registry at memory/crons.json is the source of truth. A marker at memory/.reconciling is active to suppress PostToolUse capture during this reconcile. Execute the following steps in order.
 
+IMPORTANT: these steps are a SINGLE unit of work. If you reply to an interleaved message mid-reconcile, you MUST resume at the next pending STEP in the same turn — never end the turn while the last audit reports orphaned>0 and STEP 5's retry has not run. Until then you are NOT done.
+
 STEP 1: Call ToolSearch with query "select:CronList,CronCreate,CronDelete".
 STEP 2: Call CronList. Output is plain text — one line per alive job in the format:
         <8hex-id> — <cron-expr> (recurring|one-shot) [session-only|durable]: <prompt>
         Empty state is the literal string "No scheduled jobs.".
-STEP 3: For each EXPECTED entry listed below whose key's current harnessTaskId is NOT among the 8-hex task IDs in CronList output:
+STEP 3: Pipe the FULL CronList output (verbatim, including the "No scheduled jobs." line if that is the output) to: bash $WRITEBACK audit
+        It mechanically diffs the registry against the live list: refreshes lastSeenAlive, relinks entries that survived under a new task id, persists the result, and prints "orphan key=…" / "blocked key=…" lines plus a final summary line "audit: alive=K/N orphaned=X relinked=L blocked=B unknown=M".
+        "blocked key=" lines mark entries with AMBIGUOUS live duplicates — NEVER recreate those (it would add a third copy); report them in STEP 7.
+        If it exits 4 (format drift / blank input), STOP — create nothing, skip to STEP 7 and report the drift to the user instead of a summary.
+STEP 4: If the audit reported orphaned=0, skip to STEP 6. Otherwise, for EACH "orphan key=" line from STEP 3 (orphan lines ONLY — never blocked lines), using that key's cron/prompt/recurring from the EXPECTED list below:
         - Call CronCreate with that entry's cron, prompt, durable=true, recurring.
         - Capture the 8-hex task_id from the "Scheduled ... job <id>" response.
         - Run: bash $WRITEBACK set-alive --key <entry's key> --harness-task-id <new task_id>
-STEP 4: Pipe the full CronList output to: bash $WRITEBACK adopt-unknown
-        It skips task IDs already registered and adopts the rest as source=ad-hoc.
-STEP 5: Print one line: [clawcode] Reconcile $PLAN_ID done: recreated=<N> adopted=<M> alive=<K>
-STEP 6: Remove the recursion marker: rm -f "$RECONCILING_MARKER"
+        - If one CronCreate fails, CONTINUE with the remaining entries; report failures in STEP 7.
+STEP 5: If STEP 4 ran: call CronList again and pipe it to bash $WRITEBACK audit (same as STEP 3). If it STILL reports orphaned>0, repeat STEP 4 once for exactly the remaining orphan keys, then audit once more.
+STEP 6: If the latest audit reported unknown>0 AND blocked=0: pipe the latest CronList output to: bash $WRITEBACK adopt-unknown
+        (it skips task IDs already registered and adopts the rest as source=ad-hoc), then run one final CronList → bash $WRITEBACK audit so the persisted audit state is current.
+        If blocked>0, SKIP adoption entirely — adopting ambiguous live duplicates would cement them as separate reminders.
+STEP 7: Print one line, quoting the LAST audit summary line verbatim:
+        [clawcode] Reconcile $PLAN_ID done: <last audit line> recreated=<N> failed=<F>
+        If orphaned>0 remains, additionally tell the user in plain language: "<X> reminder(s) could not be re-created — run /agent:crons reconcile or /agent:doctor."
+        If blocked>0, additionally tell the user: "<B> reminder(s) have ambiguous live duplicates in the harness — review with /agent:crons list, then link the right one (bash $WRITEBACK set-alive --key <key> --harness-task-id <id>) or delete the extras with CronDelete."
+STEP 8: Remove the recursion marker: rm -f "$RECONCILING_MARKER"
 
 EXPECTED ($EXPECTED_COUNT entries):
 $EXPECTED_LINES
@@ -225,8 +237,8 @@ if [[ $MIGRATION_NEEDED -eq 1 ]]; then
   MIGRATION_BLOCK=""
   IFS='' read -r -d '' MIGRATION_BLOCK <<MIG || true
 
-STEP 7 (MIGRATION OFFER — IMPORT_BACKLOG.md and OpenClaw source both present; migration not yet answered):
-After STEPS 1-6 complete, call AskUserQuestion with:
+STEP 9 (MIGRATION OFFER — IMPORT_BACKLOG.md and OpenClaw source both present; migration not yet answered):
+After STEPS 1-8 complete, call AskUserQuestion with:
   question: "Detecté que este workspace tenía crons del agente $MIGRATION_AGENT que se perdieron por un bug en versiones anteriores. ¿Los re-importo ahora?"
   header: "Migración"
   options:

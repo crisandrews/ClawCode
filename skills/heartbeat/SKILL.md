@@ -10,26 +10,37 @@ Run the agent's periodic checks. Triggered every 30 minutes by a local cron, or 
 
 ## How it works
 
-1. **Check active hours** — read `agent-config.json` for `heartbeat.activeHours`. If outside the window, skip silently.
+1. **Cron health (ALWAYS — even outside active hours).** This is infrastructure, not a user-facing check; it is what heals orphaned reminders in long-running sessions (see issue #32). This step manages its own state: it reads AND writes the `cronAudit` field of `memory/heartbeat-state.json` itself, here, regardless of whether the later steps run. Every heartbeat:
+   - Load the tools once per session if needed: `ToolSearch(query="select:CronList,CronCreate")`.
+   - Retire fired one-shots FIRST so the repair below cannot resurrect them:
+     `bash "$CLAUDE_PLUGIN_ROOT/skills/crons/writeback.sh" prune-expired`
+   - Call `CronList` and pipe its FULL output to:
+     `bash "$CLAUDE_PLUGIN_ROOT/skills/crons/writeback.sh" audit`
+     (mechanical diff: refreshes `lastSeenAlive`, relinks survivors, prints `orphan key=…` / `blocked key=…` lines and an `audit: alive=K/N …` summary; exit 4 = format drift — stop, surface it, do not create anything).
+   - If `orphaned=0` and `blocked=0`: clear `cronAudit.pending` in `memory/heartbeat-state.json` if set — done, say nothing.
+   - If `orphaned>0`: repair `orphan key=` lines ONLY (NEVER `blocked key=` lines — those have ambiguous live duplicates; recreating them would add a third copy). `touch "$CLAUDE_PROJECT_DIR/memory/.reconciling"` (the registry's crons are replayed verbatim, so the cron-from.sh stamp gate must be bypassed), then for each orphan key: `CronCreate` with that entry's cron/prompt/recurring from `memory/crons.json` + `writeback.sh set-alive --key <key> --harness-task-id <new id>`; continue past individual failures. Then `rm -f "$CLAUDE_PROJECT_DIR/memory/.reconciling"` immediately and re-run `CronList` → `audit`.
+   - **Notification throttle:** write the keys still orphaned-after-repair or blocked into `cronAudit.pending` (with a timestamp) in `memory/heartbeat-state.json`. Notify the user ONLY when the same key(s) were already in `cronAudit.pending` from the previous beat — one notice (orphans: "couldn't re-create X, run /agent:crons reconcile"; blocked: "X has duplicate live reminders, review with /agent:crons list"), then record it as notified so it doesn't repeat every beat.
 
-2. **Load state** — read `memory/heartbeat-state.json` (if exists) to know when each check last ran. Avoid repeating checks done less than 30 min ago.
+2. **Check active hours** — read `agent-config.json` for `heartbeat.activeHours`. If outside the window, skip the remaining steps silently (the cron-health step above already ran).
 
-3. **Read HEARTBEAT.md** — this is the checklist. Follow it strictly. Do not infer or repeat old tasks from prior conversations. If nothing in the checklist needs attention, skip to step 6.
+3. **Load state** — read `memory/heartbeat-state.json` (if exists) to know when each check last ran. Avoid repeating checks done less than 30 min ago.
 
-4. **Execute checks** — rotate through the items in HEARTBEAT.md, doing 2-4 per heartbeat (not all every time). For each:
+4. **Read HEARTBEAT.md** — this is the checklist. Follow it strictly. Do not infer or repeat old tasks from prior conversations. If nothing in the checklist needs attention, skip to step 7.
+
+5. **Execute checks** — rotate through the items in HEARTBEAT.md, doing 2-4 per heartbeat (not all every time). For each:
    - Memory consolidation: review last 3 daily logs → distill insights → update MEMORY.md
    - Dream review: `dream(action='status')` → note high-recall items not yet promoted
    - Custom checks: whatever the user added to HEARTBEAT.md (emails, health, projects, etc.)
 
-5. **Proactive work** (do without asking):
+6. **Proactive work** (do without asking):
    - Organize memory files
    - Remove outdated entries from MEMORY.md
    - Check `IMPORT_BACKLOG.md` if it exists — remind user about pending items
    - Verify installed skills are accessible
 
-6. **Update state** — write `memory/heartbeat-state.json` with timestamps for each check performed.
+7. **Update state** — write `memory/heartbeat-state.json` with timestamps for each check performed.
 
-7. **Notify or stay quiet:**
+8. **Notify or stay quiet:**
    - If something needs the user's attention → notify (via reply tool if on a messaging channel, or print if CLI)
    - If nothing noteworthy → do nothing. No "heartbeat completed" messages.
 

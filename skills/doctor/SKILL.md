@@ -21,9 +21,10 @@ This is a CORE feature — always available. See `docs/doctor.md` for the full l
 
 ## How it works
 
-1. Call the MCP tool `agent_doctor` with `action='check'` (or `action='fix'` when the user passes `--fix`)
-2. The tool returns a structured report; pass it through as-is (the tool already formats a card)
-3. Supplement with cron status from `CronList` — the MCP server cannot see Claude Code's cron state, so include that here
+1. Refresh the cron audit FIRST — `CronList` → `writeback.sh audit` — so the registry's `.audit` state is current
+2. Call the MCP tool `agent_doctor` with `action='check'` (or `action='fix'` when the user passes `--fix`); its cron-registry check reads the `.audit` you just refreshed
+3. The tool returns a structured report; pass it through as-is (the tool already formats a card)
+4. Supplement with cron status rendered from the same `CronList` output — the MCP server cannot see Claude Code's cron state
 
 ## Steps
 
@@ -32,7 +33,25 @@ This is a CORE feature — always available. See `docs/doctor.md` for the full l
 - If the user's message contains `--fix` or `/agent:doctor fix` or says "arreglar" / "auto-fix" / "repara" → mode is `fix`
 - Otherwise → mode is `check`
 
-### Step 2 — Run the MCP tool
+### Step 2 — Refresh the cron audit (BEFORE the card)
+
+The `agent_doctor` card reads the registry's persisted `.audit` offline. Refresh it first, or the card may render stale/contradictory cron state.
+
+`CronList` is a deferred tool. Load it first:
+
+```
+ToolSearch(query='select:CronList')
+```
+
+Call `CronList()` and pipe its FULL output (verbatim, including a literal `No scheduled jobs.`) to the mechanical auditor:
+
+```bash
+printf '%s\n' "<full CronList output>" | bash "$CLAUDE_PLUGIN_ROOT/skills/crons/writeback.sh" audit
+```
+
+(Exit 4 = CronList format drift — remember it and report it as its own ⚠️ line in Step 4.) Keep the CronList output for Step 4.
+
+### Step 3 — Run the MCP tool
 
 Call:
 
@@ -42,21 +61,15 @@ agent_doctor(action='<mode>')
 
 Print the returned card verbatim.
 
-### Step 3 — Add cron status
+### Step 4 — Add cron status
 
-`agent_doctor` cannot read Claude Code's cron list (MCP servers don't have access to Claude Code's runtime). Append a cron section by calling the `CronList` tool.
-
-Remember: `CronList` is a deferred tool. Load it first:
-
-```
-ToolSearch(query='select:CronList')
-```
-
-Then call `CronList()` and render:
+Append a cron section rendered from the Step 2 `CronList` output (do not call it again):
 
 - **Heartbeat cron**: look for a job whose `prompt` contains `/agent:heartbeat` → report schedule
 - **Dreaming cron**: look for a job whose `prompt` contains `dream` → report schedule
 - If either is missing, show `⚠️` and suggest: "Missing cron — run the default crons flow (see AGENTS.md)"
+- If the audit line reported `orphaned>0`, add: `⚠️ <N> registry reminder(s) not firing — run /agent:crons reconcile`
+- If the audit printed `blocked key=` lines, add: `⚠️ <B> reminder(s) with ambiguous live duplicates — review with /agent:crons list`
 
 Format:
 
@@ -64,13 +77,14 @@ Format:
 Crons:
   ✅ Heartbeat: */30 * * * *
   ✅ Dreaming:  0 3 * * *
+  ✅ Registry audit: alive=5/5
 ```
 
-### Step 4 — Surface hints
+### Step 5 — Surface hints
 
 If the diagnostic card includes any `→ hint:` lines, those are already rendered. Do not repeat them; the user has what they need.
 
-### Step 5 — If in `fix` mode, remind the user to reload
+### Step 6 — If in `fix` mode, remind the user to reload
 
 After a fix run, if any fix was applied or any hook-related issue remains, recommend `/mcp` to reload the MCP server. Example:
 
