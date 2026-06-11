@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixes
+
+- Hooks/scope-trust-legacy-warn: on GNU/Linux the legacy-trust advisory crashed with `File: unbound variable` at every SessionStart for users with 1.6-era trust files, instead of printing its one-line warning. Root cause: GNU `stat -f` means `--file-system` (not "format" like BSD), so the probe captured a multi-line filesystem block that leaked into bash arithmetic under `set -u`. Both `stat` probes now go GNU-first (`-c`) with BSD fallback (`-f`) and are value-checked before use — the same convention `bin/cron-from.sh` adopted in 1.7.5. macOS behavior unchanged.
+
 ## [1.7.6] — 2026-06-11
 
 ### Why these changes matter

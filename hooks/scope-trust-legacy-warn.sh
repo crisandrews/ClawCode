@@ -83,16 +83,23 @@ for entry in "$TRUST_BASE"/*; do
     continue
   fi
   # Mode bits & 0o077 must be zero (no group/world bits).
-  mode_octal=$(stat -f "%Lp" "$entry" 2>/dev/null || stat -c "%a" "$entry" 2>/dev/null || echo "")
-  if [ -z "$mode_octal" ]; then continue; fi
+  # GNU first (`-c`), BSD fallback (`-f`): on GNU, `-f` means --file-system
+  # (a boolean flag, not a format option), so `stat -f "%Lp" <file>` treats
+  # BOTH arguments as operands and prints a multi-line filesystem block
+  # ("  File: ...") that crashed the arithmetic below under `set -u`
+  # ("File: unbound variable"). On BSD, `stat -c` fails cleanly, so the
+  # fallback order is unambiguous. Same convention as bin/cron-from.sh.
+  mode_octal=$(stat -c "%a" "$entry" 2>/dev/null || stat -f "%Lp" "$entry" 2>/dev/null || echo "")
+  # Value-checked: only pure octal may reach the arithmetic.
+  if ! [[ "$mode_octal" =~ ^[0-7]+$ ]]; then continue; fi
   # `stat` may print 600 or 0600; normalize.
   mode_norm="${mode_octal#0}"
   # Bash arithmetic: only test the low 7 bits.
   if (( 0$mode_norm & 0077 )); then continue; fi
-  # UID match (skip if `id -u` failed).
+  # UID match (skip if `id -u` failed). GNU-first for the same reason.
   if [ -n "$PROC_UID" ]; then
-    file_uid=$(stat -f "%u" "$entry" 2>/dev/null || stat -c "%u" "$entry" 2>/dev/null || echo "")
-    if [ -n "$file_uid" ] && [ "$file_uid" != "$PROC_UID" ]; then
+    file_uid=$(stat -c "%u" "$entry" 2>/dev/null || stat -f "%u" "$entry" 2>/dev/null || echo "")
+    if [[ "$file_uid" =~ ^[0-9]+$ ]] && [ "$file_uid" != "$PROC_UID" ]; then
       continue
     fi
   fi
