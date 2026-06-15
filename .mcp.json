@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "clawcode": {
+      "cwd": ".",
       "command": "bash",
       "args": [
-        "-c",
-        "cd \"${CLAUDE_PLUGIN_ROOT}\" && if [ ! -f node_modules/.bin/tsx ]; then echo '[clawcode] Installing dependencies (first run)...' >&2; npm install --prefix \"${CLAUDE_PLUGIN_ROOT}\" 2>&1 | tail -5 >&2; fi && if [ ! -f node_modules/.bin/tsx ]; then echo '[clawcode] ERROR: npm install failed. Check Node.js v18+ is installed: node --version' >&2; echo '[clawcode] Try manually: npm install --prefix \"${CLAUDE_PLUGIN_ROOT}\"' >&2; exit 1; fi && exec node_modules/.bin/tsx server.ts"
+        "./bin/clawcode-mcp.sh"
       ]
     }
   }

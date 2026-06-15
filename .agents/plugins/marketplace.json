@@ -1,0 +1,20 @@
+{
+  "name": "clawcode-local",
+  "interface": {
+    "displayName": "ClawCode Local",
+    "shortDescription": "Local Codex build of ClawCode"
+  },
+  "plugins": [
+    {
+      "name": "clawcode",
+      "source": {
+        "source": "local",
+        "path": "./plugins/clawcode"
+      },
+      "policy": {
+        "installation": "AVAILABLE"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

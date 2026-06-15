@@ -20,6 +20,9 @@ import {
   generateHealSystemdService,
   generateHealSystemdTimer,
   generateHealLaunchdPlist,
+  generateCodexLaunchdPlist,
+  generateCodexSystemdService,
+  generateCodexSystemdTimer,
   generateSystemdUnit,
   generatePlist,
   versionStampPathExpr,
@@ -216,6 +219,60 @@ check("buildPlan install (resumeOnRestart=false) disables sidecar by default", (
   const filePaths = (plan.extraFiles ?? []).map((f) => f.path);
   assert(!filePaths.includes(healScriptPath(slug)), "sidecar should not install when no resume");
   assert(!filePaths.includes(resumeWrapperPath(slug)), "wrapper should not install when disabled");
+});
+
+check("buildPlan install (codex/linux) emits runner service + timer", () => {
+  const plan = buildPlan("install", {
+    ...linuxOpts,
+    runtime: "codex",
+    codexBin: "/usr/local/bin/codex",
+    pluginRoot: "/opt/clawcode",
+  });
+  const filePaths = (plan.extraFiles ?? []).map((f) => f.path);
+  assert(plan.label === "clawcode-codex-my-agent", "wrong codex linux label");
+  assert(plan.filePath.endsWith("clawcode-codex-my-agent.service"), "wrong codex service path");
+  assert(filePaths.some((p) => p.endsWith("clawcode-codex-my-agent.timer")), "missing codex timer");
+  assert(plan.fileContent.includes("clawcode-codex-cron-runner.mjs"), "service does not call codex runner");
+  assert(plan.fileContent.includes("/usr/local/bin/codex"), "service does not pass codex binary");
+  assert(!plan.fileContent.includes("claude --continue"), "codex service leaked claude resume");
+  assert(!plan.fileContent.includes("--dangerously-skip-permissions"), "codex service leaked claude flag");
+  assert(plan.commands.map((c) => c.cmd).join("\n").includes("clawcode-codex-my-agent.timer"), "install does not enable codex timer");
+});
+
+check("buildPlan install (codex/darwin) emits launchd interval runner", () => {
+  const plan = buildPlan("install", {
+    ...macOpts,
+    runtime: "codex",
+    codexBin: "/opt/homebrew/bin/codex",
+    pluginRoot: "/opt/clawcode",
+  });
+  assert(plan.label === "com.clawcode.codex.my-agent", "wrong codex mac label");
+  assert(plan.filePath.endsWith("com.clawcode.codex.my-agent.plist"), "wrong codex plist path");
+  assert(plan.fileContent.includes("<key>StartInterval</key>"), "codex plist missing interval");
+  assert(plan.fileContent.includes("<integer>60</integer>"), "codex plist not 60s");
+  assert(plan.fileContent.includes("clawcode-codex-cron-runner.mjs"), "plist does not call codex runner");
+  assert(!plan.fileContent.includes("claude --continue"), "codex plist leaked claude resume");
+});
+
+check("codex service generators are syntax/stamp sane", () => {
+  const service = generateCodexSystemdService({
+    slug,
+    workspace: "/home/tester/my-agent",
+    pluginRoot: "/opt/clawcode",
+    codexBin: "/usr/local/bin/codex",
+    logPath: "/home/tester/.clawcode/logs/codex-my-agent.log",
+  });
+  const timer = generateCodexSystemdTimer({ slug });
+  const plist = generateCodexLaunchdPlist({
+    label: "com.clawcode.codex.my-agent",
+    workspace: "/Users/tester/my-agent",
+    pluginRoot: "/opt/clawcode",
+    codexBin: "/opt/homebrew/bin/codex",
+    logPath: "/Users/tester/.clawcode/logs/codex-my-agent.log",
+  });
+  assert(service.includes("Type=oneshot"), "codex service should be oneshot");
+  assert(timer.includes("OnUnitActiveSec=1min"), "codex timer cadence wrong");
+  assert(plist.includes("<key>CLAWCODE_RUNTIME</key>"), "codex plist missing runtime env");
 });
 
 check("buildPlan install (selfHeal=false explicit) suppresses sidecar", () => {

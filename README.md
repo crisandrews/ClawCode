@@ -74,6 +74,16 @@ Coming from OpenClaw? `/agent:import` brings your agent's personality, memory, s
 - [Node.js](https://nodejs.org/) v18+
 - Windows: Claude Code must be run from inside [WSL2](docs/wsl2.md) (not native PowerShell / cmd).
 
+## [Codex support](#codex-support)
+
+This fork includes an OpenAI Codex packaging layer: `.codex-plugin/plugin.json`,
+`.agents/plugins/marketplace.json`, and a runtime-aware MCP launcher. The core
+MCP memory/identity tools, Codex-aware skill paths, WebChat/voice surfaces, and
+registry-backed reminders work under Codex. Claude Code channel plugins, Claude
+launch flags, and `claude --continue` service mode remain Claude-only.
+
+See [`docs/codex.md`](docs/codex.md) for local install and runtime behavior.
+
 ## [Quick Setup](#quick-setup)
 
 **1. Create a folder for your agent.**

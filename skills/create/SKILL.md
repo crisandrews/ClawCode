@@ -15,18 +15,24 @@ The plugin is already installed — this skill just copies the template files to
 
 1. **Copy templates** to the current directory as the agent's initial files:
    ```bash
-   cp ${CLAUDE_PLUGIN_ROOT}/templates/SOUL.md ./
-   cp ${CLAUDE_PLUGIN_ROOT}/templates/IDENTITY.md ./
-   cp ${CLAUDE_PLUGIN_ROOT}/templates/USER.md ./
-   cp ${CLAUDE_PLUGIN_ROOT}/templates/AGENTS.md ./
-   cp ${CLAUDE_PLUGIN_ROOT}/templates/TOOLS.md ./
-   cp ${CLAUDE_PLUGIN_ROOT}/templates/HEARTBEAT.md ./
-   cp ${CLAUDE_PLUGIN_ROOT}/templates/CLAUDE.md ./
+   PLUGIN_ROOT="${CLAWCODE_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+   cp "$PLUGIN_ROOT"/templates/SOUL.md ./
+   cp "$PLUGIN_ROOT"/templates/IDENTITY.md ./
+   cp "$PLUGIN_ROOT"/templates/USER.md ./
+   cp "$PLUGIN_ROOT"/templates/AGENTS.md ./
+   cp "$PLUGIN_ROOT"/templates/TOOLS.md ./
+   cp "$PLUGIN_ROOT"/templates/HEARTBEAT.md ./
+   if [ "${CLAWCODE_RUNTIME:-claude}" = "codex" ]; then
+     cp "$PLUGIN_ROOT"/templates/CODEX.md ./
+   else
+     cp "$PLUGIN_ROOT"/templates/CLAUDE.md ./
+   fi
    ```
 
 2. **Copy the bootstrap file** (the birth certificate):
    ```bash
-   cp ${CLAUDE_PLUGIN_ROOT}/templates/BOOTSTRAP.md ./
+   PLUGIN_ROOT="${CLAWCODE_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+   cp "$PLUGIN_ROOT"/templates/BOOTSTRAP.md ./
    ```
 
 3. **Create memory directory:**
@@ -42,12 +48,12 @@ The plugin is already installed — this skill just copies the template files to
    Drive the ritual across as many turns as needed: name → creature → vibe → emoji → human's name/timezone. One question per turn.
 
 5. **At the very end of the ritual** (after IDENTITY.md + USER.md are written and BOOTSTRAP.md is deleted), tell the user:
-   > "Run `/mcp` so my new identity and memory config take effect."
+   > "Reload the ClawCode MCP server so my new identity and memory config take effect."
 
 ## Important
 
-- Files are created in the **current directory** (where you launched Claude Code)
+- Files are created in the **current directory** (where you launched the agent runtime)
 - BOOTSTRAP.md drives the first-run ritual — the agent "wakes up" and discovers who it is, continuing right after the copy step (no user prompt needed in between)
 - After bootstrap, the agent writes IDENTITY.md, USER.md, adjusts SOUL.md, then deletes BOOTSTRAP.md
-- `/mcp` runs **once, at the end** of the ritual — the bootstrap conversation itself does not need an MCP reload to happen
+- Reload happens **once, at the end** of the ritual — the bootstrap conversation itself does not need an MCP reload to happen
 - Do NOT fill in IDENTITY.md or USER.md manually — the bootstrap conversation does that
