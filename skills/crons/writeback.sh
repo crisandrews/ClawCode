@@ -55,7 +55,14 @@ _refresh_reconciling_if_fresh() {
   local marker="$MEMORY_DIR/.reconciling"
   [[ -f "$marker" ]] || return 0
   local marker_mtime now_s age
-  marker_mtime=$(stat -f %m "$marker" 2>/dev/null || stat -c %Y "$marker" 2>/dev/null || echo 0)
+  # GNU-first, value-checked probe: on GNU coreutils `stat -f %m` means
+  # "filesystem status" and prints a multi-line block to stdout while exiting
+  # non-zero, so the old BSD-first order let the `||` fallback APPEND the real
+  # epoch — leaving marker_mtime as a blob containing the word "File", which
+  # then trips `set -u` in the arithmetic below. `stat -c %Y` succeeds on GNU
+  # and fails cleanly (no stdout) on BSD/macOS, where `stat -f %m` takes over.
+  marker_mtime=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker" 2>/dev/null || echo 0)
+  [[ "$marker_mtime" =~ ^[0-9]+$ ]] || marker_mtime=0
   now_s=$(date +%s)
   age=$((now_s - marker_mtime))
   if [[ $age -ge 0 && $age -lt 600 ]]; then
