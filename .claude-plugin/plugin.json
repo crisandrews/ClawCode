@@ -1,5 +1,6 @@
 {
   "name": "agent",
+  "displayName": "ClawCode",
   "description": "Turn Claude Code into a persistent agent — memory, personality, voice, messaging, and more.",
   "version": "1.7.6",
   "author": {
