@@ -15,14 +15,21 @@ import os from "os";
 import path from "path";
 
 export type Platform = "darwin" | "linux" | "unsupported";
+export type ServiceRuntime = "claude" | "codex";
 
 export type ServiceAction = "install" | "status" | "uninstall" | "logs";
 
 export interface ServiceOptions {
   /** Absolute workspace path (agent's directory). */
   workspace: string;
+  /** Runtime to wrap. Claude keeps the historical service; Codex uses a cron runner adapter. */
+  runtime?: ServiceRuntime;
   /** Full path to the `claude` binary. Usually `/usr/local/bin/claude` or similar. */
   claudeBin: string;
+  /** Full path to the `codex` binary. Usually `/usr/local/bin/codex` or similar. */
+  codexBin?: string;
+  /** Absolute plugin path. Required for Codex's cron runner service. */
+  pluginRoot?: string;
   /** Overrides — useful for tests and power users. */
   logPath?: string;
   slug?: string;
@@ -125,6 +132,29 @@ export function serviceFilePath(platform: Platform, slug: string): string {
   }
   if (platform === "linux") {
     return path.join(home, ".config", "systemd", "user", `clawcode-${slug}.service`);
+  }
+  return "";
+}
+
+export function codexServiceLabel(platform: Platform, slug: string): string {
+  if (platform === "darwin") return `com.clawcode.codex.${slug}`;
+  return `clawcode-codex-${slug}`;
+}
+
+export function codexServiceFilePath(platform: Platform, slug: string): string {
+  const home = os.homedir();
+  if (platform === "darwin") {
+    return path.join(home, "Library", "LaunchAgents", `com.clawcode.codex.${slug}.plist`);
+  }
+  if (platform === "linux") {
+    return path.join(home, ".config", "systemd", "user", `clawcode-codex-${slug}.service`);
+  }
+  return "";
+}
+
+export function codexTimerFilePath(platform: Platform, slug: string): string {
+  if (platform === "linux") {
+    return path.join(os.homedir(), ".config", "systemd", "user", `clawcode-codex-${slug}.timer`);
   }
   return "";
 }
@@ -723,6 +753,119 @@ WantedBy=default.target
 `;
 }
 
+export function generateCodexLaunchdPlist(opts: {
+  label: string;
+  workspace: string;
+  pluginRoot: string;
+  codexBin: string;
+  logPath: string;
+}): string {
+  const runner = path.join(opts.pluginRoot, "bin", "clawcode-codex-cron-runner.mjs");
+  const argsXml = [
+    "/usr/bin/env",
+    "node",
+    runner,
+    "--workspace",
+    opts.workspace,
+    "--plugin-root",
+    opts.pluginRoot,
+    "--codex-bin",
+    opts.codexBin,
+  ]
+    .map((a) => `        <string>${xmlEscape(a)}</string>`)
+    .join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTD/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${xmlEscape(opts.label)}</string>
+    <key>ProgramArguments</key>
+    <array>
+${argsXml}
+    </array>
+    <key>WorkingDirectory</key>
+    <string>${xmlEscape(opts.workspace)}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>${xmlEscape(os.homedir())}</string>
+        <key>CLAWCODE_RUNTIME</key>
+        <string>codex</string>
+        <key>CLAWCODE_WORKSPACE</key>
+        <string>${xmlEscape(opts.workspace)}</string>
+        <key>CLAWCODE_PLUGIN_ROOT</key>
+        <string>${xmlEscape(opts.pluginRoot)}</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>StandardOutPath</key>
+    <string>${xmlEscape(opts.logPath)}</string>
+    <key>StandardErrorPath</key>
+    <string>${xmlEscape(opts.logPath)}</string>
+</dict>
+</plist>
+`;
+}
+
+export function generateCodexSystemdService(opts: {
+  slug: string;
+  workspace: string;
+  pluginRoot: string;
+  codexBin: string;
+  logPath: string;
+}): string {
+  const runner = path.join(opts.pluginRoot, "bin", "clawcode-codex-cron-runner.mjs");
+  const runnerCmd = [
+    "/usr/bin/env",
+    "node",
+    runner,
+    "--workspace",
+    opts.workspace,
+    "--plugin-root",
+    opts.pluginRoot,
+    "--codex-bin",
+    opts.codexBin,
+  ].map((a) => (/\s/.test(a) ? `"${shellEscape(a)}"` : a)).join(" ");
+
+  return `[Unit]
+Description=ClawCode Codex Cron Runner (${opts.slug})
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=${opts.workspace}
+Environment=HOME=${os.homedir()}
+Environment=CLAWCODE_RUNTIME=codex
+Environment=CLAWCODE_WORKSPACE=${opts.workspace}
+Environment=CLAWCODE_PLUGIN_ROOT=${opts.pluginRoot}
+ExecStart=${runnerCmd}
+StandardOutput=append:${opts.logPath}
+StandardError=append:${opts.logPath}
+
+[Install]
+WantedBy=default.target
+`;
+}
+
+export function generateCodexSystemdTimer(opts: { slug: string }): string {
+  return `[Unit]
+Description=ClawCode Codex Cron Timer (${opts.slug})
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Unit=clawcode-codex-${opts.slug}.service
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
+`;
+}
+
 // ---------------------------------------------------------------------------
 // Plan builder
 // ---------------------------------------------------------------------------
@@ -730,6 +873,9 @@ WantedBy=default.target
 export function buildPlan(action: ServiceAction, opts: ServiceOptions): ServicePlan {
   const platform = opts.platform ?? detectPlatform();
   const slug = opts.slug ?? slugifyWorkspace(opts.workspace);
+  if (opts.runtime === "codex") {
+    return buildCodexPlan(action, opts, platform, slug);
+  }
   const label = serviceLabel(platform, slug);
   const filePath = serviceFilePath(platform, slug);
   const logPath = opts.logPath ?? defaultLogPath(slug);
@@ -1040,5 +1186,135 @@ export function buildPlan(action: ServiceAction, opts: ServiceOptions): ServiceP
     fileContent: "",
     commands: [],
     error: `Unknown action: ${action}`,
+  };
+}
+
+function buildCodexPlan(
+  action: ServiceAction,
+  opts: ServiceOptions,
+  platform: Platform,
+  slug: string
+): ServicePlan {
+  const label = codexServiceLabel(platform, slug);
+  const filePath = codexServiceFilePath(platform, slug);
+  const timerPath = codexTimerFilePath(platform, slug);
+  const logPath = opts.logPath ?? defaultLogPath(`codex-${slug}`);
+  const pluginRoot = path.resolve(opts.pluginRoot || process.cwd());
+  const codexBin = opts.codexBin || "codex";
+
+  if (platform === "unsupported") {
+    return {
+      platform,
+      slug,
+      label,
+      filePath: "",
+      logPath,
+      fileContent: "",
+      commands: [],
+      error:
+        "Unsupported OS. Codex service planning supports macOS (launchd) and Linux (systemd --user). On Windows, install inside WSL2.",
+    };
+  }
+
+  if (action === "install") {
+    const commands: PlanCommand[] = [
+      { label: "Create log directory", cmd: `mkdir -p "${path.dirname(logPath)}"` },
+    ];
+    let fileContent = "";
+    const extraFiles: ExtraFile[] = [];
+
+    if (platform === "darwin") {
+      fileContent = generateCodexLaunchdPlist({
+        label,
+        workspace: opts.workspace,
+        pluginRoot,
+        codexBin,
+        logPath,
+      });
+      commands.push(
+        { label: "Create LaunchAgents directory", cmd: `mkdir -p "${path.dirname(filePath)}"` },
+        { label: "Unload previous Codex runner (ignored if not loaded)", cmd: `launchctl unload "${filePath}" 2>/dev/null || true` },
+        { label: "Load the Codex runner", cmd: `launchctl load "${filePath}"` }
+      );
+    } else {
+      fileContent = generateCodexSystemdService({
+        slug,
+        workspace: opts.workspace,
+        pluginRoot,
+        codexBin,
+        logPath,
+      });
+      extraFiles.push({
+        path: timerPath,
+        content: generateCodexSystemdTimer({ slug }),
+      });
+      commands.push(
+        { label: "Create systemd user directory", cmd: `mkdir -p "${path.dirname(filePath)}"` },
+        { label: "Reload systemd", cmd: `systemctl --user daemon-reload` },
+        { label: "Enable + start the Codex runner timer", cmd: `systemctl --user enable --now clawcode-codex-${slug}.timer` }
+      );
+    }
+
+    return {
+      platform,
+      slug,
+      label,
+      filePath,
+      logPath,
+      fileContent,
+      extraFiles: extraFiles.length > 0 ? extraFiles : undefined,
+      commands,
+    };
+  }
+
+  if (action === "uninstall") {
+    const commands: PlanCommand[] = [];
+    if (platform === "darwin") {
+      commands.push(
+        { label: "Unload the Codex runner (ignored if not loaded)", cmd: `launchctl unload "${filePath}" 2>/dev/null || true` },
+        { label: "Remove the Codex runner plist", cmd: `rm -f "${filePath}"` }
+      );
+    } else {
+      commands.push(
+        { label: "Stop + disable the Codex runner timer (ignored if not enabled)", cmd: `systemctl --user disable --now clawcode-codex-${slug}.timer 2>/dev/null || true` },
+        { label: "Remove the Codex runner unit files", cmd: `rm -f "${filePath}" "${timerPath}"` },
+        { label: "Reload systemd", cmd: `systemctl --user daemon-reload` }
+      );
+    }
+    return {
+      platform,
+      slug,
+      label,
+      filePath,
+      logPath,
+      fileContent: "",
+      commands,
+    };
+  }
+
+  if (action === "status") {
+    const cmd =
+      platform === "darwin"
+        ? `launchctl list | grep "${label}" || true`
+        : `systemctl --user status clawcode-codex-${slug}.timer clawcode-codex-${slug}.service --no-pager 2>&1 || true`;
+    return {
+      platform,
+      slug,
+      label,
+      filePath,
+      logPath,
+      fileContent: "",
+      commands: [{ label: "Check Codex runner status", cmd }],
+    };
+  }
+
+  return {
+    platform,
+    slug,
+    label,
+    filePath,
+    logPath,
+    fileContent: "",
+    commands: [{ label: "Tail logs", cmd: `tail -n 80 "${logPath}" 2>/dev/null || echo "No log yet at ${logPath}"` }],
   };
 }

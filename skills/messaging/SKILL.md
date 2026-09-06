@@ -11,6 +11,16 @@ Guide the user through installing a messaging plugin so they can reach this agen
 
 **IMPORTANT — architectural limitation**: The agent CANNOT execute `/plugin marketplace add` or `/plugin install` — these are REPL-only commands. This skill SHOWS the user the exact commands to run, and guides them through the flow.
 
+## Codex runtime path
+
+If `CLAWCODE_RUNTIME=codex` or the runtime is OpenAI Codex, do not show the Claude Code `/plugin` install commands as Codex commands. Use the Codex-native surfaces instead:
+
+- WebChat and webhooks: enable the ClawCode HTTP bridge (`http.enabled=true`) and reconnect MCP.
+- Voice: enable `voice.enabled=true` and configure a supported backend.
+- Status: call `channels_detect({ format: "table" })`.
+
+Claude Code channel plugins such as WhatsApp, Telegram, Discord, iMessage, and Fakechat still require Claude Code because their install flow and launch flags are Claude-specific. Say that plainly if the user asks for one of those platforms from Codex.
+
 ## Available platforms
 
 | # | Platform | Marketplace | Launch flag | Notes |

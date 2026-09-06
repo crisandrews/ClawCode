@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "npm install --silent >/dev/null 2>&1; exec npx tsx server.ts",
-    "test": "npx tsx tests/service-generator-smoke.test.ts && npx tsx tests/scope-exec-gate.test.ts && npx tsx tests/scope-exec-gate-e2e.test.ts && npx tsx tests/scope-exec-gate-doctor.test.ts && npx tsx tests/scope-trust.test.ts && npx tsx tests/scope-trust-workspace.test.ts && npx tsx tests/scope-trust-legacy-hook.test.ts",
+    "test": "npx tsx tests/scope-runtime.test.ts && npx tsx tests/service-generator-smoke.test.ts && npx tsx tests/scope-exec-gate.test.ts && npx tsx tests/scope-exec-gate-e2e.test.ts && npx tsx tests/scope-exec-gate-doctor.test.ts && npx tsx tests/scope-trust.test.ts && npx tsx tests/scope-trust-workspace.test.ts && npx tsx tests/scope-trust-legacy-hook.test.ts",
     "build:hook": "node scripts/build-exec-gate-hook.mjs"
   },
   "dependencies": {

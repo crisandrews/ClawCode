@@ -7,16 +7,28 @@ argument-hint: install|status|uninstall|logs
 
 # Always-on service
 
-Wrap Claude Code (with ClawCode) in the OS's service manager so the agent keeps running after the terminal closes. This is what makes the HTTP bridge, WebChat, webhooks, and crons work 24/7.
+Wrap the active runtime in the OS's service manager so ClawCode background work can continue after the terminal closes. Claude Code gets the historical long-running REPL service. Codex gets a one-minute runner for reminders, heartbeat, and dreaming.
 
 This is an OPTIONAL feature. See `docs/service.md` for the full reference, risks, and how to add messaging-channel flags.
 
+## Codex runtime path
+
+If `CLAWCODE_RUNTIME=codex` or the runtime is OpenAI Codex, use `service_plan` normally. It returns a Codex-specific launchd/systemd plan that installs a one-minute runner for `bin/clawcode-codex-cron-runner.mjs`.
+
+Safety copy for Codex install:
+
+> This installs a background runner that uses `codex exec` for due ClawCode reminders, heartbeat, and dreaming. It runs with `--ask-for-approval never` and `--dangerously-bypass-approvals-and-sandbox`, so only install it for workspaces you trust.
+
+For Codex, find the binary with `which codex`, pass it as `codexBin`, and do not pass Claude channel flags in `extraArgs`.
+
+For Codex install/status/uninstall/logs, use the same confirmation and plan execution shape below, but skip Claude-specific prechecks such as `which claude` and `~/.claude/settings.json`.
+
 ## ⚠️ Safety — read before install
 
-Installing the service runs Claude Code with **`--dangerously-skip-permissions`** in the background. That flag:
+Installing the Claude Code service runs Claude Code with **`--dangerously-skip-permissions`** in the background. Installing the Codex runner runs `codex exec` with **`--ask-for-approval never`** and **`--dangerously-bypass-approvals-and-sandbox`**. These flags:
 
 - Pre-approves every tool call (Bash, Write, Edit, network requests)
-- Cannot be undone per-request — the running service has full permissions over the agent's workspace for its whole lifetime
+- Cannot be undone per-request — the running service/runner has full permissions over the agent's workspace for its whole lifetime
 - Is necessary because a daemon cannot answer interactive tool-approval prompts
 
 This is an **irrevocable trust decision for this workspace**. Only run `/agent:service install` if you understand that.
@@ -39,7 +51,7 @@ Parse the action and call `service_plan` with it.
 1. Find the `claude` binary: `Bash(which claude)`. Trim output. If empty, abort with: *"Can't find `claude` in PATH. Install Claude Code or point me at it manually."*
 2. Call `service_plan({ action: "install", claudeBin: <path> })`
 3. If the plan has `error` (unsupported OS), print the error and stop.
-4. **Show the user the warning** (see Safety section). Ask explicitly: *"This will install a background service that runs with --dangerously-skip-permissions. Confirm? [y/N]"*
+4. **Show the user the warning** (see Safety section). Ask explicitly: *"This will install a background service/runner with pre-approved tool execution. Confirm? [y/N]"*
 5. If the user says no, stop with a neutral acknowledgement.
 6. If the user confirms:
    - **Pre-check `~/.claude/settings.json`** (prevents the most common install hang — see `docs/service.md` "Heads-up" note):

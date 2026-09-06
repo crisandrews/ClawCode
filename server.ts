@@ -49,6 +49,14 @@ import {
 import { extractKeywords } from "./lib/keywords.ts";
 import { MemoryDB } from "./lib/memory-db.ts";
 import { QmdManager } from "./lib/qmd-manager.ts";
+import {
+  detectRuntime,
+  pluginManifestPaths,
+  resolvePluginRoot,
+  resolveWorkspaceRoot,
+  runtimeInfo,
+  runtimeToolInstruction,
+} from "./lib/runtime.ts";
 import { classifyAgentConfigKey } from "./lib/scope/agent-config-guard.ts";
 import { makeForegroundContext } from "./lib/scope/context.ts";
 import {
@@ -76,17 +84,12 @@ import type { SearchResult } from "./lib/types.ts";
 // WORKSPACE   = where the agent's personality files live (user's project dir)
 // ---------------------------------------------------------------------------
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || process.cwd();
-// WORKSPACE = user's project dir. .mcp.json's launch wrapper `cd`s into
-// PLUGIN_ROOT to find node_modules before exec'ing tsx, which makes
-// process.cwd() resolve to the plugin dir instead of the user's project.
-// OLDPWD is set by that `cd` and reliably points to Claude Code's original
-// cwd (the user's project). Prefer CLAUDE_PROJECT_DIR if Claude Code exports
-// it, then OLDPWD, then process.cwd() as a last resort.
-const WORKSPACE =
-  process.env.CLAUDE_PROJECT_DIR ||
-  process.env.OLDPWD ||
-  process.cwd();
+const RUNTIME = detectRuntime();
+const RUNTIME_INFO = runtimeInfo(RUNTIME);
+const PLUGIN_ROOT = resolvePluginRoot();
+// WORKSPACE = user's project dir. The launcher exports CLAWCODE_WORKSPACE
+// when Codex/Claude start the MCP server from the plugin directory.
+const WORKSPACE = resolveWorkspaceRoot(PLUGIN_ROOT);
 const MEMORY_DIR = path.join(WORKSPACE, "memory");
 const DREAMS_DIR = path.join(MEMORY_DIR, ".dreams");
 
@@ -459,12 +462,10 @@ function _loadBootstrapFilesInner(): string {
 
   // -- Runtime adaptation
   sections.push("## Runtime\n");
-  sections.push("You are running inside Claude Code.");
+  sections.push(`You are running inside ${RUNTIME_INFO.displayName}.`);
+  sections.push(runtimeToolInstruction(RUNTIME));
   sections.push(
-    "Use Claude Code tools: Bash, Read, Write, Edit, Grep, Glob, Agent, WebSearch, WebFetch."
-  );
-  sections.push(
-    "Some workspaces include skill files (e.g. SOUL.md, AGENTS.md) that reference tools from a different agent system — names like `message`, `sessions_spawn`, `browser tool`, `gateway`, `cron tool`, `nodes`, `canvas`. Those are NOT available here. If you encounter them in skill instructions, treat them as descriptive intent and substitute with the closest Claude Code equivalent (e.g. `Agent` for sub-agents, messaging plugin `reply` for `message`)."
+    "Some workspaces include skill files (e.g. SOUL.md, AGENTS.md) that reference tools from a different agent system — names like `message`, `sessions_spawn`, `browser tool`, `gateway`, `cron tool`, `nodes`, `canvas`. Those are NOT available here. If you encounter them in skill instructions, treat them as descriptive intent and substitute with the closest runtime equivalent."
   );
   sections.push(
     "Ignore tokens like HEARTBEAT_OK, NO_REPLY, ANNOUNCE_SKIP, SILENT_REPLY — they do not apply here."
@@ -496,7 +497,7 @@ function _loadBootstrapFilesInner(): string {
 
   // -- Memory instructions (MUST use MCP tools, not native Claude Code tools)
   sections.push("## Memory — CRITICAL RULES\n");
-  sections.push("You have MCP memory tools. You MUST use them instead of Claude Code's native tools:");
+  sections.push(`You have MCP memory tools. You MUST use them instead of ${RUNTIME_INFO.displayName}'s native or ad-hoc file search tools for agent memory:`);
   sections.push("- To SEARCH memory: use `memory_search` (MCP tool), NOT Read or Grep");
   sections.push("- To READ memory details: use `memory_get` (MCP tool), NOT Read");
   sections.push("- To RUN dreaming: use `dream` (MCP tool)");
@@ -510,7 +511,7 @@ function _loadBootstrapFilesInner(): string {
   sections.push("Citations: include Source: path#Lstart-Lend when it helps verify.");
   sections.push("");
   sections.push("To SAVE information to memory: write to memory/YYYY-MM-DD.md (today's date) using Write or Edit tool. APPEND only.");
-  sections.push("Do NOT use Claude Code's auto-memory (~/.claude/projects/.../memory/). Use the memory/ directory in this workspace ONLY.");
+  sections.push(`Do NOT use ${RUNTIME_INFO.displayName}'s native memory store for ClawCode agent memory. Use the memory/ directory in this workspace ONLY.`);
   sections.push("For long-term curated memory, update memory/MEMORY.md.");
   sections.push("");
 
@@ -580,7 +581,9 @@ function _loadBootstrapFilesInner(): string {
   // -- Dreaming
   sections.push("## Dreaming\n");
   sections.push(
-    "You have a `dream` tool for memory consolidation. It runs automatically via nightly cron (3 AM)."
+    RUNTIME === "claude"
+      ? "You have a `dream` tool for memory consolidation. It runs automatically via nightly cron (3 AM)."
+      : "You have a `dream` tool for memory consolidation. Under Codex it can run through the ClawCode Codex runner after `/agent:service install`, or manually with the `dream` tool."
   );
   sections.push(
     "Dreaming promotes frequently-recalled memories to MEMORY.md using weighted scoring."
@@ -592,15 +595,24 @@ function _loadBootstrapFilesInner(): string {
 
   // -- Scheduled tasks (registry-based persistence; see docs/crons.md)
   sections.push("## Scheduled Tasks\n");
-  sections.push(
-    "This workspace maintains a cron registry at `memory/crons.json` — the source of truth for every scheduled task the user wants alive across sessions."
-  );
-  sections.push(
-    "On session start you may receive a reconcile envelope from `[clawcode]`. Follow it exactly: ToolSearch → CronList → CronCreate for missing entries → writeback.sh set-alive → adopt-unknown → print summary → remove the `memory/.reconciling` marker."
-  );
-  sections.push(
-    "Do not create default crons on your own — the registry is the source of truth, and hooks keep it in sync. User-facing management: `/agent:crons list|add|delete|pause|reconcile` (alias `/agent:reminders`)."
-  );
+  if (RUNTIME === "claude") {
+    sections.push(
+      "This workspace maintains a cron registry at `memory/crons.json` — the source of truth for every scheduled task the user wants alive across sessions."
+    );
+    sections.push(
+      "On session start you may receive a reconcile envelope from `[clawcode]`. Follow it exactly: ToolSearch → CronList → CronCreate for missing entries → writeback.sh set-alive → adopt-unknown → print summary → remove the `memory/.reconciling` marker."
+    );
+    sections.push(
+      "Do not create default crons on your own — the registry is the source of truth, and hooks keep it in sync. User-facing management: `/agent:crons list|add|delete|pause|reconcile` (alias `/agent:reminders`)."
+    );
+  } else {
+    sections.push(
+      "This workspace maintains a registry at `memory/crons.json`. Under Codex, `/agent:crons` writes that registry and `/agent:service install` installs a launchd/systemd timer that runs the local ClawCode Codex runner with `codex exec`."
+    );
+    sections.push(
+      "Claude Code's native CronCreate/CronList/CronDelete tools are not available in Codex, so the registry runner is the scheduling adapter. Do not claim reminders are active until the service plan has been installed and status/logs have been checked."
+    );
+  }
   sections.push("");
 
   // -- Heartbeat behavior
@@ -767,15 +779,16 @@ export interface WatchdogPingResponse {
 let cachedPluginVersion: string | null = null;
 function readPluginVersion(): string {
   if (cachedPluginVersion !== null) return cachedPluginVersion;
-  try {
-    const raw = fs.readFileSync(
-      path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json"),
-      "utf-8"
-    );
-    cachedPluginVersion = String(JSON.parse(raw).version || "unknown");
-  } catch {
-    cachedPluginVersion = "unknown";
+  for (const manifestPath of pluginManifestPaths(PLUGIN_ROOT, RUNTIME)) {
+    try {
+      const raw = fs.readFileSync(manifestPath, "utf-8");
+      cachedPluginVersion = String(JSON.parse(raw).version || "unknown");
+      return cachedPluginVersion;
+    } catch {
+      // Try the next runtime manifest.
+    }
   }
+  cachedPluginVersion = "unknown";
   return cachedPluginVersion;
 }
 
@@ -894,7 +907,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "agent_config",
       description:
-        "View or update agent settings (memory backend, QMD, active hours, dreaming). Use action='get' to view current config, action='set' with key and value to change a setting. After changes, remind user to run /mcp reconnect clawcode.",
+        "View or update agent settings (memory backend, QMD, active hours, dreaming). Use action='get' to view current config, action='set' with key and value to change a setting. After critical changes, tell the user to reload the ClawCode MCP server for their runtime.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -972,14 +985,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "channels_detect",
       description:
-        "Inspect messaging channel plugins (WhatsApp, Telegram, Discord, iMessage, Slack, Fakechat) and return installed / authenticated / active state per channel, plus a ready-to-use launch command. Read-only and safe — does not install, authenticate, or restart Claude Code.",
+        "Inspect messaging surfaces for this runtime. Claude Code reports channel plugin state and launch commands. Codex reports native ClawCode surfaces such as WebChat, webhooks, and voice, and marks Claude channel plugins as Claude-only.",
       inputSchema: {
         type: "object" as const,
         properties: {
           format: {
             type: "string",
             enum: ["table", "json", "launch"],
-            description: "'table' (default) human-readable card; 'json' structured data; 'launch' only the claude launch command",
+            description: "'table' (default) human-readable card; 'json' structured data; 'launch' only the Claude launch command",
           },
           includeInstalledOnly: {
             type: "boolean",
@@ -995,7 +1008,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "service_plan",
       description:
-        "Plan an always-on service install/uninstall/status/logs for this agent. Returns file content (plist on macOS or systemd unit on Linux), file path, log path, and a list of shell commands to execute. The skill runs the commands after getting user confirmation. This tool does NOT touch the filesystem or invoke launchctl/systemctl — it only computes the plan.",
+        "Plan an always-on install/uninstall/status/logs flow for this agent. Claude Code uses the historical long-running REPL service. Codex uses a launchd/systemd timer that runs the local ClawCode Codex cron adapter with `codex exec`.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1008,6 +1021,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "Absolute path to the `claude` binary (e.g. /usr/local/bin/claude). Default: 'claude' (uses PATH resolution at runtime)",
           },
+          codexBin: {
+            type: "string",
+            description: "Absolute path to the `codex` binary for Codex runtime service plans. Default: 'codex' (uses PATH resolution at runtime)",
+          },
           extraArgs: {
             type: "array",
             items: { type: "string" },
@@ -1019,7 +1036,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           resumeOnRestart: {
             type: "boolean",
-            description: "Emit a wrapper that runs `claude --continue` so the service rehydrates the prior session on restart. Default: true. Set false for a plain `claude` invocation with no context preservation.",
+            description: "Claude runtime only: emit a wrapper that runs `claude --continue` so the service rehydrates the prior session on restart. Default: true.",
           },
           selfHeal: {
             type: "boolean",
@@ -1098,7 +1115,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "list_commands",
       description:
-        "Discover all user-invocable commands — skills in ./skills/, .claude/skills/, ~/.claude/skills/, and (by default) the agent's own MCP tools. Returns each command's name, description, triggers (parsed from the description), scope, and argument hint. Use this to answer \"what can I do?\" or to render a live /help. Preferred over hardcoded lists because it picks up skills installed after boot.",
+        `Discover all user-invocable commands — skills in ./skills/, ${RUNTIME_INFO.projectSkillsDirName}/skills/, ${RUNTIME_INFO.homeDir}/skills/, and (by default) the agent's own MCP tools. Returns each command's name, description, triggers (parsed from the description), scope, and argument hint. Use this to answer "what can I do?" or to render a live /help. Preferred over hardcoded lists because it picks up skills installed after boot.`,
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1126,7 +1143,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "skill_install",
       description:
-        "Install a skill from a source into the agent. Accepts GitHub shorthand (owner/repo), full URLs, optional branch via @ and subdir via #, or a local directory path. Detects OpenClaw-flavored skills and refuses them (pointing the user at /agent:import-skill). Rejects OS/node mismatches; warns on missing binaries or env vars. Scope: plugin (default, ./skills/), project (.claude/skills/), user (~/.claude/skills/).",
+        `Install a skill from a source into the agent. Accepts GitHub shorthand (owner/repo), full URLs, optional branch via @ and subdir via #, or a local directory path. Detects OpenClaw-flavored skills and refuses them (pointing the user at /agent:import-skill). Rejects OS/node mismatches; warns on missing binaries or env vars. Scope: plugin (default, ./skills/), project (${RUNTIME_INFO.projectSkillsDirName}/skills/), user (${RUNTIME_INFO.homeDir}/skills/).`,
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1421,7 +1438,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [
           {
             type: "text",
-            text: `## Current Configuration\n\n\`\`\`json\n${JSON.stringify(current, null, 2)}\n\`\`\`\n\nTo change: \`agent_config(action='set', key='memory.backend', value='qmd')\`\nAfter changes: \`/mcp reconnect clawcode\``,
+            text: `## Current Configuration\n\nRuntime: ${RUNTIME_INFO.displayName}\nWorkspace: ${WORKSPACE}\n\n\`\`\`json\n${JSON.stringify(current, null, 2)}\n\`\`\`\n\nTo change: \`agent_config(action='set', key='memory.backend', value='qmd')\`\nAfter critical changes: ${RUNTIME_INFO.reloadInstruction}`,
           },
         ],
       };
@@ -1531,7 +1548,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [
             {
               type: "text",
-              text: `Set \`${key}\` = \`${JSON.stringify(parsedValue)}\`\n\nRun \`/mcp reconnect clawcode\` to apply.`,
+              text: `Set \`${key}\` = \`${JSON.stringify(parsedValue)}\`\n\n${RUNTIME_INFO.reloadInstruction}`,
             },
           ],
         };
@@ -1678,6 +1695,95 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === "channels_detect") {
     const format = String(params.format || "table");
+    if (RUNTIME === "codex") {
+      const liveConfig = getLiveConfig();
+      const liveHttp = {
+        enabled: liveConfig.http?.enabled ?? httpConfig.enabled,
+        host: liveConfig.http?.host ?? httpConfig.host,
+        port: liveConfig.http?.port ?? httpConfig.port,
+      };
+      const webUrl = `http://${liveHttp.host}:${liveHttp.port}`;
+      const payload = {
+        ok: true,
+        runtime: RUNTIME,
+        surfaces: [
+          {
+            name: "webchat",
+            label: "WebChat",
+            kind: "codex-native",
+            installed: true,
+            configured: Boolean(liveHttp.enabled),
+            active: Boolean(httpBridge),
+            url: liveHttp.enabled ? webUrl : null,
+            detail: liveHttp.enabled
+              ? httpBridge
+                ? `serving at ${webUrl}`
+                : "enabled in config; reconnect the MCP server to start the HTTP bridge"
+              : "disabled; set http.enabled=true to expose the browser chat",
+          },
+          {
+            name: "webhooks",
+            label: "HTTP webhooks",
+            kind: "codex-native",
+            installed: true,
+            configured: Boolean(liveHttp.enabled),
+            active: Boolean(httpBridge),
+            url: liveHttp.enabled ? `${webUrl}/webhook` : null,
+            detail: liveHttp.enabled
+              ? "POST events through the ClawCode HTTP bridge"
+              : "disabled because the HTTP bridge is off",
+          },
+          {
+            name: "voice",
+            label: "Voice tools",
+            kind: "codex-native",
+            installed: true,
+            configured: liveConfig.voice?.enabled === true,
+            active: liveConfig.voice?.enabled === true,
+            url: null,
+            detail: liveConfig.voice?.enabled === true
+              ? "voice_speak and voice_transcribe are available through MCP"
+              : "disabled; set voice.enabled=true and configure a backend",
+          },
+        ],
+        claudeOnly: [
+          "WhatsApp/Telegram/Discord/iMessage/Fakechat channel plugins",
+          "Claude Code channel launch flags",
+        ],
+      };
+      if (format === "json") {
+        return {
+          content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        };
+      }
+      if (format === "launch") {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "Codex does not use Claude Code channel launch flags. Enable ClawCode WebChat/webhooks with `http.enabled=true`, then reconnect MCP; use `/agent:service install` only for the Codex reminder/dream runner. Claude channel plugins still require Claude Code.",
+            },
+          ],
+        };
+      }
+      const surfaceLines = payload.surfaces
+        .map((surface) => {
+          const state = surface.active ? "✅ active" : surface.configured ? "⚠️ configured" : "❌ off";
+          const url = surface.url ? ` · ${surface.url}` : "";
+          return `- ${surface.label}: ${state}${url} — ${surface.detail}`;
+        })
+        .join("\n");
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `📡 Codex messaging surfaces\n\n${surfaceLines}\n\nClaude Code channel plugins (WhatsApp, Telegram, Discord, iMessage, Fakechat) and Claude launch flags are Claude-only; Codex uses the native WebChat/webhook/voice surfaces above.`,
+          },
+        ],
+      };
+    }
     const channels = detectChannels();
 
     if (format === "json") {
@@ -1724,6 +1830,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
     const claudeBin = String(params.claudeBin || "claude");
+    const codexBin = String(params.codexBin || "codex");
     const extraArgs = Array.isArray(params.extraArgs)
       ? params.extraArgs.map(String)
       : undefined;
@@ -1735,7 +1842,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     const plan = buildServicePlan(action, {
       workspace: WORKSPACE,
+      runtime: RUNTIME,
       claudeBin,
+      codexBin,
+      pluginRoot: PLUGIN_ROOT,
       extraArgs,
       logPath,
       resumeOnRestart,
@@ -2118,7 +2228,7 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 
 // Watch agent-config.json — non-critical changes apply live; critical changes
-// surface via a logging notification telling the user to run /mcp.
+// surface via a logging notification telling the user to reload the MCP server.
 startConfigWatcher(WORKSPACE, async (changes: CriticalChange[]) => {
   const keys = changes.map((c) => c.key).join(", ");
   try {
@@ -2129,7 +2239,7 @@ startConfigWatcher(WORKSPACE, async (changes: CriticalChange[]) => {
         logger: "clawcode.config",
         data: {
           source: "live-config",
-          message: `Config change to ${keys} requires /mcp to apply. Other changes (if any) applied live.`,
+          message: `Config change to ${keys} requires a ClawCode MCP reload to apply. ${RUNTIME_INFO.reloadInstruction} Other changes (if any) applied live.`,
           changes,
         },
       },

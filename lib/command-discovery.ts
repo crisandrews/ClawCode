@@ -10,6 +10,7 @@
 import fs from "fs";
 import path from "path";
 import { parseFrontmatter, scopeDir, type InstallScope } from "./skill-manager.ts";
+import { detectRuntime, runtimeInfo } from "./runtime.ts";
 
 export type CommandScope = InstallScope | "mcp";
 
@@ -217,13 +218,14 @@ export function formatCommandsCompact(commands: CommandRecord[]): string {
 }
 
 function labelFor(scope: CommandScope): string {
+  const info = runtimeInfo(detectRuntime());
   switch (scope) {
     case "plugin":
       return "Core + imported (./skills/)";
     case "project":
-      return "Project (.claude/skills/)";
+      return `Project (${info.projectSkillsDirName}/skills/)`;
     case "user":
-      return "User (~/.claude/skills/)";
+      return `User (${info.homeDir}/skills/)`;
     case "mcp":
       return "MCP tools (agent-invocable)";
   }

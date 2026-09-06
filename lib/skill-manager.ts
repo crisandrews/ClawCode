@@ -2,11 +2,11 @@
  * Skill manager — install, list, and remove community skills.
  *
  * A skill is a directory containing SKILL.md with YAML frontmatter (name,
- * description, ...) — the same format Claude Code natively supports. We
+ * description, ...) — the same format Claude Code and Codex support. We
  * install into one of three scopes:
  *   - "plugin"  → ./skills/<name>/ in the current workspace (ClawCode-managed)
- *   - "project" → .claude/skills/<name>/ (Claude Code native, per-project)
- *   - "user"    → ~/.claude/skills/<name>/ (Claude Code native, global)
+ *   - "project" → .claude/skills/<name>/ or .codex/skills/<name/>
+ *   - "user"    → ~/.claude/skills/<name>/ or ~/.codex/skills/<name/>
  *
  * Sources accepted:
  *   - user/repo                 (GitHub shorthand)
@@ -24,6 +24,12 @@ import { execFileSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import {
+  detectRuntime,
+  projectSkillsDir,
+  runtimeInfo,
+  type RuntimeName,
+} from "./runtime.ts";
 
 export type InstallScope = "plugin" | "project" | "user";
 
@@ -285,7 +291,7 @@ export function detectFormat(skillDir: string): DetectedFormat {
       format: "openclaw",
       frontmatter: fm,
       reason:
-        "SKILL.md references OpenClaw-specific tokens not available in Claude Code",
+        "SKILL.md references OpenClaw-specific tokens not available in this runtime",
       evidence,
     };
   }
@@ -491,10 +497,14 @@ function compareVersions(a: string, b: string): number {
 // Scope → install directory
 // ---------------------------------------------------------------------------
 
-export function scopeDir(workspace: string, scope: InstallScope): string {
+export function scopeDir(
+  workspace: string,
+  scope: InstallScope,
+  runtime: RuntimeName = detectRuntime()
+): string {
   if (scope === "plugin") return path.join(workspace, "skills");
-  if (scope === "project") return path.join(workspace, ".claude", "skills");
-  return path.join(os.homedir(), ".claude", "skills");
+  if (scope === "project") return projectSkillsDir(workspace, runtime);
+  return runtimeInfo(runtime).userSkillsDir;
 }
 
 // ---------------------------------------------------------------------------
