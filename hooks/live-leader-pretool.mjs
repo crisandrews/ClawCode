@@ -2,7 +2,7 @@
 /** Synchronous native hook; no network request or bridge availability dependency. */
 import fs from "node:fs";
 import path from "node:path";
-import { evaluateLeaderTool, normalizeLeaderPolicy, denyLeaderTool } from "./live-leader-policy.mjs";
+import { evaluateLeaderTool, normalizeHostLeaderPolicy, denyLeaderTool } from "./live-leader-policy.mjs";
 
 const workspace = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 let enabled = false;
@@ -16,7 +16,7 @@ try {
     throw new Error("Cannot read valid leader configuration");
   }
   if (live?.enabled !== true || live.leaderPolicy === undefined || live.leaderPolicy?.enabled === false) process.exit(0);
-  const policy = normalizeLeaderPolicy(live.leaderPolicy);
+  const policy = normalizeHostLeaderPolicy(live.leaderPolicy);
   if (!policy.enabled) process.exit(0);
   enabled = true;
   const raw = fs.readFileSync(0, "utf8");

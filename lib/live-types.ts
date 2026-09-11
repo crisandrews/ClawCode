@@ -28,6 +28,7 @@ export interface ConversationState {
 }
 export interface LeaderPolicyState {
   configured: boolean; hookObserved: boolean; runtimeConfirmed: boolean; maxConcurrent: number;
+  tools: "host_native" | "delegate_operations"; directToolsAllowed: boolean;
   limitSemantics: "native_spawn_limit"; resumedAgentsCounted: false; automaticQueue: false;
 }
 export interface HostBinding {

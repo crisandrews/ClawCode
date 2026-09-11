@@ -63,3 +63,29 @@ action after capacity is available; do not claim it started or promise a timer.
 The policy hook returns no permission grant. Existing tool permissions, owner
 identity checks and channel scope gates continue to apply to every tool and worker.
 `;
+
+export function buildLiveLeaderPolicyInstructions(policy: { enabled?: boolean; tools?: "host_native" | "delegate_operations" }): string {
+  if (!policy.enabled) return "";
+  if (policy.tools !== "host_native") return LIVE_LEADER_POLICY_INSTRUCTIONS;
+  return `
+The operator enabled background delegation guards for this existing ClawCode host.
+You retain the host's native tools, memory tools, skills, installed MCPs and ordinary
+permissions. Use memory_context/search/get in the current turn before reasoning
+about prior decisions, and save approved memory updates in the workspace through
+the existing flow. Follow installed skills and their approval/scope rules normally.
+Do short work directly when appropriate. Prefer native background Agent for work
+that may take time; publish its task state and return to dialogue. The guard checks
+background delegation and TaskOutput(block:false); it does not guarantee that a
+direct tool call returns quickly. Do not poll in a loop or use foreground agents.
+Keep each channel's source and requestEnvelopeToken bound to its own work. A token
+may expire while a job waits: do not extend it, reuse a different turn's token, or
+bypass a scope refusal. Guests still cannot delegate when the existing execution
+gate denies Agent. Use the operations that gate already permits to help them.
+The concurrency value limits native NEW-SPAWN admission. Capacity errors are not
+an automatic queue: record unstarted work as queued and admit it explicitly later.
+SendMessage resumption is outside that new-spawn ceiling, so this is not a universal
+active-agent quota. Team launches are outside the checked background Agent path.
+The guard never grants permission or authorizes an external send. All ordinary
+permission, identity, destination and scope checks remain in place for every tool.
+`;
+}

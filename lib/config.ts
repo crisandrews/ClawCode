@@ -64,6 +64,8 @@ export interface AgentConfig {
     /** Keep the main session conversational; native workers retain ordinary capabilities. */
     leaderPolicy?: {
       enabled?: boolean;
+      /** Host default preserves tools; strict operational delegation is opt-in. */
+      tools?: "host_native" | "delegate_operations";
       /** Native new-Agent spawn ceiling; overflow errors, no automatic queue. */
       maxConcurrent?: number;
       /** Exact bounded tool names additionally allowed through the leader gate. */

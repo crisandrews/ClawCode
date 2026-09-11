@@ -14,7 +14,7 @@
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "node:url";
-import { normalizeLeaderPolicy, type LeaderPolicy } from "../hooks/live-leader-policy.mjs";
+import { normalizeHostLeaderPolicy, type LeaderPolicy } from "../hooks/live-leader-policy.mjs";
 import { hostResumeProbe } from "./host-session.ts";
 
 export type Platform = "darwin" | "linux" | "unsupported";
@@ -283,8 +283,8 @@ export function generateResumeWrapper(opts: {
 try {
   let config; try { config = JSON.parse(fs.readFileSync(path.join(process.argv[1], 'agent-config.json'), 'utf8')); } catch (e) { if (process.argv[4] !== '1' && process.env.CLAWCODE_LIVE_LEADER_POLICY !== '1') process.exit(0); throw e; }
   if (config.liveBridge?.enabled !== true || config.liveBridge.leaderPolicy === undefined) process.exit(0);
-  const { normalizeLeaderPolicy, leaderEnvironment, supportsLeaderRuntime } = await import(pathToFileURL(process.argv[2]).href);
-  const policy = normalizeLeaderPolicy(config.liveBridge.leaderPolicy);
+  const { normalizeHostLeaderPolicy, leaderEnvironment, supportsLeaderRuntime } = await import(pathToFileURL(process.argv[2]).href);
+  const policy = normalizeHostLeaderPolicy(config.liveBridge.leaderPolicy);
   if (!policy.enabled) process.exit(0);
   const env = leaderEnvironment(policy, process.env);
   const runtime = spawnSync(process.argv[3], ['--version'], { encoding: 'utf8', timeout: 5000, maxBuffer: 65536, env });
@@ -308,7 +308,7 @@ set -u
 CLAUDE_BIN=${shellQuote(opts.claudeBin)}
 # Read only the workspace's opt-in policy. Output is one validated integer,
 # never shell source or credential values; no eval and no permission override.
-live_leader_limit=$(${shellQuote(process.execPath)} --input-type=module -e ${shellQuote(policyProgram)} ${shellQuote(opts.workspace)} ${shellQuote(policyModule)} "$CLAUDE_BIN" ${normalizeLeaderPolicy(opts.leaderPolicy).enabled ? "1" : "0"}) || exit 78
+live_leader_limit=$(${shellQuote(process.execPath)} --input-type=module -e ${shellQuote(policyProgram)} ${shellQuote(opts.workspace)} ${shellQuote(policyModule)} "$CLAUDE_BIN" ${normalizeHostLeaderPolicy(opts.leaderPolicy).enabled ? "1" : "0"}) || exit 78
 if [ -n "$live_leader_limit" ]; then
     export CLAUDE_CODE_FORK_SUBAGENT=1
     export CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS="$live_leader_limit"
@@ -811,7 +811,7 @@ export function buildPlan(action: ServiceAction, opts: ServiceOptions): ServiceP
 
     const flagPath = forceFreshFlagPath(slug);
 
-    if (resumeOnRestart || normalizeLeaderPolicy(opts.leaderPolicy).enabled) {
+    if (resumeOnRestart || normalizeHostLeaderPolicy(opts.leaderPolicy).enabled) {
       const wrapperPath = resumeWrapperPath(slug);
       extraFiles.push({
         path: wrapperPath,

@@ -131,7 +131,7 @@ export class LiveBridge {
   }
   private leaderPolicyState(): LeaderPolicyState {
     const policy = normalizeLeaderPolicy(this.options.leaderPolicy);
-    return { configured: policy.enabled, maxConcurrent: policy.maxConcurrent, hookObserved: false, runtimeConfirmed: false, limitSemantics: "native_spawn_limit", resumedAgentsCounted: false, automaticQueue: false };
+    return { configured: policy.enabled, maxConcurrent: policy.maxConcurrent, tools: policy.tools, directToolsAllowed: !policy.enabled || policy.tools === "host_native", hookObserved: false, runtimeConfirmed: false, limitSemantics: "native_spawn_limit", resumedAgentsCounted: false, automaticQueue: false };
   }
   capabilities() {
     return {

@@ -6,16 +6,33 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { evaluateLeaderTool, leaderEnvironment, normalizeLeaderPolicy, supportsLeaderRuntime } from "../hooks/live-leader-policy.mjs";
+import { evaluateLeaderTool, leaderEnvironment, normalizeLeaderPolicy, normalizeHostLeaderPolicy, supportsLeaderRuntime } from "../hooks/live-leader-policy.mjs";
 import { generateResumeWrapper, buildPlan } from "../lib/service-generator.ts";
 import { LiveBridge } from "../lib/live-bridge.ts";
 import { resolve, DEFAULT_ALLOWLIST_TOOLS } from "../lib/scope/exec-gate.ts";
+import { buildLiveLeaderPolicyInstructions, LIVE_LEADER_POLICY_INSTRUCTIONS } from "../lib/live-tools.ts";
+import { EnvelopeReader } from "../lib/scope/envelope.ts";
 
 const policy = { enabled: true, maxConcurrent: 3 };
 const env = leaderEnvironment(policy, {});
 const payload = (tool_name: string, tool_input: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => ({ hook_event_name: "PreToolUse", session_id: "fixture-session", tool_name, tool_input, ...extra });
 const denied = (value: any) => value.hookSpecificOutput?.permissionDecision === "deny";
 const hook = fileURLToPath(new URL("../hooks/live-leader-pretool.mjs", import.meta.url));
+
+test("host default preserves Cloudy capabilities while generic consumers retain strict delegation", () => {
+  const host = normalizeHostLeaderPolicy(policy);
+  assert.equal(host.tools, "host_native"); assert.equal(normalizeLeaderPolicy(policy).tools, "delegate_operations");
+  assert.equal(normalizeHostLeaderPolicy({ ...policy, tools: "delegate_operations" }).tools, "delegate_operations");
+  assert.equal(normalizeLeaderPolicy({ ...policy, tools: "host_native" }).tools, "host_native");
+  for (const invalid of ["policy", [], 1, { ...policy, tools: "other" }, { ...policy, tools: null }, { ...policy, maxConcurrent: 0 }, { ...policy, extraSetting: true }]) assert.throws(() => normalizeHostLeaderPolicy(invalid), "Host defaults must validate original input before adapting it");
+  for (const tool of ["mcp__clawcode__memory_search", "mcp__clawcode__memory_get", "mcp__clawcode__memory_context", "mcp__clawcode__list_commands", "mcp__clawcode__skill_list", "mcp__clawcode__chat_inbox_read", "mcp__clawcode__webchat_reply", "mcp__clawcode__voice_speak", "mcp__clawcode__voice_transcribe", "Read", "Write", "Edit", "Skill", "CronCreate", "CronList", "Bash", "mcp__installed_later__tool"]) {
+    assert.deepEqual(evaluateLeaderTool(payload(tool), host, env), {}, tool);
+    assert.equal(denied(evaluateLeaderTool(payload(tool), policy, env)), true, `Strict mode still delegates ${tool}`);
+  }
+  assert.equal(buildLiveLeaderPolicyInstructions(host).includes("You retain the host's native tools"), true);
+  assert.equal(buildLiveLeaderPolicyInstructions(normalizeLeaderPolicy(policy)), LIVE_LEADER_POLICY_INSTRUCTIONS);
+  assert.equal(buildLiveLeaderPolicyInstructions(normalizeHostLeaderPolicy(undefined)), "");
+});
 
 test("main operational and unknown MCP tools are delegated; native workers preserve permission flow", () => {
   for (const tool of ["Bash", "Read", "Write", "Edit", "Grep", "WebFetch", "mcp__slow__search", "TeamCreate", "Workflow", "FutureTool"]) {
@@ -47,9 +64,35 @@ test("guest channel replies retain the existing gate path while guest Agent rema
     assert.deepEqual(evaluateLeaderTool(payload(tool), policy, env), {});
     assert.equal(ordinaryGate(tool).decision, "allow");
   }
+  for (const tool of ["mcp__clawcode__memory_search", "mcp__clawcode__memory_get", "mcp__clawcode__memory_context", "mcp__clawcode__voice_transcribe", "Read"]) {
+    assert.deepEqual(evaluateLeaderTool(payload(tool), normalizeHostLeaderPolicy(policy), env), {});
+    assert.equal(ordinaryGate(tool).decision, "allow");
+  }
   assert.deepEqual(evaluateLeaderTool(payload("Agent"), policy, env), {});
   assert.equal(ordinaryGate("Agent").decision, "block", "New policy must not bypass the existing guest execution gate");
+  assert.deepEqual(evaluateLeaderTool(payload("Write", { file_path: "/tmp/ordinary-fixture" }), normalizeHostLeaderPolicy(policy), env), {});
+  assert.equal(ordinaryGate("Write").decision, "block", "Host passthrough does not permit a guest write");
   assert.equal(denied(evaluateLeaderTool(payload("mcp__whatsapp__reply_anything"), policy, env)), true);
+});
+
+test("host named native subagents are allowed without ambiguous teammate launches; delegation guards stay active", () => {
+  const host = normalizeHostLeaderPolicy(policy), teams = { ...env, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1" };
+  assert.deepEqual(evaluateLeaderTool(payload("Agent", { name: "research" }), host, env), {});
+  assert.equal(denied(evaluateLeaderTool(payload("Agent", { name: "research" }), host, teams)), true);
+  for (const input of [{ name: "research", subagent_type: "fork" }, { name: "research", isolation: "worktree" }]) assert.deepEqual(evaluateLeaderTool(payload("Agent", input), host, teams), {});
+  for (const input of [{ team_name: "team" }, { run_in_background: false }]) assert.equal(denied(evaluateLeaderTool(payload("Agent", input), host, env)), true);
+  assert.equal(denied(evaluateLeaderTool(payload("Agent"), host, {})), true);
+  assert.equal(denied(evaluateLeaderTool(payload("TaskOutput", { block: true }), host, env)), true);
+  assert.deepEqual(evaluateLeaderTool(payload("TaskOutput", { block: false }), host, env), {});
+});
+
+test("host memory passthrough does not extend or replace the existing source envelope TTL", () => {
+  const host = normalizeHostLeaderPolicy(policy), token = "A".repeat(43), at = 1700000000000;
+  const raw = JSON.stringify({ version: 1, token, senderId: "guest@fixture", chatId: "guest@fixture", ts: at, expiresAt: at + 60000 });
+  const reader = new EnvelopeReader();
+  assert.deepEqual(evaluateLeaderTool(payload("mcp__clawcode__memory_search", { requestEnvelopeToken: token }), host, env), {});
+  assert.notEqual(reader.parseAndValidate(raw, token, at + 59000), null);
+  assert.equal(reader.parseAndValidate(raw, token, at + 61000), null);
 });
 
 test("native delegation requires fork environment and matching spawn cap; teams and foreground rejected", () => {
@@ -78,9 +121,13 @@ test("spawned synchronous hook works without HTTP, stays silent off, denies inva
   assert.equal(run(payload("Bash")).stdout, "");
   fs.writeFileSync(configFile, JSON.stringify({ liveBridge: { enabled: false, leaderPolicy: policy } })); assert.equal(run(payload("Bash")).stdout, "");
   fs.writeFileSync(configFile, JSON.stringify({ liveBridge: { enabled: true, leaderPolicy: policy, port: 1 } }));
-  const main = run(payload("Bash")); assert.equal(main.status, 0); assert.equal(denied(JSON.parse(main.stdout)), true); assert.equal(main.stderr, "");
+  const main = run(payload("Bash")); assert.equal(main.status, 0); assert.deepEqual(JSON.parse(main.stdout), {}); assert.equal(main.stderr, "");
+  assert.deepEqual(JSON.parse(run(payload("mcp__clawcode__memory_context")).stdout), {});
   assert.deepEqual(JSON.parse(run(payload("Bash", {}, { agent_id: "worker" })).stdout), {});
   assert.deepEqual(JSON.parse(run(payload("Agent")).stdout), {});
+  assert.equal(denied(JSON.parse(run(payload("Agent", { run_in_background: false })).stdout)), true);
+  fs.writeFileSync(configFile, JSON.stringify({ liveBridge: { enabled: true, leaderPolicy: { ...policy, tools: "delegate_operations" } } }));
+  assert.equal(denied(JSON.parse(run(payload("Bash")).stdout)), true);
   fs.writeFileSync(configFile, JSON.stringify({ liveBridge: { enabled: true, leaderPolicy: { enabled: true, maxConcurrent: 0 } } })); assert.equal(denied(JSON.parse(run(payload("Agent")).stdout)), true);
   fs.writeFileSync(configFile, "invalid-json");
   assert.equal(run(payload("Bash")).stdout, "", "An unconfigured legacy installation is unchanged");
@@ -114,9 +161,18 @@ test("policy snapshot reports configuration separately from unobserved native en
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "leader-metadata-"));
   const bridge = new LiveBridge({ workspace: root, dataDir: path.join(root, "state"), token: "synthetic-fixture-only-token-".repeat(2), port: 0, agent: { id: "fixture", name: "Fixture" }, deliver: async () => {}, leaderPolicy: policy });
   await bridge.start(); t.after(async () => { await bridge.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  const expected = { configured: true, maxConcurrent: 3, hookObserved: false, runtimeConfirmed: false, limitSemantics: "native_spawn_limit", resumedAgentsCounted: false, automaticQueue: false };
+  const expected = { configured: true, maxConcurrent: 3, tools: "delegate_operations", directToolsAllowed: false, hookObserved: false, runtimeConfirmed: false, limitSemantics: "native_spawn_limit", resumedAgentsCounted: false, automaticQueue: false };
   assert.deepEqual(bridge.capabilities().leaderPolicy, expected);
   assert.deepEqual(bridge.snapshot().conversation.capabilities.leaderPolicy, expected);
   await bridge.probeChannel();
+  assert.equal(bridge.snapshot().conversation.capabilities.leaderPolicy?.runtimeConfirmed, false);
+});
+
+test("host bridge receives resolved mode and reports its direct-tool behavior in snapshots", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "leader-host-metadata-"));
+  const bridge = new LiveBridge({ workspace: root, dataDir: path.join(root, "state"), token: "synthetic-fixture-only-token-".repeat(2), port: 0, agent: { id: "fixture", name: "Fixture" }, deliver: async () => {}, leaderPolicy: normalizeHostLeaderPolicy(policy) });
+  await bridge.start(); t.after(async () => { await bridge.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  assert.equal(bridge.capabilities().leaderPolicy.tools, "host_native");
+  assert.equal(bridge.snapshot().conversation.capabilities.leaderPolicy?.directToolsAllowed, true);
   assert.equal(bridge.snapshot().conversation.capabilities.leaderPolicy?.runtimeConfirmed, false);
 });
