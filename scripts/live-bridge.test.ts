@@ -21,7 +21,7 @@ const turn = () => new Promise(resolve => setTimeout(resolve, 5));
 async function fixture(t: any, extra: Record<string, unknown> = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "clawcode-live-test-"));
   const deliveries: Array<{ content: string; meta: Record<string, string> }> = [];
-  const options = { workspace: directory, dataDir: path.join(directory, "live"), token, port: 0, agent: { id: "fixture", name: "Fixture leader" }, deliver: async (message: any) => { deliveries.push(message); }, ...extra };
+  const options = { workspace: directory, dataDir: path.join(directory, "live"), token, port: 0, observeHooks: true, agent: { id: "fixture", name: "Fixture leader" }, deliver: async (message: any) => { deliveries.push(message); }, ...extra };
   let bridge = new LiveBridge(options);
   await bridge.start();
   t.after(async () => { await bridge.close(); fs.rmSync(directory, { recursive: true, force: true }); });
@@ -30,10 +30,11 @@ async function fixture(t: any, extra: Record<string, unknown> = {}) {
     return { status: res.status, body: await res.json() as any };
   };
   const attach = async () => (await request("/attachments", "POST", {})).body;
-  const ready = async () => {
+  const ready = async (sessionId = "host-session") => {
     await bridge.probeChannel();
     const probe = deliveries.findLast(d => d.meta.source === "live_probe")!.meta.probe;
-    bridge.callTool("live_ack", { probe }); return probe;
+    bridge.callTool("live_ack", { probe });
+    bridge.observeHook({ id: "binding", event: "PostToolUse", sessionId, probe }); return probe;
   };
   return {
     get bridge() { return bridge; }, directory, deliveries, options, request, attach, ready,
@@ -56,7 +57,7 @@ async function firstEvent(bridge: LiveBridge, attachment: string, cursor: number
 
 test("mandatory bearer, local Host, no browser origins, validation, unsupported commands", async t => {
   assert.throws(() => new LiveBridge({ workspace: "/tmp", dataDir: "/tmp/live", token: "", agent: { id: "x", name: "x" }, deliver: async () => {} }), /token/);
-  const f = await fixture(t);
+  const f = await fixture(t, { observeHooks: false });
   assert.equal((await f.request("/capabilities", "GET", undefined, { Authorization: "" })).status, 401);
   assert.equal((await f.request("/capabilities", "GET", undefined, { Authorization: "Bearer wrong" })).status, 401);
   const rebindingStatus = await new Promise<number | undefined>((resolve, reject) => {
@@ -84,7 +85,9 @@ test("readiness requires real Channels probe ACK; transport never acknowledges i
   assert.equal(JSON.stringify(f.bridge.callTool("live_status", {})).includes(f.deliveries[0].meta.probe), false);
   assert.throws(() => f.bridge.callTool("live_ack", { inputId: "i1", revision: 1 }), /not delivered/);
   assert.throws(() => f.bridge.callTool("live_ack", { probe: "guessed" }), /probe/);
-  f.bridge.callTool("live_ack", { probe: f.deliveries[0].meta.probe }); await turn();
+  f.bridge.callTool("live_ack", { probe: f.deliveries[0].meta.probe });
+  assert.equal(f.bridge.capabilities().capabilities.channelReady, false, "ACK alone does not prove the native session");
+  f.bridge.observeHook({ id: "binding", event: "PostToolUse", sessionId: "host-session", probe: f.deliveries[0].meta.probe }); await turn();
   assert.equal(f.bridge.capabilities().capabilities.channelReady, true);
   assert.equal(f.deliveries.filter(d => d.meta.source === "live").length, 1);
   assert.equal(JSON.parse(f.deliveries[1].content).delegationId, "voice-delegation-1");
@@ -264,5 +267,100 @@ test("real MCP SDK negotiation and notifications use Channels, not logging", asy
   assert.equal((await client.listTools()).tools.length, 4);
   assert.equal(f.bridge.capabilities().capabilities.channelReady, false);
   await client.callTool({ name: "live_ack", arguments: { probe: seen[0].meta.probe } });
+  assert.equal(f.bridge.capabilities().capabilities.channelReady, false);
+  f.bridge.observeHook({ id: "binding", event: "PostToolUse", sessionId: "host-session", probe: seen[0].meta.probe });
   assert.equal(f.bridge.capabilities().capabilities.channelReady, true);
+});
+
+test("replacement native session requires owner recovery and keeps queued work held", async t => {
+  const f = await fixture(t); await f.ready(); const original = f.bridge.snapshot().conversation.id;
+  await f.restart(); const a = await f.attach();
+  await f.request(`/attachments/${a.attachmentId}/inputs`, "POST", { id: "pending", text: "Pending after restart", revision: 1, origin: "web" });
+  await f.ready("replacement-session"); await turn();
+  let snapshot = f.bridge.snapshot(); const generation = snapshot.host!.generation;
+  assert.equal(snapshot.conversation.id, original); assert.equal(snapshot.host!.bindingStatus, "recovery_required");
+  assert.equal(f.deliveries.filter(d => d.meta.source === "live").length, 0);
+  f.bridge.observeHook({ id: "untrusted-start", event: "SubagentStart", sessionId: "replacement-session", agentId: "new" });
+  assert.equal(f.bridge.snapshot().tasks.length, 0);
+  const recovery = { id: "recovery", expectedGeneration: generation, nativeSessionId: "replacement-session", action: "accept_replacement", acknowledgeContextChange: true, pendingInputs: "hold" };
+  assert.equal((await f.request("/host/recovery", "POST", { ...recovery, expectedGeneration: "stale" })).status, 409);
+  assert.equal((await f.request("/host/recovery", "POST", { ...recovery, acknowledgeContextChange: false })).status, 400);
+  assert.equal((await f.request("/host/recovery", "POST", recovery)).status, 200);
+  assert.equal((await f.request("/host/recovery", "POST", recovery)).body.duplicate, true);
+  snapshot = f.bridge.snapshot(); assert.equal(snapshot.inputs![0].status, "held");
+  const resolve = { id: "retry", expectedGeneration: generation, inputId: "pending", revision: 1, expectedStatus: "held", action: "retry_confirmed_not_received", confirmNoExecution: true };
+  assert.equal((await f.request(`/attachments/${a.attachmentId}/resolve`, "POST", resolve)).status, 200); await turn();
+  assert.equal(f.deliveries.filter(d => d.meta.source === "live").length, 1);
+  assert.equal((await f.request(`/attachments/${a.attachmentId}/resolve`, "POST", resolve)).body.duplicate, true);
+  f.bridge.callTool("live_ack", { inputId: "pending", revision: 1 });
+  assert.equal((await f.request(`/attachments/${a.attachmentId}/resolve`, "POST", { ...resolve, id: "again", expectedStatus: "acknowledged" })).status, 409);
+});
+
+test("finishing one input does not make another acknowledged input ready", async t => {
+  const f = await fixture(t); const a = await f.attach(); await f.ready();
+  for (const id of ["one", "two"]) {
+    await f.request(`/attachments/${a.attachmentId}/inputs`, "POST", { id, text: id, revision: 1, origin: "web" }); await turn();
+    f.bridge.callTool("live_ack", { inputId: id, revision: 1 });
+  }
+  f.bridge.callTool("live_emit", { id: "done-one", type: "input.completed", inputId: "one", revision: 1, text: "First complete" });
+  assert.equal(f.bridge.snapshot().conversation.status, "working");
+  f.bridge.callTool("live_emit", { id: "done-two", type: "input.completed", inputId: "two", revision: 1, text: "Second complete" });
+  assert.equal(f.bridge.snapshot().conversation.status, "ready");
+});
+
+test("native task card merges into the declared task and preserves child links and controls", async t => {
+  const f = await fixture(t); const a = await f.attach(); await f.ready();
+  const work = (args: Record<string, unknown>) => f.bridge.callTool("live_work", { conversationId: a.conversationId, progress: "Progress", ...args });
+  work({ id: "declared", taskId: "logical", status: "queued" });
+  f.bridge.observeHook({ id: "native", event: "SubagentStart", sessionId: "host-session", agentId: "native-child" });
+  const alias = f.bridge.snapshot().tasks.find(task => task.nativeId === "native-child")!.id;
+  work({ id: "nested", taskId: "nested", parentTaskId: alias });
+  work({ id: "bind-native", taskId: "logical", nativeId: "native-child" });
+  assert.equal(f.bridge.snapshot().tasks.length, 2);
+  const logical = f.bridge.snapshot().tasks.find(task => task.id === "logical")!;
+  assert.equal(logical.history.length, 3); assert.deepEqual(logical.aliases, [alias]);
+  assert.equal(f.bridge.snapshot().tasks.find(task => task.id === "nested")!.parentTaskId, "logical");
+  assert.equal((await f.request(`/attachments/${a.attachmentId}/commands`, "POST", { id: "alias-cancel", kind: "cancel", taskId: alias })).status, 202);
+  assert.equal(f.bridge.snapshot().commands![0].taskId, "logical");
+  f.bridge.observeHook({ id: "tool", event: "PostToolUse", sessionId: "host-session", agentId: "native-child" });
+  assert.equal(f.bridge.snapshot().tasks.length, 2);
+  await f.restart(); assert.equal(f.bridge.snapshot().taskAliases![alias], "logical");
+});
+
+test("WhatsApp provenance is owner adopted and proactive results need an authorized task", async t => {
+  let valid = true;
+  const f = await fixture(t, {
+    listExternalInputCandidates: () => [{ id: "candidate", sourceChannel: "whatsapp", occurredAt: new Date().toISOString(), label: "Owner dispatch" }],
+    resolveExternalInput: (id: string) => valid && id === "candidate" ? { sourceChannel: "whatsapp", sourceInputId: "verified-dispatch", ownerVerified: true } : null,
+  });
+  await f.ready(); const a = await f.attach(); const generation = f.bridge.snapshot().host!.generation;
+  assert.equal(f.bridge.snapshot().conversation.capabilities.externalInputAdoption, true);
+  const work = { id: "work", taskId: "background", conversationId: a.conversationId, progress: "Working", sourceChannel: "whatsapp", sourceInputId: "verified-dispatch" };
+  assert.throws(() => f.bridge.callTool("live_work", work), /adoption/);
+  assert.throws(() => f.bridge.callTool("live_status", { adopt: "candidate" }), /Unexpected/);
+  const adopt = { id: "adopt", expectedGeneration: generation, conversationId: a.conversationId, candidateId: "candidate" };
+  assert.equal((await f.request("/sources/adopt", "POST", adopt, { Authorization: "" })).status, 401);
+  valid = false; assert.equal((await f.request("/sources/adopt", "POST", adopt)).status, 409);
+  valid = true; assert.equal((await f.request("/sources/adopt", "POST", adopt)).status, 200);
+  f.bridge.callTool("live_work", work);
+  const result = { id: "proactive", type: "leader.reply", taskId: "background", destination: "live", text: "The background task finished." };
+  f.bridge.callTool("live_emit", result); f.bridge.callTool("live_emit", result);
+  assert.equal(f.bridge.snapshot().inputs!.length, 0, "No fake voice input is created for a background result");
+  assert.equal(f.bridge.snapshot().conversation.messages.filter(message => message.id === "proactive").length, 1);
+  assert.equal(f.bridge.snapshot().conversation.messages.at(-1)!.sourceChannel, "whatsapp");
+  await f.restart(); await f.ready();
+  assert.equal(f.bridge.snapshot().sources![0].sourceInputId, "verified-dispatch");
+});
+
+test("model is observed from sanitized native hooks, never inferred from configuration", async t => {
+  const f = await fixture(t);
+  assert.equal(f.bridge.snapshot().conversation.model, undefined);
+  const start = sanitizeHook({ hook_event_name: "SessionStart", session_id: "host-session", model: "claude-model-a", transcript_path: "/private", secret: "PRIVATE" });
+  f.bridge.observeHook(start); await f.ready();
+  assert.equal(f.bridge.snapshot().conversation.model, "claude-model-a");
+  const switched = sanitizeHook({ hook_event_name: "PostModelSwitch", session_id: "host-session", to_model: "claude-model-b", from_model: "PRIVATE", tool_input: { token: "PRIVATE" } });
+  f.bridge.observeHook(switched);
+  assert.equal(f.bridge.snapshot().conversation.model, "claude-model-b");
+  assert.equal(JSON.stringify(switched).includes("PRIVATE"), false);
+  assert.equal(sanitizeHook({ hook_event_name: "SessionStart", session_id: "s" }), null);
 });

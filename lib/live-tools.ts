@@ -6,14 +6,15 @@ function tool(name: string, description: string, properties: Record<string, unkn
 export const LIVE_TOOLS = [
   tool("live_status", "Inspect this leader's LiveBridge readiness and public work snapshot. Never returns credentials or the channel probe.", {}),
   tool("live_ack", "Acknowledge an input/command ID and exact revision received from Channels, or echo its startup probe. ACK means attended, never completed. Do not guess IDs or acknowledge on behalf of another agent.", { inputId: str, commandId: str, revision: num, probe: str }),
-  tool("live_emit", "Publish an explicitly attributed public reply/progress to Live only. id is an idempotency key. Requires an acknowledged inputId and revision for replies/progress; command results require commandId. This never sends WhatsApp messages.", {
-    id: str, inputId: str, revision: num, commandId: str,
+  tool("live_emit", "Publish an explicitly attributed public reply/progress to Live only. id is an idempotency key. Requires an acknowledged inputId and revision for replies/progress; command results require commandId. For a proactive update use taskId and destination=live; the task must have an acknowledged Live source or an owner-adopted WhatsApp source. This never sends WhatsApp messages.", {
+    id: str, inputId: str, revision: num, commandId: str, taskId: str, destination: { type: "string", enum: ["live"] },
     type: { type: "string", enum: ["leader.reply", "leader.progress", "leader.needs_input", "input.completed", "input.failed", "command.completed", "command.rejected"] }, text: str,
   }, ["id", "type", "text"]),
-  tool("live_work", "Publish a task before delegating it and update progress while it runs. Use a stable taskId, bind nativeId when known. Public fields only; no hidden reasoning/transcripts. This read model never creates or kills workers. SubagentStop means response ended, not job completed. Mark terminal status only after actual outcome is known. Work from another channel can be included by explicitly choosing this conversationId.", {
+  tool("live_work", "Publish a task before delegating it and update progress while it runs. Use a stable taskId, bind nativeId when known. Public fields only; no hidden reasoning/transcripts. This read model never creates or kills workers. SubagentStop means response ended, not job completed. Mark terminal status only after actual outcome is known. Use sourceInputId and sourceChannel for attributed work. WhatsApp sources require explicit owner adoption through the authenticated web controls; you cannot grant this yourself.", {
     id: str, taskId: str, conversationId: str, title: str, prompt: str, progress: str,
     status: { type: "string", enum: ["queued", "running", "waiting_permission", "completed", "failed", "cancelled", "interrupted"] },
     parentTaskId: str, nativeId: str, executionId: str, result: str, error: str, model: str,
+    sourceInputId: str, sourceChannel: { type: "string", enum: ["voice", "web", "whatsapp"] },
   }, ["id", "taskId", "conversationId", "progress"]),
 ];
 
@@ -35,10 +36,12 @@ reuse WhatsApp guest envelopes to authorize Live inputs, or let Live authorize a
 WhatsApp send. Keep output directed to the source; live_emit sends only to Live.
 Publish live_work BEFORE delegating, update it during work, and report each known
 outcome. Publish only useful public progress, not chain-of-thought, private logs,
-transcripts, tool arguments or credentials. Keep actual native IDs when available.
+transcripts, tool arguments or credentials. Keep actual native IDs when available. Bind them to the same logical taskId, even if a native hook already created a card. For work originating in Live include sourceInputId and sourceChannel. For WhatsApp, live_status lists only source IDs the owner explicitly adopted; never invent provenance. Publish a proactive result with live_emit taskId and destination=live after the initiating input is completed. This does not require a new user voice input.
 A cancel command is a request: use native controls if supported, then report the
 actual outcome. ACK alone is not cancellation. Report unsupported operations via
 command.rejected. Stop/SubagentStop ends a response, not necessarily the task.
 Do not silently replay uncertain delivery after restart. Approval and model-change
 controls are unsupported by this bridge; normal host permissions still apply.
 `;
+
+// Adoption and host replacement deliberately remain owner HTTP operations.

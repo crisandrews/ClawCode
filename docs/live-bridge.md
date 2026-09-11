@@ -55,7 +55,7 @@ the existing ClawCode MCP functionality continues.
 The MCP server declares `experimental['claude/channel']` and sends
 `notifications/claude/channel`. MCP logging is not an input transport. On client
 initialization, it emits a probe. `channelReady` stays false until the actual
-leader echoes that probe through `live_ack`. A successful notification write does
+leader echoes that probe through `live_ack` **and** its authenticated PostToolUse hook binds the native session. `observeHooks:true` is required for this verification. A successful notification write does
 not prove that Channels was enabled or that the leader received it. The probe is
 absent from HTTP snapshots and live_status. An authenticated `POST /v1/live/probe`
 can retry the readiness probe if necessary.
@@ -77,8 +77,7 @@ without cancelling tasks or terminating ClawCode. A lost HTTP response followed 
 reattachment does not submit another task: input IDs/revisions deduplicate across
 attachments and restarts.
 
-An owner may explicitly include work begun through WhatsApp in the same public
-conversation by publishing `live_work` with that conversationId. No WhatsApp
+An owner can explicitly adopt a recent verified WhatsApp dispatch through the authenticated HTTP API. The leader can then attribute live_work to that sourceInputId and sourceChannel. A model-supplied conversationId alone does not establish provenance. No WhatsApp
 history, guest envelope or transcript is automatically imported. Incoming Live
 messages do not grant permission to send an answer to another channel. Existing
 scope and execution gates continue to apply; this bridge does not bypass them.
@@ -95,16 +94,14 @@ The leader gets four tools:
 | `live_work` | Create/update a public task record; no native execution side effect |
 
 Publish live_work before delegating, during execution, and after the outcome is
-known. Keep a stable taskId. If native hooks have already registered a nativeId,
-update its existing taskId from live_status; the bridge refuses competing mappings.
+known. Keep a stable taskId and bind nativeId when available. If a hook created a native card first, binding it to the declared logical task atomically merges history, parents and aliases; controls using the old ID resolve to the canonical task. Competing explicit mappings are rejected.
 Task cards contain status, public progress/history, optional parent/native/session
 IDs, observedAt and controls. Public leader publications have idempotency keys;
 reusing an ID with changed content is rejected. Two or more task cards can progress
 independently while another input is queued. Actual parallelism remains the host's
 native delegation capability, permissions and resource limits.
 
-The optional hook collector sends only event/session/agent IDs and the readiness
-probe on its own live_ack PostToolUse. It never reads transcript_path, assistant
+The hook collector sends event/session/agent IDs, a model identifier from SessionStart/PostModelSwitch when present, and the readiness probe on its own live_ack PostToolUse. It never reads transcript_path, assistant
 messages, tool arguments/results, files, shell commands or WhatsApp content. That
 probe hook binds the authenticated host session_id. Before binding, or for another
 session, native observations are ignored. Current-session SubagentStart creates
@@ -125,7 +122,7 @@ pending and require their own live_ack and explicit result. The task does not
 become cancelled from command submission or acknowledgement. The leader must use
 an available native control and publish the real task outcome with live_work;
 unsupported native operations can be reported with command.rejected. No process
-is killed by the bridge. Remote approvals and model changes are unsupported and
+is killed by the bridge. Session model changes are observed only when the corresponding native hook arrives; this is not per-response fallback-model telemetry. Remote approvals and model changes are unsupported and
 advertised false; use the normal host controls. No model name is guessed.
 
 ## HTTP v1 contract
@@ -137,6 +134,11 @@ advertised false; use the normal host controls. No model name is guessed.
 | `GET /attachments/:id/events?cursor=N` | SSE replay; Last-Event-ID also accepted |
 | `POST /attachments/:id/inputs` | `{id,text,revision,origin:'voice'|'web',delegationId?,taskId?}` → inputId, revision, queued/acknowledged, conversationId |
 | `POST /attachments/:id/commands` | `{id,kind:'steer'|'cancel',taskId,text?,revision?}` → commandId, pending/completed/rejected, conversationId |
+| `GET /attachments/:id/snapshot` | Current cursor and complete snapshot, including input/command receipts and native host binding |
+| `POST /attachments/:id/resolve` | Explicit owner retry/abandon with id, expectedGeneration, expectedStatus, inputId+revision or commandId |
+| `POST /host/recovery` | Accept a proven replacement host with expectedGeneration, nativeSessionId and acknowledgeContextChange:true; pendingInputs defaults to hold |
+| `GET /sources/candidates` | Recent verified owner WhatsApp dispatch references, no message text or credentials |
+| `POST /sources/adopt` | id, expectedGeneration, conversationId, candidateId; revalidates provenance and persists adoption |
 | `DELETE /attachments/:id` | Detach only |
 | `POST /probe` | Retry readiness probe; pending response |
 | `POST /hooks` | Optional metadata collector; same bearer requirement |
@@ -153,7 +155,7 @@ when voice fragments were coalesced, and keep their own acknowledgement. New tex
 replaces the same assignment, not a separate task. Superseded queued revisions are
 not delivered; already-delivered revisions are corrected explicitly, and late
 publications against an older revision are rejected. Command and publication IDs cannot be repurposed.
-Published results require an acknowledged ID from this bridge; arbitrary host text
+Published results require an acknowledged ID from this bridge, or a task with an authorized source and explicit destination=live; arbitrary host text
 cannot become a voice reply. Validation errors return 400, auth failures 401,
 disallowed origins/hosts 403, missing/detached handles 404, conflicts 409 and
 unsupported commands 422. APIs accept JSON bodies up to 64 KiB.
@@ -170,10 +172,10 @@ abandoned recovery lock require operator inspection, never automatic process kil
 Corrupt or foreign-workspace state is rejected without replacement.
 
 On restart, connection handles are invalidated; reattach to the same conversation.
-Channel readiness and observed host identity must be established anew.
+Channel readiness must be established anew. The persisted native session binding is preserved: the same native ID can resume, while a different ID (or an unbound legacy store) requires authenticated owner acceptance before dispatch. Acceptance acknowledges a context change; it does not restore native history.
 Unfinished task cards remain visible but stale, without controls until reconciled
 by a current leader publication/observation. Queued, never-attempted inputs can be
-dispatched after readiness; uncertain/already-written inputs are not retried.
+dispatched after verified same-session readiness. Accepting a replacement holds queued inputs by default and always holds old queued commands; uncertain/already-written inputs are never retried automatically. Receipt resolution requires a stable operation ID, current generation and expected status. Retrying additionally requires confirmNoExecution:true; acknowledged or linked work cannot be replayed. Abandoning delivery does not cancel execution.
 This preserves delivery ambiguity instead of promising exactly-once execution.
 
 Retention is bounded: 300 visible conversation messages, 100 history entries per
@@ -192,7 +194,7 @@ standard library. They can be used without ClawCode memory, SQLite or Bun:
 
 ```ts
 const bridge = new LiveBridge({
-  workspace, dataDir, token, port: 18792, agent: { id: "claude", name: "Claude" },
+  workspace, dataDir, token, port: 18792, observeHooks: true, agent: { id: "claude", name: "Claude" },
   deliver: message => mcp.notification({ method: "notifications/claude/channel", params: message }),
 });
 await bridge.start();
@@ -220,3 +222,13 @@ They do not certify a paid native Claude Code Channels session or human micropho
 interaction. That acceptance requires an explicitly enabled test host and the
 corresponding Claude Live client. Existing daily installations are not activated by
 this change.
+
+## WhatsApp continuity and remaining limits
+
+Source adoption is an owner HTTP operation, not a model MCP tool. Candidates use the existing private request-envelope contract and explicit ownerJids; envelopes expire after 60 seconds. Each selection rechecks ownership, expiry and revocation. The public reference is an opaque hash, without token, sender, chat ID or message text. It identifies a dispatch, not an imported conversation. Adoption never widens memory scope or grants authority to send WhatsApp messages. A Live turn can still encounter the existing conservative guest execution window; Agent now receives the same deny as Task. This patch does not remove that restriction.
+
+Use live_work with sourceChannel and sourceInputId. After a source input has completed, live_emit can publish a proactive leader.reply or leader.progress using taskId and destination:live. That result is attributed to the task's authorized source; no synthetic voice input is created. Cloudy still decides what public result belongs in Live.
+
+The service wrapper now resolves sessions under CLAUDE_CONFIG_DIR (or ~/.claude). When Live has recorded a verified native host, it resumes that exact ID and refuses an already-running writer, missing transcript, incompatible override, or automatic fresh-session healing. Unpinned legacy services keep their existing continuation policy. No generated service is installed or restarted by this patch. Existing permission flags are preserved.
+
+ClawCode does not yet emit host usage snapshots, relay native approval prompts, or provide Claude Desktop compatibility. A real owner WhatsApp-to-voice pilot, native Channels consent and human interruption testing are still required before daily activation. Current validation adds native-host replacement, receipt recovery, task merging, proactive publications, model-hook sanitization, owner envelope expiry/revocation and a real generated-wrapper process with synthetic transcripts.

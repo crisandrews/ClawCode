@@ -3,7 +3,7 @@ import path from "node:path";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { LiveStore } from "./live-store.ts";
 import { LIVE_TOOLS } from "./live-tools.ts";
-import { LIVE_CAPABILITIES, TERMINAL, type LiveState, type Snapshot, type LiveEvent, type Task, type LiveInput, type LiveCommand } from "./live-types.ts";
+import { LIVE_CAPABILITIES, TERMINAL, type LiveState, type Snapshot, type LiveEvent, type Task, type LiveInput, type LiveCommand, type HostBinding, type ExternalInputProvenance } from "./live-types.ts";
 export { LIVE_TOOLS, LIVE_INSTRUCTIONS } from "./live-tools.ts";
 
 export interface LiveBridgeOptions {
@@ -11,6 +11,9 @@ export interface LiveBridgeOptions {
   agent: { id: string; name: string };
   deliver: (message: { content: string; meta: Record<string, string> }) => Promise<void>;
   observeHooks?: boolean; eventRetention?: number;
+  onHostBinding?: (host: HostBinding) => void;
+  listExternalInputCandidates?: () => Array<{ id: string; sourceChannel: "whatsapp"; occurredAt: string; label: string }> | Promise<Array<{ id: string; sourceChannel: "whatsapp"; occurredAt: string; label: string }>>;
+  resolveExternalInput?: (candidateId: string) => ExternalInputProvenance | null | Promise<ExternalInputProvenance | null>;
 }
 export class LiveError extends Error { constructor(readonly status: number, message: string) { super(message); } }
 const now = () => new Date().toISOString();
@@ -50,6 +53,9 @@ export class LiveBridge {
   private readonly probe = randomUUID();
   private readonly retention: number;
   private ready = false;
+  private probeAcknowledged = false;
+  private readonly generation = randomUUID();
+  private readonly modelCandidates = new Map<string, NonNullable<HostBinding["modelObservation"]>>();
   private running = false;
   private draining = false;
   private sessionId?: string;
@@ -84,6 +90,15 @@ export class LiveBridge {
         conversation: { id: randomUUID(), name: this.options.agent.name, owner: "external", workspace: this.options.workspace, status: "starting", messages: [], queuedInputs: 0, capabilities: { ...LIVE_CAPABILITIES } },
         tasks: {}, inputs: {}, commands: {}, attachments: {}, publications: {}, events: [],
       };
+      // Migrate v1 stores without pretending their public history proves native
+      // session continuity. The operator must accept an unbound legacy store.
+      this.state.boundNativeSessionId ??= saved?.conversation.sessionId;
+      this.state.bindingRequiredForLegacy ??= !!saved && !this.state.boundNativeSessionId;
+      this.state.taskAliases ??= {};
+      this.state.operatorActions ??= {};
+      this.state.externalInputs ??= {};
+      this.state.conversation.capabilities = { ...LIVE_CAPABILITIES, externalInputAdoption: !!this.options.resolveExternalInput && !!this.options.listExternalInputCandidates };
+      this.state.host = { generation: this.generation, bindingStatus: "awaiting_session", previousSessionId: this.state.boundNativeSessionId, reason: "Waiting for the current native session's probe hook" };
       this.state.conversation.status = "starting";
       // Connection handles are ephemeral; durable inputs/tasks belong to the
       // logical conversation, not to a transport from a previous process.
@@ -115,12 +130,25 @@ export class LiveBridge {
     return {
       protocolVersion: 1,
       agent: { ...this.options.agent, sessionId: this.sessionId, workspace: this.options.workspace },
-      capabilities: { ...LIVE_CAPABILITIES, channelReady: this.ready },
+      capabilities: { ...LIVE_CAPABILITIES, channelReady: this.ready, inputReceipts: true, hostRecovery: true, taskAliases: true, taskPublications: true, externalInputAdoption: !!this.options.resolveExternalInput && !!this.options.listExternalInputCandidates },
+      host: structuredClone(this.state.host),
       observations: { hooksEnabled: !!this.options.observeHooks, sessionBound: !!this.sessionId, hooksSeen: [...this.hooksSeen] },
       semantics: { cancel: "request_to_leader", steer: "request_to_leader", delivery: "channel_next_turn", uncertainDelivery: "never_automatically_retried" },
     };
   }
-  snapshot(): Snapshot { return structuredClone({ conversation: this.state.conversation, tasks: Object.values(this.state.tasks), approvals: [] }); }
+  private stateSnapshot(state: LiveState): Snapshot {
+    return structuredClone({ conversation: state.conversation, tasks: Object.values(state.tasks), approvals: [], inputs: Object.values(state.inputs), commands: Object.values(state.commands), host: state.host, taskAliases: state.taskAliases, sources: Object.values(state.externalInputs ?? {}).map(({ sourceInputId, sourceChannel, adoptedAt }) => ({ sourceInputId, sourceChannel, adoptedAt })) });
+  }
+  snapshot(): Snapshot { return this.stateSnapshot(this.state); }
+  private deriveStatus(state: LiveState): void {
+    if (!this.ready || state.host?.bindingStatus !== "verified") { state.conversation.status = state.conversation.status === "offline" ? "offline" : "starting"; return; }
+    const inputs = Object.values(state.inputs).filter(input => !input.supersededBy);
+    const openInput = inputs.some(input => ["queued", "delivery_uncertain", "transport_written", "acknowledged"].includes(input.status));
+    const tasks = Object.values(state.tasks);
+    const waiting = tasks.some(task => task.status === "waiting_permission") || inputs.some(input => input.status === "acknowledged" && input.needsInput);
+    const openCommand = Object.values(state.commands).some(command => ["queued", "delivery_uncertain", "transport_written", "acknowledged"].includes(command.status));
+    state.conversation.status = waiting ? "waiting_permission" : openInput || openCommand || tasks.some(task => !TERMINAL.has(task.status)) ? "working" : "ready";
+  }
   /** Call only after the MCP client initialized; a transport write is NOT readiness. */
   async probeChannel(): Promise<void> {
     if (!this.running || this.ready || Date.now() - this.probeAt < 1000) return;
@@ -136,10 +164,11 @@ export class LiveBridge {
   private change(type: string, data: Record<string, unknown>, mutate: (state: LiveState) => void): LiveEvent {
     const draft = structuredClone(this.state);
     mutate(draft);
+    this.deriveStatus(draft);
     draft.conversation.messages = draft.conversation.messages.slice(-300);
     draft.conversation.queuedInputs = Object.values(draft.inputs).filter(i => !i.supersededBy && ["queued", "delivery_uncertain", "transport_written"].includes(i.status)).length;
     const event: LiveEvent = { id: String(++draft.seq), seq: draft.seq, type, conversationId: draft.conversation.id, at: now(), data,
-      snapshot: structuredClone({ conversation: draft.conversation, tasks: Object.values(draft.tasks), approvals: [] }) };
+      snapshot: this.stateSnapshot(draft) };
     draft.events.push(event); draft.events = draft.events.slice(-this.retention);
     let retainedBytes = 0;
     for (let i = draft.events.length - 1; i >= 0; i--) {
@@ -180,6 +209,22 @@ export class LiveBridge {
     if (url.searchParams.has("token")) throw new LiveError(400, "Tokens must use the Authorization header");
     const route = url.pathname;
     if (req.method === "GET" && route === "/v1/live/capabilities") { this.json(res, 200, this.capabilities()); return; }
+    if (req.method === "POST" && route === "/v1/live/host/recovery") { this.json(res, 200, this.recoverHost(await this.body(req))); return; }
+    if (req.method === "GET" && route === "/v1/live/sources/candidates") {
+      if (!this.options.listExternalInputCandidates || !this.options.resolveExternalInput) throw new LiveError(422, "External source adoption is unavailable");
+      this.json(res, 200, { candidates: await this.options.listExternalInputCandidates() }); return;
+    }
+    if (req.method === "POST" && route === "/v1/live/sources/adopt") {
+      if (!this.options.resolveExternalInput) throw new LiveError(422, "External source adoption is unavailable");
+      const body = await this.body(req); this.requireGeneration(body.expectedGeneration);
+      if (body.conversationId !== this.state.conversation.id) throw new LiveError(409, "Wrong conversation");
+      identifier(body.candidateId, "candidateId");
+      const prior = this.operatorDuplicate(body);
+      if (prior) { this.json(res, 200, prior); return; }
+      const provenance = await this.options.resolveExternalInput(body.candidateId);
+      if (!provenance) throw new LiveError(409, "Source is expired or not a verified owner input");
+      this.json(res, 200, this.adoptExternalInput(body.conversationId, provenance, body)); return;
+    }
     if (req.method === "POST" && route === "/v1/live/probe") { void this.probeChannel(); this.json(res, 202, { status: "pending", channelReady: this.ready }); return; }
     if (req.method === "POST" && route === "/v1/live/hooks") { if (!this.options.observeHooks) throw new LiveError(404, "Hook observations disabled"); this.observeHook(await this.body(req)); this.json(res, 200, { accepted: true }); return; }
     if (req.method === "POST" && route === "/v1/live/attachments") {
@@ -194,9 +239,11 @@ export class LiveBridge {
       });
       this.json(res, 201, { attachmentId: id, conversationId: this.state.conversation.id, cursor: this.state.seq, snapshot: this.snapshot() }); return;
     }
-    const match = /^\/v1\/live\/attachments\/([A-Za-z0-9-]+)(?:\/(inputs|commands|events))?$/.exec(route);
+    const match = /^\/v1\/live\/attachments\/([A-Za-z0-9-]+)(?:\/(inputs|commands|events|snapshot|resolve))?$/.exec(route);
     if (!match) throw new LiveError(404, "Unknown endpoint");
     const [, attachmentId, action] = match; this.attachment(attachmentId);
+    if (req.method === "GET" && action === "snapshot") { this.json(res, 200, { cursor: this.state.seq, snapshot: this.snapshot() }); return; }
+    if (req.method === "POST" && action === "resolve") { this.json(res, 200, this.resolveReceipt(await this.body(req))); return; }
     if (req.method === "DELETE" && !action) {
       this.change("connection.detached", { attachmentId }, s => { s.attachments[attachmentId].active = false; });
       for (const [client, id] of this.clients) if (id === attachmentId) { client.end(); this.clients.delete(client); }
@@ -222,16 +269,103 @@ export class LiveBridge {
     throw new LiveError(405, "Method not allowed");
   }
 
+  private requireGeneration(value: unknown): void {
+    if (value !== this.generation) throw new LiveError(409, "Host generation changed; refresh the authoritative snapshot");
+  }
+  private canonicalTaskId(id: string): string {
+    const seen = new Set<string>();
+    while (own(this.state.taskAliases ?? {}, id)) {
+      if (seen.has(id)) throw new LiveError(409, "Invalid task alias cycle");
+      seen.add(id); id = this.state.taskAliases![id];
+    }
+    return id;
+  }
+  private operatorDuplicate(body: Record<string, any>): { duplicate: true; snapshot: Snapshot } | undefined {
+    identifier(body.id, "operation id");
+    const allowed = new Set(["id", "expectedGeneration", "nativeSessionId", "action", "acknowledgeContextChange", "pendingInputs", "inputId", "commandId", "revision", "expectedStatus", "confirmNoExecution", "conversationId", "candidateId"]);
+    if (Object.keys(body).some(key => !allowed.has(key))) throw new LiveError(400, "Unexpected operator argument");
+    const previous = this.state.operatorActions![body.id];
+    if (previous) {
+      if (previous !== fingerprint(body)) throw new LiveError(409, "Operator operation ID already has different content");
+      return { duplicate: true, snapshot: this.snapshot() };
+    }
+    if (Object.keys(this.state.operatorActions!).length >= 10000) throw new LiveError(507, "Operator operation retention limit reached");
+  }
+  private publishHostBinding(): void {
+    try { this.options.onHostBinding?.(structuredClone(this.state.host!)); } catch { /* Observation callback must not alter a durable binding. */ }
+  }
+  private recoverHost(body: Record<string, any>) {
+    this.requireGeneration(body.expectedGeneration);
+    const duplicate = this.operatorDuplicate(body); if (duplicate) return duplicate;
+    const host = this.state.host!;
+    if (body.action !== "accept_replacement" || body.acknowledgeContextChange !== true) throw new LiveError(400, "Explicit owner acknowledgement of context change is required");
+    if (!this.probeAcknowledged || !host.nativeSessionId || body.nativeSessionId !== host.nativeSessionId || host.bindingStatus !== "recovery_required") throw new LiveError(409, "No matching proven native host is awaiting replacement");
+    if (body.pendingInputs !== undefined && !["hold", "resume"].includes(body.pendingInputs)) throw new LiveError(400, "Invalid pending input policy");
+    this.ready = true;
+    try {
+      this.change("connection.recovered", { channelReady: true, evidence: "authenticated_owner_replacement", pendingInputs: body.pendingInputs ?? "hold" }, state => {
+        state.operatorActions![body.id] = fingerprint(body);
+        state.boundNativeSessionId = host.nativeSessionId; state.bindingRequiredForLegacy = false;
+        state.host = { ...host, bindingStatus: "verified", reason: undefined, verifiedAt: now() };
+        state.conversation.status = "ready";
+        for (const input of Object.values(state.inputs)) if (input.status === "queued" && body.pendingInputs !== "resume") input.status = "held";
+        // Cancellation/steer requests describe a previous execution. Never
+        // replay those against a replacement just because inputs were resumed.
+        for (const command of Object.values(state.commands)) if (command.status === "queued") command.status = "held";
+      });
+    } catch (error) { this.ready = false; throw error; }
+    this.publishHostBinding(); void this.drain();
+    return { recovered: true, snapshot: this.snapshot() };
+  }
+  private resolveReceipt(body: Record<string, any>) {
+    this.requireGeneration(body.expectedGeneration);
+    const duplicate = this.operatorDuplicate(body); if (duplicate) return duplicate;
+    if (!!body.inputId === !!body.commandId) throw new LiveError(400, "Provide exactly one inputId or commandId");
+    const input = !!body.inputId, id = identifier(body.inputId ?? body.commandId);
+    const key = input ? inputKey(id, revision(body.revision)) : id;
+    const item = (input ? this.state.inputs : this.state.commands)[key];
+    if (!item) throw new LiveError(404, "Receipt not found");
+    if (body.expectedStatus !== item.status) throw new LiveError(409, "Receipt status changed; refresh before resolving");
+    if (!["queued", "held", "delivery_uncertain", "transport_written"].includes(item.status) || item.acknowledgedAt) throw new LiveError(409, "Acknowledged or terminal work cannot be replayed or abandoned as an undelivered input");
+    if (!["retry_confirmed_not_received", "abandon"].includes(body.action)) throw new LiveError(400, "Unsupported receipt resolution");
+    if (body.action === "retry_confirmed_not_received") {
+      if (body.confirmNoExecution !== true || !this.ready) throw new LiveError(409, "Retry requires a verified host and explicit owner confirmation of no execution");
+      if (input && (this.state.inputs[key].supersededBy || Object.values(this.state.tasks).some(task => task.sourceInputId === id || task.id === this.canonicalTaskId(this.state.inputs[key].taskId ?? "")))) throw new LiveError(409, "Input is superseded or has linked work; reconcile that work first");
+    }
+    this.change(`${input ? "input" : "command"}.resolved`, { [`${input ? "input" : "command"}Id`]: id, revision: item.revision, action: body.action, cancellation: false }, state => {
+      state.operatorActions![body.id] = fingerprint(body);
+      const receipt = (input ? state.inputs : state.commands)[key];
+      receipt.status = body.action === "abandon" ? "abandoned" : "queued"; receipt.resolvedAt = now();
+      state.conversation.messages.push({ id: `resolution:${body.id}`, role: "system", text: body.action === "abandon" ? "Owner abandoned an unconfirmed request. This does not cancel or undo any work." : "Owner confirmed this request was not executed and explicitly requested delivery again.", at: now(), kind: "notice", inputId: input ? id : undefined, revision: item.revision });
+    });
+    void this.drain(); return { resolved: true, snapshot: this.snapshot() };
+  }
+  /** Only trusted server adapters/owner HTTP may call this; it is not an MCP tool. */
+  adoptExternalInput(conversationId: string, provenance: ExternalInputProvenance, operation?: Record<string, any>) {
+    if (conversationId !== this.state.conversation.id || provenance.sourceChannel !== "whatsapp" || provenance.ownerVerified !== true) throw new LiveError(409, "Verified owner provenance for this conversation is required");
+    const sourceInputId = identifier(provenance.sourceInputId, "sourceInputId");
+    const existing = this.state.externalInputs![sourceInputId];
+    if (existing && existing.sourceChannel !== provenance.sourceChannel) throw new LiveError(409, "Source ID already has different provenance");
+    if (!existing && Object.keys(this.state.externalInputs!).length >= 10000) throw new LiveError(507, "External source retention limit reached");
+    this.change("source.adopted", { sourceInputId, sourceChannel: provenance.sourceChannel, evidence: "authenticated_owner_adoption" }, state => {
+      state.externalInputs![sourceInputId] ??= { sourceInputId, sourceChannel: "whatsapp", ownerVerified: true, conversationId, adoptedAt: now() };
+      if (operation) state.operatorActions![operation.id] = fingerprint(operation);
+    });
+    return { sourceInputId, conversationId, adopted: true };
+  }
+
   private acceptInput(attachmentId: string, body: Record<string, any>) {
+    if (body.expectedGeneration !== undefined) this.requireGeneration(body.expectedGeneration);
     const input: LiveInput = { id: identifier(body.id), text: string(body.text, "text"), revision: revision(body.revision), origin: body.origin,
-      delegationId: optionalId(body.delegationId, "delegationId"), taskId: optionalId(body.taskId, "taskId") };
+      delegationId: optionalId(body.delegationId, "delegationId"), taskId: body.taskId === undefined ? undefined : this.canonicalTaskId(identifier(body.taskId, "taskId")) };
     if (!["voice", "web"].includes(input.origin)) throw new LiveError(400, "Invalid origin");
     if (input.taskId && !own(this.state.tasks, input.taskId)) throw new LiveError(404, "Unknown task");
     const key = inputKey(input.id, input.revision), prior = this.state.inputs[key];
     if (prior) {
-      const { conversationId, attachmentId: _, at, status, supersededBy, ...original } = prior;
+      const { conversationId, status } = prior;
+      const original: LiveInput = { id: prior.id, text: prior.text, revision: prior.revision, origin: prior.origin, delegationId: prior.delegationId, taskId: prior.taskId };
       if (fingerprint(original) !== fingerprint(input)) throw new LiveError(409, "Input ID/revision already has different content");
-      return { inputId: input.id, revision: input.revision, conversationId, status: ["acknowledged", "completed", "failed"].includes(status) ? "acknowledged" : "queued" };
+      return { inputId: input.id, revision: input.revision, conversationId, status: ["acknowledged", "completed", "failed"].includes(status) ? "acknowledged" : "queued", receiptStatus: status, hostGeneration: this.generation };
     }
     const revisions = Object.values(this.state.inputs).filter(i => i.id === input.id).map(i => i.revision);
     if (input.revision <= Math.max(0, ...revisions)) throw new LiveError(409, "Input revisions must increase");
@@ -239,7 +373,7 @@ export class LiveBridge {
     this.change("input.queued", { inputId: input.id, revision: input.revision, origin: input.origin, delegationId: input.delegationId }, s => {
       for (const previous of Object.values(s.inputs)) if (previous.id === input.id) {
         previous.supersededBy = input.revision;
-        if (previous.status === "queued") previous.status = "superseded";
+        if (["queued", "held"].includes(previous.status)) previous.status = "superseded";
       }
       s.inputs[key] = { ...input, conversationId: s.conversation.id, attachmentId, at: now(), status: "queued" };
       s.conversation.messages.push({ id: `input:${key}`, role: "user", text: input.text, at: now(), inputId: input.id, revision: input.revision });
@@ -248,13 +382,15 @@ export class LiveBridge {
     return { inputId: input.id, revision: input.revision, conversationId: this.state.conversation.id, status: "queued" };
   }
   private acceptCommand(attachmentId: string, body: Record<string, any>) {
+    if (body.expectedGeneration !== undefined) this.requireGeneration(body.expectedGeneration);
     if (!["steer", "cancel"].includes(body.kind)) throw new LiveError(422, "Unsupported command; approvals and model changes remain in the host");
-    const cmd: LiveCommand = { id: identifier(body.id), kind: body.kind, taskId: identifier(body.taskId, "taskId"), revision: revision(body.revision ?? 1) };
+    const cmd: LiveCommand = { id: identifier(body.id), kind: body.kind, taskId: this.canonicalTaskId(identifier(body.taskId, "taskId")), revision: revision(body.revision ?? 1) };
     if (body.text !== undefined) cmd.text = string(body.text, "text");
     if (cmd.kind === "steer" && !cmd.text) throw new LiveError(400, "Steer requires text");
     const prior = this.state.commands[cmd.id];
     if (prior) {
-      const { conversationId, attachmentId: _, at, status, ...original } = prior;
+      const { conversationId, status } = prior;
+      const original: LiveCommand = { id: prior.id, kind: prior.kind, taskId: this.canonicalTaskId(prior.taskId!), revision: prior.revision, text: prior.text };
       if (fingerprint(original) !== fingerprint(cmd)) throw new LiveError(409, "Command ID already has different content");
       return { commandId: cmd.id, status: ["completed", "rejected"].includes(status) ? status : "pending", conversationId };
     }
@@ -282,7 +418,7 @@ export class LiveBridge {
         const { record, category } = next;
         const key = category === "input" ? inputKey(record.id, record.revision!) : record.id;
         // Durable intent BEFORE transport: a crash/timeout never causes blind replay.
-        this.change(`${category}.delivery_started`, { [`${category}Id`]: record.id, revision: record.revision }, s => { (category === "input" ? s.inputs : s.commands)[key].status = "delivery_uncertain"; });
+        this.change(`${category}.delivery_started`, { [`${category}Id`]: record.id, revision: record.revision }, s => { const item = (category === "input" ? s.inputs : s.commands)[key]; item.status = "delivery_uncertain"; item.deliveryGeneration = this.generation; item.deliveryNativeSessionId = this.sessionId; });
         try {
           await this.options.deliver({ content: JSON.stringify({ kind: category, ...record, status: undefined, attachmentId: undefined,
             ...(category === "input" ? { revisionSemantics: "Full replacement text for the same input ID; correct the existing assignment, do not start duplicate work" } : {}) }),
@@ -319,20 +455,20 @@ export class LiveBridge {
   private ack(args: Record<string, any>) {
     if (args.probe !== undefined) {
       if (args.probe !== this.probe || args.inputId || args.commandId) throw new LiveError(409, "Invalid channel probe");
-      if (!this.ready) {
-        this.ready = true;
-        try { this.change("connection.ready", { channelReady: true, evidence: "leader_probe_ack" }, s => { s.conversation.status = "ready"; }); }
-        catch (error) { this.ready = false; throw error; }
+      if (!this.probeAcknowledged) {
+        this.probeAcknowledged = true;
+        try { this.change("connection.probe_acknowledged", { channelReady: this.ready, evidence: "leader_probe_ack", nativeSessionVerificationRequired: !this.ready }, () => {}); }
+        catch (error) { this.probeAcknowledged = false; throw error; }
       }
-      void this.drain(); return { channelReady: true, conversationId: this.state.conversation.id };
+      return { channelReady: this.ready, conversationId: this.state.conversation.id, host: structuredClone(this.state.host) };
     }
     if (!!args.inputId === !!args.commandId) throw new LiveError(400, "Provide exactly one inputId or commandId");
     const rev = revision(args.revision), category = args.inputId ? "input" : "command";
     const id = identifier(args.inputId ?? args.commandId), key = category === "input" ? inputKey(id, rev) : id;
     const item = (category === "input" ? this.state.inputs : this.state.commands)[key];
-    if (!this.ready || !item || item.revision !== rev || item.status === "queued" || item.status === "superseded") throw new LiveError(409, "ID/revision was not delivered to this leader");
+    if (!this.ready || !item || item.revision !== rev || ["queued", "held", "superseded", "abandoned"].includes(item.status) || item.deliveryGeneration !== this.generation && item.deliveryNativeSessionId !== this.sessionId) throw new LiveError(409, "ID/revision was not delivered to this leader");
     if (["delivery_uncertain", "transport_written"].includes(item.status)) this.change(`${category}.acknowledged`, { [`${category}Id`]: id, revision: rev }, s => {
-      (category === "input" ? s.inputs : s.commands)[key].status = "acknowledged"; s.conversation.status = "working";
+      const receipt = (category === "input" ? s.inputs : s.commands)[key]; receipt.status = "acknowledged"; receipt.acknowledgedAt = now();
     });
     return { [`${category}Id`]: id, revision: rev, status: "acknowledged", conversationId: item.conversationId };
   }
@@ -350,42 +486,97 @@ export class LiveBridge {
     if (!["leader.reply", "leader.progress", "leader.needs_input", "input.completed", "input.failed", "command.completed", "command.rejected"].includes(type)) throw new LiveError(400, "Invalid publication type");
     return this.publication(args, () => {
       if (!this.ready) throw new LiveError(409, "Current leader channel is not ready");
+      if (args.destination !== undefined && args.destination !== "live") throw new LiveError(400, "Only the live destination is supported");
+      if (args.taskId !== undefined) {
+        if (args.inputId || args.commandId || args.destination !== "live" || !["leader.reply", "leader.progress"].includes(type)) throw new LiveError(400, "A proactive task publication requires taskId, destination live and reply/progress only");
+        const taskId = this.canonicalTaskId(identifier(args.taskId, "taskId"));
+        const task = this.state.tasks[taskId];
+        if (!task?.sourceInputId || !task.sourceChannel) throw new LiveError(409, "Task has no authorized input provenance");
+        if (task.sourceChannel === "whatsapp") {
+          if (!own(this.state.externalInputs!, task.sourceInputId)) throw new LiveError(409, "Task source has not been adopted by the owner");
+        } else {
+          const input = this.state.inputs[inputKey(task.sourceInputId, task.sourceRevision ?? 0)];
+          if (!input || input.supersededBy || !["acknowledged", "completed"].includes(input.status)) throw new LiveError(409, "Task source is not a current acknowledged input");
+        }
+        this.change(type, { id: args.id, taskId, destination: "live", sourceChannel: task.sourceChannel, sourceInputId: task.sourceInputId, text }, state => {
+          state.publications[args.id] = fingerprint(args);
+          state.conversation.messages.push({ id: args.id, role: "assistant", text, at: now(), taskId, sourceChannel: task.sourceChannel, sourceInputId: task.sourceInputId, destination: "live", kind: type === "leader.progress" ? "progress" : "reply" });
+        });
+        return { id: args.id, taskId, published: true };
+      }
       const command = type.startsWith("command.");
       const id = identifier(command ? args.commandId : args.inputId), rev = command ? undefined : revision(args.revision);
       const item = command ? this.state.commands[id] : this.state.inputs[inputKey(id, rev!)];
       if (!item || !["acknowledged", "completed", "failed", "rejected"].includes(item.status)) throw new LiveError(409, "Explicit acknowledged input/command attribution required");
+      if (item.deliveryGeneration !== this.generation && item.deliveryNativeSessionId !== this.sessionId) throw new LiveError(409, "Input/command belongs to another native host execution");
       if (!command && this.state.inputs[inputKey(id, rev!)].supersededBy) throw new LiveError(409, "Input revision has been superseded; publish against the current acknowledged revision");
       this.change(type, { id: args.id, inputId: command ? undefined : id, revision: rev, commandId: command ? id : undefined, text }, s => {
         s.publications[args.id] = fingerprint(args);
         if (command) s.commands[id].status = type === "command.completed" ? "completed" : "rejected";
         else if (type.startsWith("input.")) s.inputs[inputKey(id, rev!)].status = type === "input.completed" ? "completed" : "failed";
+        if (!command) s.inputs[inputKey(id, rev!)].needsInput = type === "leader.needs_input";
         s.conversation.messages.push({ id: args.id, role: "assistant", text, at: now(), inputId: command ? undefined : id, revision: rev, kind: type === "leader.progress" ? "progress" : type === "leader.reply" ? "reply" : "notice" });
-        if (type === "leader.needs_input") s.conversation.status = "waiting_permission";
-        else if (type === "input.completed" || type === "input.failed") s.conversation.status = Object.values(s.tasks).some(t => !TERMINAL.has(t.status)) ? "working" : "ready";
       });
       return { id: args.id, published: true };
     });
   }
-  private work(args: Record<string, any>, source = "leader_explicit") {
-    const taskId = identifier(args.taskId, "taskId"), progress = string(args.progress, "progress", 4000);
+  private work(rawArgs: Record<string, any>, source = "leader_explicit") {
+    const taskId = this.canonicalTaskId(identifier(rawArgs.taskId, "taskId"));
+    const args: Record<string, any> = { ...rawArgs, taskId, ...(rawArgs.parentTaskId ? { parentTaskId: this.canonicalTaskId(identifier(rawArgs.parentTaskId, "parentTaskId")) } : {}) };
+    const progress = string(args.progress, "progress", 4000);
     if (args.conversationId !== this.state.conversation.id) throw new LiveError(409, "Explicit current conversationId is required");
+    if (source !== "native_hook" && !this.ready) throw new LiveError(409, "Native host verification is required before publishing work");
     if (args.status !== undefined && !taskStates.has(args.status)) throw new LiveError(400, "Invalid task status");
-    for (const key of ["parentTaskId", "nativeId", "executionId"]) if (args[key] !== undefined) identifier(args[key], key);
+    for (const key of ["parentTaskId", "nativeId", "executionId", "sourceInputId"]) if (args[key] !== undefined) identifier(args[key], key);
     for (const key of ["title", "prompt", "result", "error", "model"]) if (args[key] !== undefined) string(args[key], key, key === "title" ? 300 : 16000);
     if (args.parentTaskId && (args.parentTaskId === taskId || !own(this.state.tasks, args.parentTaskId))) throw new LiveError(409, "Unknown or self parent task");
-    if (args.nativeId && Object.values(this.state.tasks).some(t => t.nativeId === args.nativeId && t.id !== taskId)) throw new LiveError(409, "Native task ID already mapped; update its existing taskId");
+    let ancestor = args.parentTaskId;
+    const ancestry = new Set<string>([taskId]);
+    while (ancestor) { if (ancestry.has(ancestor)) throw new LiveError(409, "Task parent cycle"); ancestry.add(ancestor); ancestor = this.state.tasks[ancestor]?.parentTaskId; }
+    const previous = this.state.tasks[taskId];
+    const mapped = args.nativeId && Object.values(this.state.tasks).find(task => task.nativeId === args.nativeId && task.id !== taskId);
+    if (mapped && (args.parentTaskId === mapped.id || previous?.parentTaskId === mapped.id)) throw new LiveError(409, "Task merge would create a parent cycle");
+    if (mapped && (mapped.publicationSource !== "native_hook" || previous?.nativeId && previous.nativeId !== args.nativeId)) throw new LiveError(409, "Native task ID already mapped to another logical task");
+    if (previous?.sourceInputId && args.sourceInputId && previous.sourceInputId !== args.sourceInputId) throw new LiveError(409, "A task's source input is immutable");
+    if (previous?.sourceChannel && args.sourceChannel && previous.sourceChannel !== args.sourceChannel) throw new LiveError(409, "A task's source channel is immutable");
+    if (!!args.sourceInputId !== !!args.sourceChannel) throw new LiveError(400, "Provide sourceInputId and sourceChannel together");
+    if (args.sourceInputId) {
+      if (args.sourceChannel === "whatsapp") {
+        if (!own(this.state.externalInputs!, args.sourceInputId)) throw new LiveError(409, "External source requires authenticated owner adoption");
+      } else if (["voice", "web"].includes(args.sourceChannel)) {
+        const input = Object.values(this.state.inputs).find(input => input.id === args.sourceInputId && !input.supersededBy);
+        if (!input || input.origin !== args.sourceChannel || !["acknowledged", "completed"].includes(input.status)) throw new LiveError(409, "Live source requires an acknowledged current input");
+        args.sourceRevision = input.revision;
+      } else throw new LiveError(400, "Unsupported source channel");
+    }
     return this.publication(args, () => {
-      if (!own(this.state.tasks, taskId) && Object.keys(this.state.tasks).length >= 500) throw new LiveError(507, "Task retention limit reached");
-      const type = args.status && TERMINAL.has(args.status) ? "work.ended" : own(this.state.tasks, taskId) ? "work.activity" : "work.started";
-      this.change(type, { taskId, id: args.id, source, progress, status: args.status ?? this.state.tasks[taskId]?.status ?? "running" }, s => {
-        s.publications[args.id] = fingerprint(args);
-        const task: Task = s.tasks[taskId] ?? { id: taskId, title: args.title ?? taskId, prompt: args.prompt ?? "", workspace: this.options.workspace, status: "running", createdAt: now(), updatedAt: now(), revision: 0, progress: "", history: [], owner: "external", conversationId: s.conversation.id, controls: { steer: true, cancel: true, resume: false } };
-        for (const key of ["title", "prompt", "status", "parentTaskId", "nativeId", "executionId", "result", "error", "model"] as const) if (args[key] !== undefined) (task as any)[key] = args[key];
+      if (!previous && !mapped && Object.keys(this.state.tasks).length >= 500) throw new LiveError(507, "Task retention limit reached");
+      const type = args.status && TERMINAL.has(args.status) ? "work.ended" : previous || mapped ? "work.activity" : "work.started";
+      this.change(type, { taskId, id: args.id, source, progress, status: args.status ?? previous?.status ?? mapped?.status ?? "running", ...(mapped ? { mergedAlias: mapped.id } : {}) }, state => {
+        state.publications[args.id] = fingerprint(args);
+        const task: Task = state.tasks[taskId] ?? { ...(mapped ? structuredClone(mapped) : {}), id: taskId, title: args.title ?? mapped?.title ?? taskId, prompt: args.prompt ?? mapped?.prompt ?? "", workspace: this.options.workspace, status: mapped?.status ?? "running", createdAt: mapped?.createdAt ?? now(), updatedAt: now(), revision: mapped?.revision ?? 0, progress: mapped?.progress ?? "", history: mapped?.history ?? [], owner: "external", conversationId: state.conversation.id, controls: { steer: true, cancel: true, resume: false } };
+        if (mapped) {
+          const histories = [...task.history, ...mapped.history];
+          task.history = [...new Map(histories.map(entry => [entry.id, entry])).values()].sort((a, b) => a.at.localeCompare(b.at));
+          task.revision = Math.max(task.revision, mapped.revision);
+          task.aliases = [...new Set([...(task.aliases ?? []), ...(mapped.aliases ?? []), mapped.id])];
+          task.createdAt = task.createdAt < mapped.createdAt ? task.createdAt : mapped.createdAt;
+          if (task.status === "queued" && mapped.status !== "queued") task.status = mapped.status;
+          task.parentTaskId ??= mapped.parentTaskId;
+          task.sourceInputId ??= mapped.sourceInputId; task.sourceChannel ??= mapped.sourceChannel; task.sourceRevision ??= mapped.sourceRevision;
+          for (const alias of task.aliases) state.taskAliases![alias] = taskId;
+          for (const [alias, canonical] of Object.entries(state.taskAliases!)) if (canonical === mapped.id) state.taskAliases![alias] = taskId;
+          for (const other of Object.values(state.tasks)) if (other.parentTaskId === mapped.id) other.parentTaskId = taskId;
+          for (const input of Object.values(state.inputs)) if (input.taskId === mapped.id) input.taskId = taskId;
+          for (const command of Object.values(state.commands)) if (command.taskId === mapped.id) command.taskId = taskId;
+          delete state.tasks[mapped.id];
+        }
+        for (const key of ["title", "prompt", "status", "parentTaskId", "nativeId", "executionId", "result", "error", "model", "sourceChannel", "sourceInputId", "sourceRevision"] as const) if (args[key] !== undefined) (task as any)[key] = args[key];
+        task.publicationSource = source === "native_hook" && task.publicationSource !== "leader_explicit" ? "native_hook" : "leader_explicit";
         task.progress = progress; task.revision++; task.updatedAt = now(); task.observedAt = now(); task.stale = false;
         task.sessionId = this.sessionId; task.controls = { steer: !TERMINAL.has(task.status), cancel: !TERMINAL.has(task.status), resume: false };
         task.history.push({ id: args.id, at: now(), kind: task.status === "failed" ? "error" : TERMINAL.has(task.status) ? "result" : "progress", text: progress }); task.history = task.history.slice(-100);
-        s.tasks[taskId] = task;
-        s.conversation.status = Object.values(s.tasks).some(t => !TERMINAL.has(t.status)) ? "working" : this.ready ? "ready" : "starting";
+        state.tasks[taskId] = task;
       });
       return { id: args.id, taskId, published: true };
     });
@@ -395,20 +586,41 @@ export class LiveBridge {
   observeHook(raw: Record<string, any>): void {
     if (!this.options.observeHooks) throw new LiveError(404, "Hook observations disabled");
     const event = string(raw.event, "event", 60), session = identifier(raw.sessionId, "sessionId");
-    if (event === "PostToolUse" && raw.probe === this.probe && this.ready) {
+    if (["SessionStart", "PostModelSwitch"].includes(event) && typeof raw.model === "string") {
+      const observation: NonNullable<HostBinding["modelObservation"]> = { model: string(raw.model, "model", 180), event: event as "SessionStart" | "PostModelSwitch", observedAt: now(), evidence: "native_hook", ...(typeof raw.runtimeVersion === "string" ? { runtimeVersion: string(raw.runtimeVersion, "runtimeVersion", 100) } : {}) };
+      if (this.modelCandidates.size >= 100 && !this.modelCandidates.has(session)) this.modelCandidates.delete(this.modelCandidates.keys().next().value!);
+      this.modelCandidates.set(session, observation);
+      if (this.state.host?.nativeSessionId === session && this.ready) {
+        this.change("host.model_observed", { sessionId: session, ...observation }, state => { state.host!.modelObservation = observation; state.conversation.model = observation.model; });
+        this.hooksSeen.add(event); this.publishHostBinding();
+      }
+      return;
+    }
+    if (event === "PostToolUse" && raw.probe === this.probe && this.probeAcknowledged) {
       if (this.sessionId && this.sessionId !== session) throw new LiveError(409, "Hook belongs to another host session");
-      this.sessionId = session; this.hooksSeen.add(event);
-      this.change("connection.session_bound", { sessionId: session, source: "probe_tool_hook" }, s => { s.conversation.sessionId = session; }); return;
+      const previous = this.state.boundNativeSessionId;
+      const verified = !this.state.bindingRequiredForLegacy && (!previous || previous === session);
+      this.sessionId = session; this.hooksSeen.add(event); this.ready = verified;
+      try {
+        this.change(verified ? "connection.session_bound" : "connection.recovery_required", { sessionId: session, channelReady: verified, source: "probe_tool_hook" }, state => {
+          state.conversation.sessionId = session; state.conversation.status = "starting";
+          state.host = { generation: this.generation, nativeSessionId: session, previousSessionId: previous, bindingStatus: verified ? "verified" : "recovery_required", reason: verified ? undefined : previous ? "Native session differs from the persisted leader" : "Legacy store has no verified native session", verifiedAt: verified ? now() : undefined, modelObservation: this.modelCandidates.get(session) };
+          if (verified) state.boundNativeSessionId = session;
+          if (state.host.modelObservation) state.conversation.model = state.host.modelObservation.model;
+        });
+      } catch (error) { this.ready = false; throw error; }
+      this.publishHostBinding(); if (verified) void this.drain(); return;
     }
     if (!this.sessionId || session !== this.sessionId) return;
     const allowed = new Set(["SubagentStart", "SubagentStop", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SessionEnd"]);
     if (!allowed.has(event)) return;
     this.hooksSeen.add(event);
     if (event === "SessionEnd") {
-      this.ready = false;
-      this.change("connection.host_ended", { sessionId: session, channelReady: false }, s => { s.conversation.status = "offline"; for (const task of Object.values(s.tasks)) if (!TERMINAL.has(task.status)) { task.stale = true; task.controls = { steer: false, cancel: false, resume: false }; } }); return;
+      this.ready = false; this.probeAcknowledged = false;
+      this.change("connection.host_ended", { sessionId: session, channelReady: false }, s => { s.conversation.status = "offline"; s.host!.bindingStatus = "awaiting_session"; s.host!.reason = "Native host session ended"; for (const task of Object.values(s.tasks)) if (!TERMINAL.has(task.status)) { task.stale = true; task.controls = { steer: false, cancel: false, resume: false }; } }); this.publishHostBinding(); return;
     }
     if (event === "Stop") { this.change("leader.turn_ended", { source: "hook", tasksMayContinue: true }, () => {}); return; }
+    if (!this.ready) return;
     if (!raw.agentId) return; // Main-session tool activity has no unambiguous work attribution.
     const nativeId = identifier(raw.agentId, "agentId");
     const existing = Object.values(this.state.tasks).find(t => t.nativeId === nativeId);

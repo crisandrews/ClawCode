@@ -17,7 +17,7 @@
       "format": "esm"
     },
     "lib/channel-detector.ts": {
-      "bytes": 21403,
+      "bytes": 21949,
       "imports": [
         {
           "path": "fs",
@@ -180,7 +180,7 @@
       "format": "esm"
     },
     "lib/scope/runtime.ts": {
-      "bytes": 18400,
+      "bytes": 18995,
       "imports": [
         {
           "path": "node:fs",
@@ -284,7 +284,7 @@
       "format": "esm"
     },
     "lib/scope/exec-gate.ts": {
-      "bytes": 23793,
+      "bytes": 23834,
       "imports": [
         {
           "path": "node:crypto",
@@ -532,7 +532,7 @@
           "bytesInOutput": 794
         },
         "lib/scope/exec-gate.ts": {
-          "bytesInOutput": 9899
+          "bytesInOutput": 9908
         },
         "lib/scope/envelope.ts": {
           "bytesInOutput": 5661
@@ -544,7 +544,7 @@
           "bytesInOutput": 3840
         }
       },
-      "bytes": 61958
+      "bytes": 61967
     }
   }
 }

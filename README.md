@@ -209,6 +209,8 @@ channel. Steer/cancel are requests to the leader; native outcomes remain explici
 
 Setup, wire contract and validation limits: [`docs/live-bridge.md`](docs/live-bridge.md).
 
+LiveBridge also records the verified native session, exposes delivery recovery, merges native task cards, and supports owner-adopted WhatsApp task publications. It remains opt-in and requires a native probe hook as well as the leader ACK. See the [continuity limits](docs/live-bridge.md#whatsapp-continuity-and-remaining-limits) before using it with a daily agent.
+
 ### [Messaging channels](#messaging-channels)
 
 Reach your agent from WhatsApp, Telegram, Discord, iMessage, or Slack. Each messaging plugin is an independent MCP server — no conflicts with ClawCode.

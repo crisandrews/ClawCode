@@ -67,14 +67,14 @@ export const EXEC_GATE_DEFAULT_LOOKBACK_MS = 60_000;
  *  armed + non-owner-in-window. Two distinct reasons:
  *   - `Bash`: shell command grammar is too rich to safely parse
  *     (`tee`, `dd of=`, heredocs, process substitution).
- *   - `Task`: spawns a Claude Code subagent. Hook propagation to
+ *   - `Task` / `Agent`: legacy and current names for a Claude Code subagent. Hook propagation to
  *     subagents is not guaranteed by Claude Code's PreToolUse
  *     contract — if hooks don't fire inside the subagent, every
  *     channel-triggered turn could spawn a subagent that bypasses
  *     the gate entirely. Hard-denying `Task` under armed closes
  *     the bypass unconditionally (Codex Step 2 pre-impl C: don't
  *     defer this to tier3 manual testing). */
-export const HARD_DENY_TOOLS_UNDER_ARMED = new Set(["Bash", "Task"]);
+export const HARD_DENY_TOOLS_UNDER_ARMED = new Set(["Bash", "Task", "Agent"]);
 
 /** Default destructive tools blocked by `denylist` policy when armed +
  *  non-owner-in-window. User can override via `execGate.tools`. */

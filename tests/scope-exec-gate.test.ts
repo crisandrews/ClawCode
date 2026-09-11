@@ -619,6 +619,26 @@ check("F0 Task hard-deny under armed + non-owner (subagent bypass closure)", () 
   });
 });
 
+check("F0b Agent hard-deny matches legacy Task for both policies and hook registration", () => {
+  const cd = mkChannelDir();
+  try {
+    writeEnvelope(cd, freshTok(), { senderId: NON_OWNER_JID });
+    withTrustDir(() => {
+      for (const policy of ["allowlist", "denylist"] as const) {
+        const armed = armedWA(cd, { policy, tools: policy === "allowlist" ? ["Agent", "Read"] : [] });
+        const result = resolve(baseInput("Agent", { description: "delegate", run_in_background: true }, [armed]));
+        assert(result.decision === "block", `${policy}: Agent must be hard denied`);
+      }
+      const ownerOnly = armedWA(cd, {}, [NON_OWNER_JID]);
+      assert(resolve(baseInput("Agent", {}, [ownerOnly])).decision === "allow", "owner behavior must stay unchanged");
+    });
+    const hooks = JSON.parse(fs.readFileSync(new URL("../hooks/hooks.json", import.meta.url), "utf8"));
+    const gate = hooks.hooks.PreToolUse.find((entry: any) => entry.hooks.some((hook: any) => hook.command.includes("exec-gate-pretool")));
+    assert(new RegExp(`^(?:${gate.matcher})$`).test("Agent"), "native Agent must invoke the execution gate hook");
+    assert(new RegExp(`^(?:${gate.matcher})$`).test("Task"), "legacy Task hook remains registered");
+  } finally { fs.rmSync(cd, { recursive: true, force: true }); }
+});
+
 check("F1 Bash hard-deny under armed + non-owner regardless of command content", () => {
   const cd = mkChannelDir();
   writeEnvelope(cd, freshTok(), { senderId: NON_OWNER_JID });

@@ -8,9 +8,14 @@ import { pathToFileURL } from "node:url";
 
 export function sanitizeHook(payload) {
   if (!payload || typeof payload !== "object" || typeof payload.session_id !== "string") return null;
-  const allowed = new Set(["SubagentStart", "SubagentStop", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SessionEnd"]);
+  const allowed = new Set(["SessionStart", "PostModelSwitch", "SubagentStart", "SubagentStop", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SessionEnd"]);
   if (!allowed.has(payload.hook_event_name)) return null;
   const result = { id: randomUUID(), event: payload.hook_event_name, sessionId: payload.session_id };
+  if (["SessionStart", "PostModelSwitch"].includes(payload.hook_event_name)) {
+    const model = payload.hook_event_name === "PostModelSwitch" ? payload.to_model : payload.model;
+    if (typeof model !== "string" || !model.trim() || model.length > 180) return null;
+    result.model = model;
+  }
   if (typeof payload.agent_id === "string") result.agentId = payload.agent_id;
   // Only the probe's PostToolUse can bind the host session. No other tool args,
   // tool results, paths, commands, message text, or channel tokens are retained.

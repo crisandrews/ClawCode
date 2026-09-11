@@ -1,5 +1,5 @@
 {
-  "description": "Agent lifecycle hooks — identity injection, cron reconcile, PostToolUse cron capture, memory flush, session summary.",
+  "description": "Agent lifecycle hooks \u2014 identity injection, cron reconcile, PostToolUse cron capture, memory flush, session summary.",
   "hooks": {
     "SessionStart": [
       {
@@ -11,6 +11,15 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scope-trust-legacy-warn.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/live-observe.mjs\"",
+            "timeout": 2
           }
         ]
       }
@@ -26,7 +35,7 @@
         ]
       },
       {
-        "matcher": "Bash|Edit|Write|NotebookEdit|MultiEdit|Task|mcp__.*",
+        "matcher": "Bash|Edit|Write|NotebookEdit|MultiEdit|Task|Agent|mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -69,7 +78,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '[clawcode] Context nearing compaction. Save important information from this conversation to memory/'$(date +%Y-%m-%d)'.md — APPEND only, do not overwrite existing entries. If nothing to save, skip.'"
+            "command": "echo '[clawcode] Context nearing compaction. Save important information from this conversation to memory/'$(date +%Y-%m-%d)'.md \u2014 APPEND only, do not overwrite existing entries. If nothing to save, skip.'"
           }
         ]
       }
@@ -135,6 +144,17 @@
       }
     ],
     "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/live-observe.mjs\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostModelSwitch": [
       {
         "hooks": [
           {

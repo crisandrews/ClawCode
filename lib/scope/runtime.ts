@@ -440,6 +440,17 @@ export function resolveWhatsappChannelDir(
   return path.dirname(result.accessPath);
 }
 
+/** Governance location for an explicit Live source selection. Independent of
+ * memory-scope mode; never fall back to a different project's local install.
+ * This locates the file only: the Live source reader validates owner + envelope.
+ */
+export function resolveWhatsappLiveChannelDir(config: AgentConfig, workspaceRoot: string): string | null {
+  const cfg = { ...(config.scope?.whatsapp ?? {}), cwdExactMatchOnly: true };
+  const result = resolveAccessPath(cfg, workspaceRoot);
+  if (!result || !path.isAbsolute(result.accessPath)) return null;
+  return path.dirname(result.accessPath);
+}
+
 /**
  * Codex round-4 MEDIUM: mode-independent channel-dir discovery for the
  * exec-gate's always-on protected-paths classifier. Unlike

@@ -1,4 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { createWhatsappLiveSources } from "./lib/scope/live-source.ts";
+import { resolveWhatsappLiveChannelDir } from "./lib/scope/runtime.ts";
+import { saveVerifiedHostSession } from "./lib/host-session.ts";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
@@ -515,6 +518,13 @@ function _loadBootstrapFilesInner(): string {
   sections.push("For long-term curated memory, update memory/MEMORY.md.");
   sections.push("");
 
+  if (liveBridge) {
+    sections.push("## Live conversation and background work\n");
+    sections.push("A voice interface is attached to this same leader. For independent work that may take time, use native Agent with run_in_background when the host supports it, publish its public task state, and stay available for the next input. Never claim background execution before a native task exists; do not create a second coordinator.");
+    sections.push("Voice stop/disconnect ends audio only. Keep delegated work alive and publish meaningful outcomes through Live, including after the user's initial turn has ended. The task retains the source input and revision that created it; an unrelated later message does not change its destination or authority.");
+    sections.push("WhatsApp-to-Live source adoption requires an explicit authenticated browser-owner action. An envelope proves the source dispatch, not the identity of the current MCP caller. Never use a remembered owner envelope to authorize another turn. Live source adoption does not unlock WhatsApp memory scope, send WhatsApp messages, or import history. If scope refuses memory, explain the limitation and preserve the refusal.\n");
+  }
+
   // -- Session summary
   sections.push("## Session Summary\n");
   sections.push(
@@ -815,10 +825,14 @@ if (config.liveBridge?.enabled === true) {
   try {
     const tokenEnv = config.liveBridge.tokenEnv ?? "CLAWCODE_LIVE_TOKEN";
     if (!/^[A-Z_][A-Z0-9_]*$/.test(tokenEnv)) throw new Error("Invalid LiveBridge tokenEnv");
+    const whatsappLiveSources = createWhatsappLiveSources({ workspace: WORKSPACE, channelDirectory: () => resolveWhatsappLiveChannelDir(getLiveConfig(), WORKSPACE) });
     liveBridge = new LiveBridge({
       workspace: path.resolve(WORKSPACE), dataDir: path.join(path.resolve(WORKSPACE), ".clawcode-live"),
       token: process.env[tokenEnv] ?? "", port: config.liveBridge.port ?? 18791,
       agent: { id: "clawcode", name: "ClawCode" }, observeHooks: config.liveBridge.observeHooks === true,
+      onHostBinding: host => saveVerifiedHostSession(WORKSPACE, host),
+      listExternalInputCandidates: whatsappLiveSources.list,
+      resolveExternalInput: whatsappLiveSources.resolve,
       deliver: async message => {
         await server.notification({ method: "notifications/claude/channel", params: message });
       },
@@ -1011,6 +1025,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           skipPermissions: {
             type: "boolean",
             description: "Append --dangerously-skip-permissions to the launch command (default: false — user must opt in)",
+          },
+          liveChannelTarget: {
+            type: "string",
+            pattern: "^(plugin:[A-Za-z0-9._-]+@[A-Za-z0-9._-]+|server:[A-Za-z0-9._-]+)$",
+            description: "Optional actual installed Live channel target, e.g. plugin:agent@clawcode or server:clawcode. Included only when liveBridge.enabled is already true; never enables Live or changes permissions.",
           },
         },
       },
@@ -1707,6 +1726,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "channels_detect") {
     const format = String(params.format || "table");
     const channels = detectChannels();
+    const liveLaunchTarget = getLiveConfig().liveBridge?.enabled === true ? String(params.liveChannelTarget || "plugin:agent@clawcode") : undefined;
 
     if (format === "json") {
       return {
@@ -1718,6 +1738,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const cmd = buildLaunchCommand(channels, {
         includeInstalledOnly: Boolean(params.includeInstalledOnly),
         skipPermissions: Boolean(params.skipPermissions),
+        liveChannelTarget: liveLaunchTarget,
       });
       return { content: [{ type: "text", text: cmd }] };
     }
@@ -1726,12 +1747,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const cmd = buildLaunchCommand(channels, {
       includeInstalledOnly: Boolean(params.includeInstalledOnly),
       skipPermissions: Boolean(params.skipPermissions),
+      liveChannelTarget: liveLaunchTarget,
     });
     return {
       content: [
         {
           type: "text",
-          text: `📡 Messaging channels\n\n${table}\n\n--- Launch command ---\n\n${cmd}`,
+          text: `📡 Messaging channels\n\n${table}\n\nLive: ${liveLaunchTarget ? `opted in (${liveLaunchTarget}); ${liveBridge?.capabilities().capabilities.channelReady ? "channel probe acknowledged" : "channel readiness unconfirmed"}. Use the same Claude session and preserve its WhatsApp flags. Source adoption requires browser owner selection; no history import or memory-scope unlock.` : "disabled"}\n\n--- Launch command ---\n\n${cmd}`,
         },
       ],
     };

@@ -1,4 +1,4 @@
-/* scope-exec-gate-bundle@6746382947b167b20b0638973fafeaeb9435430043063497cfea8c4b3c517a30 */
+/* scope-exec-gate-bundle@6eb6122182e33972b33e4d8d73ef99d0b29f6d640bee60f5d13bd67cff059fe0 */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -1287,7 +1287,7 @@ function releaseLock(lockDir) {
 // lib/scope/exec-gate.ts
 var EXEC_GATE_HOOK_VERSION = 1;
 var EXEC_GATE_DEFAULT_LOOKBACK_MS = 6e4;
-var HARD_DENY_TOOLS_UNDER_ARMED = /* @__PURE__ */ new Set(["Bash", "Task"]);
+var HARD_DENY_TOOLS_UNDER_ARMED = /* @__PURE__ */ new Set(["Bash", "Task", "Agent"]);
 var DEFAULT_DENYLIST_TOOLS = [
   "Bash",
   "Write",
