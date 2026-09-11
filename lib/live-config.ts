@@ -26,6 +26,7 @@ import { PRIVILEGED_PATH_KEYS } from "./scope/agent-config-guard.ts";
 // ---------------------------------------------------------------------------
 
 export const CRITICAL_KEYS = [
+  "liveBridge",
   "memory.backend",
   "memory.extraPaths",
   "http.enabled",

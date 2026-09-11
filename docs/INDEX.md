@@ -25,6 +25,7 @@ Master index of every capability. The agent reads this first when it needs to re
 | Feature | Doc | Config key | Default | Notes |
 |---|---|---|---|---|
 | HTTP bridge | [http-bridge.md](http-bridge.md) | `http.enabled` | `false` | Local HTTP server for status, webhooks, skills |
+| LiveBridge | [live-bridge.md](live-bridge.md) | `liveBridge.enabled` | `false` | Existing leader voice channel, durable receipts and public task progress; loopback bearer required |
 | Webhooks | [webhooks.md](webhooks.md) | `http.enabled` | `false` | External systems POST events to the agent (CI/CD, Cloudflare, IoT) |
 | WebChat | [webchat.md](webchat.md) | `http.enabled` | `false` | Browser chat UI served by the HTTP bridge |
 | Always-on service | [service.md](service.md) | — (installed via skill) | not installed | Run agent as launchd / systemd service 24/7 |

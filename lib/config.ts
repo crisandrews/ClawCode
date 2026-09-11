@@ -52,6 +52,16 @@ export interface ScopeConfigTree {
 }
 
 export interface AgentConfig {
+  /** Live input/progress adapter for this leader. Disabled unless explicitly enabled. */
+  liveBridge?: {
+    enabled?: boolean;
+    /** Fixed loopback binding; no public bind option. Default: 18791. */
+    port?: number;
+    /** Environment variable name, never a credential value. */
+    tokenEnv?: string;
+    /** Observe sanitized native hooks after the Channels probe binds a session. */
+    observeHooks?: boolean;
+  };
   /** HTTP bridge — optional local HTTP server for webhooks, status, and API access */
   http?: {
     /** Enable the HTTP bridge (default: false) */
@@ -206,6 +216,7 @@ export function loadConfig(pluginRoot: string): AgentConfig {
     const parsed = JSON.parse(raw);
     // Deep merge with defaults
     return {
+      liveBridge: parsed.liveBridge ? { ...parsed.liveBridge } : undefined,
       http: parsed.http ? { ...parsed.http } : undefined,
       voice: parsed.voice ? { ...parsed.voice } : undefined,
       memoryContext: parsed.memoryContext ? { ...parsed.memoryContext } : undefined,

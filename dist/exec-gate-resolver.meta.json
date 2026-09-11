@@ -1,7 +1,7 @@
 {
   "inputs": {
     "lib/config.ts": {
-      "bytes": 13962,
+      "bytes": 14465,
       "imports": [
         {
           "path": "fs",
@@ -502,7 +502,7 @@
           "bytesInOutput": 6815
         },
         "lib/config.ts": {
-          "bytesInOutput": 3303
+          "bytesInOutput": 3376
         },
         "lib/scope/runtime.ts": {
           "bytesInOutput": 5402
@@ -544,7 +544,7 @@
           "bytesInOutput": 3840
         }
       },
-      "bytes": 61885
+      "bytes": 61958
     }
   }
 }

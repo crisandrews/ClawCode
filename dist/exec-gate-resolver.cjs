@@ -1,4 +1,4 @@
-/* scope-exec-gate-bundle@e43a73d82e4fb81a29971b18ba789d99c835f00a12ccb1e2eaa7f0b0df167167 */
+/* scope-exec-gate-bundle@6746382947b167b20b0638973fafeaeb9435430043063497cfea8c4b3c517a30 */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -48,6 +48,7 @@ function loadConfig(pluginRoot) {
     const raw = import_fs.default.readFileSync(configPath, "utf-8");
     const parsed = JSON.parse(raw);
     return {
+      liveBridge: parsed.liveBridge ? { ...parsed.liveBridge } : void 0,
       http: parsed.http ? { ...parsed.http } : void 0,
       voice: parsed.voice ? { ...parsed.voice } : void 0,
       memoryContext: parsed.memoryContext ? { ...parsed.memoryContext } : void 0,

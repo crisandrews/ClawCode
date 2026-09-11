@@ -21,6 +21,7 @@ import {
 } from "./lib/doctor.ts";
 import { DreamEngine } from "./lib/dreaming.ts";
 import { HttpBridge, HTTP_DEFAULTS } from "./lib/http-bridge.ts";
+import { LiveBridge, LIVE_TOOLS, LIVE_INSTRUCTIONS } from "./lib/live-bridge.ts";
 import { getMemoryContext } from "./lib/memory-context.ts";
 import {
   buildLaunchCommand,
@@ -809,12 +810,33 @@ function buildWatchdogPing(): WatchdogPingResponse {
 // MCP Server
 // ---------------------------------------------------------------------------
 
-const instructions = loadBootstrapFiles();
+let liveBridge: LiveBridge | null = null;
+if (config.liveBridge?.enabled === true) {
+  try {
+    const tokenEnv = config.liveBridge.tokenEnv ?? "CLAWCODE_LIVE_TOKEN";
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(tokenEnv)) throw new Error("Invalid LiveBridge tokenEnv");
+    liveBridge = new LiveBridge({
+      workspace: path.resolve(WORKSPACE), dataDir: path.join(path.resolve(WORKSPACE), ".clawcode-live"),
+      token: process.env[tokenEnv] ?? "", port: config.liveBridge.port ?? 18791,
+      agent: { id: "clawcode", name: "ClawCode" }, observeHooks: config.liveBridge.observeHooks === true,
+      deliver: async message => {
+        await server.notification({ method: "notifications/claude/channel", params: message });
+      },
+    });
+    await liveBridge.start();
+  } catch {
+    // Keep existing ClawCode behavior available, without leaking credential values.
+    console.error("[clawcode] LiveBridge unavailable: verify local opt-in config, token environment, port and .clawcode-live/owner.lock. No bridge was enabled.");
+    liveBridge = null;
+  }
+}
+const instructions = loadBootstrapFiles() + (liveBridge ? LIVE_INSTRUCTIONS : "");
+if (liveBridge) MCP_TOOL_DIRECTORY.push(...LIVE_TOOLS.map(({ name, description }) => ({ name, description })));
 
 const server = new Server(
   { name: "clawcode", version: "1.0.0" },
   {
-    capabilities: { tools: {}, logging: {} },
+    capabilities: { tools: {}, logging: {}, ...(liveBridge ? { experimental: { "claude/channel": {} } } : {}) },
     instructions,
   }
 );
@@ -822,6 +844,7 @@ const server = new Server(
 // -- Tools list
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
+    ...(liveBridge ? LIVE_TOOLS : []),
     {
       name: "memory_search",
       description:
@@ -1240,6 +1263,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   const params = (args || {}) as Record<string, any>;
+
+  if (liveBridge && LIVE_TOOLS.some(tool => tool.name === name)) {
+    try { return { content: [{ type: "text", text: JSON.stringify(liveBridge.callTool(name, params)) }] }; }
+    catch (error) { return { content: [{ type: "text", text: error instanceof Error ? error.message : "LiveBridge tool failed" }], isError: true }; }
+  }
 
   if (name === "memory_search") {
     const query = String(params.query || "");
@@ -2115,6 +2143,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // ---------------------------------------------------------------------------
 
 const transport = new StdioServerTransport();
+server.oninitialized = () => { void liveBridge?.probeChannel(); };
+server.onclose = () => { void liveBridge?.close(); };
 await server.connect(transport);
 
 // Watch agent-config.json — non-critical changes apply live; critical changes

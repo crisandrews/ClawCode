@@ -199,6 +199,16 @@ Every browser tab gets its own `sessionId` (UUID v4, persisted in `localStorage`
 
 Full details: [`docs/webchat.md`](docs/webchat.md) · [`docs/http-bridge.md`](docs/http-bridge.md)
 
+### LiveBridge (optional)
+
+Attach a local voice application to the existing ClawCode leader through Channels,
+with durable input receipts, attributed replies and a live task board. The leader
+keeps its normal delegation; the bridge creates no workers or WhatsApp connection.
+Requires explicit configuration, a loopback bearer token and an enabled custom
+channel. Steer/cancel are requests to the leader; native outcomes remain explicit.
+
+Setup, wire contract and validation limits: [`docs/live-bridge.md`](docs/live-bridge.md).
+
 ### [Messaging channels](#messaging-channels)
 
 Reach your agent from WhatsApp, Telegram, Discord, iMessage, or Slack. Each messaging plugin is an independent MCP server — no conflicts with ClawCode.
