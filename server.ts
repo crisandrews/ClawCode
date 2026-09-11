@@ -25,6 +25,7 @@ import {
 import { DreamEngine } from "./lib/dreaming.ts";
 import { HttpBridge, HTTP_DEFAULTS } from "./lib/http-bridge.ts";
 import { LiveBridge, LIVE_TOOLS, LIVE_INSTRUCTIONS } from "./lib/live-bridge.ts";
+import { LIVE_LEADER_POLICY_INSTRUCTIONS } from "./lib/live-tools.ts";
 import { getMemoryContext } from "./lib/memory-context.ts";
 import {
   buildLaunchCommand,
@@ -829,6 +830,7 @@ if (config.liveBridge?.enabled === true) {
     liveBridge = new LiveBridge({
       workspace: path.resolve(WORKSPACE), dataDir: path.join(path.resolve(WORKSPACE), ".clawcode-live"),
       token: process.env[tokenEnv] ?? "", port: config.liveBridge.port ?? 18791,
+      leaderPolicy: config.liveBridge.leaderPolicy,
       agent: { id: "clawcode", name: "ClawCode" }, observeHooks: config.liveBridge.observeHooks === true,
       onHostBinding: host => saveVerifiedHostSession(WORKSPACE, host),
       listExternalInputCandidates: whatsappLiveSources.list,
@@ -844,7 +846,7 @@ if (config.liveBridge?.enabled === true) {
     liveBridge = null;
   }
 }
-const instructions = loadBootstrapFiles() + (liveBridge ? LIVE_INSTRUCTIONS : "");
+const instructions = loadBootstrapFiles() + (liveBridge ? LIVE_INSTRUCTIONS + (config.liveBridge?.leaderPolicy?.enabled === true ? LIVE_LEADER_POLICY_INSTRUCTIONS : "") : "");
 if (liveBridge) MCP_TOOL_DIRECTORY.push(...LIVE_TOOLS.map(({ name, description }) => ({ name, description })));
 
 const server = new Server(
@@ -1790,6 +1792,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       logPath,
       resumeOnRestart,
       selfHeal,
+      leaderPolicy: getLiveConfig().liveBridge?.enabled === true ? getLiveConfig().liveBridge?.leaderPolicy : undefined,
     });
 
     return {

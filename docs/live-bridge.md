@@ -1,5 +1,75 @@
 # LiveBridge: voice attached to the existing leader
 
+## Optional conversational leader policy
+
+Add this nested setting to the existing opt-in `liveBridge` block:
+
+```json
+{
+  "liveBridge": {
+    "enabled": true,
+    "leaderPolicy": { "enabled": true, "maxConcurrent": 3 }
+  }
+}
+```
+
+Preserve the existing port, token environment, hook and channel settings. The
+default remains off. Regenerate the service plan and apply it through the normal
+operator-controlled service installation flow; this setting does not restart an
+existing session. The generated wrapper reads the workspace configuration before
+launch, checks the actual Claude binary's `--version` against the conservative
+minimum **2.1.232**, and sets `CLAUDE_CODE_FORK_SUBAGENT=1` plus
+`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=3`. An invalid positive-integer limit,
+unrecognized/older runtime or enabled `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`
+refuses that launch. The existing permission arguments remain unchanged.
+
+The synchronous native `PreToolUse` hook keeps the main session available for
+dialogue by denying operational tools, blocking waits, agent teams and unknown
+MCP tools there. Operational work goes to native background/fork subagents.
+Their native `agent_id` lets them pass this additional leader gate, while all
+existing permission and execution/scope gates still apply. Every pass returns
+`{}`; this hook never returns an `allow` permission decision. It does not depend on
+the HTTP bridge, network, or a model call.
+
+The main session may use unnamed native `Agent`/`Task`, direct `SendMessage`,
+`TaskOutput` with **`block:false`**, task coordination, `AskUserQuestion`, and the
+four exact ClawCode `live_*` tool names and the existing exact WhatsApp
+`mcp__whatsapp__reply` / `mcp__whatsapp__react` names. `leaderPolicy.coordinationTools` can add
+exact bounded tool names; wildcards are rejected, and additions cannot override
+the restrictions on foreground agents, teams or blocking TaskOutput. A custom
+MCP registration with different names needs those exact names configured. This
+gate does not authorize sending messages to other people.
+
+The two existing WhatsApp reply/react names retain their ordinary permission
+flow so a guest can still receive a reply while the execution gate blocks Agent.
+For a different channel registration/prefix, the operator must review the exact
+reply tool and add only that name to `coordinationTools` if appropriate. Ordinary
+destination, owner and send-authorization checks still apply. Tool passthrough
+does not enforce cross-channel routing by itself. Never enable a whole MCP server
+or wildcard merely to make the main agent's calls pass.
+
+The concurrency value is a **native new-spawn admission limit**. At capacity,
+Claude rejects a new Agent call; it does not automatically queue the job.
+Cloudy should publish the unstarted assignment as `queued`, return to dialogue,
+and explicitly admit it later when capacity is available. `SendMessage` can
+resume a stopped subagent without going through that new-spawn limit, so the
+setting is not a hard ceiling over every active/resumed agent. Team and other
+execution modes are deliberately excluded from this policy. The native behavior
+is documented in [the concurrent subagent limit](https://code.claude.com/docs/en/sub-agents#concurrent-subagent-limit)
+and [fork mode](https://code.claude.com/docs/en/sub-agents#turn-fork-mode-on-or-off).
+
+Capabilities report the configured policy and `native_spawn_limit` semantics.
+`hookObserved` and `runtimeConfirmed` remain false until independently observed;
+configuration and a version preflight do not certify a paid interactive run.
+Existing manual hosts must restart with the corresponding native environment and
+a supported runtime. If the main hook sees missing/mismatched flags, Agent is
+denied rather than silently falling back to foreground execution.
+
+`npm run test:live` includes spawned native-hook fixtures and generated service
+wrappers. These checks cover main/worker separation, normal permission passthrough,
+foreground/team/blocking denial, limits and version validation, inactive behavior,
+and background-disable conflicts without starting a real Claude conversation.
+
 LiveBridge lets a local voice application such as Claude Live converse with the
 current ClawCode session and observe its work. ClawCode retains its identity,
 memory, permissions and asynchronous delegation. The bridge does not start Claude
@@ -189,8 +259,8 @@ recover using their cursor.
 
 ## Reuse in another Claude Code MCP host
 
-The four `lib/live-{bridge,store,types,tools}.ts` modules depend only on Node's
-standard library. They can be used without ClawCode memory, SQLite or Bun:
+The four `lib/live-{bridge,store,types,tools}.ts` modules plus the pure
+`hooks/live-leader-policy.mjs` helper (and its `.d.mts` declaration) depend only on Node's standard library. They can be used without ClawCode memory, SQLite or Bun:
 
 ```ts
 const bridge = new LiveBridge({

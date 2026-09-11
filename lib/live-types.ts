@@ -24,7 +24,11 @@ export interface ConversationState {
   id: string; name: string; owner: "external"; sessionId?: string; workspace: string;
   status: "offline" | "starting" | "ready" | "working" | "waiting_permission" | "error";
   model?: string; messages: ConversationMessage[]; queuedInputs: number;
-  capabilities: { tasks: boolean; steer: boolean; cancel: boolean; approvals: boolean; modelChange: boolean; externalInputAdoption?: boolean };
+  capabilities: { tasks: boolean; steer: boolean; cancel: boolean; approvals: boolean; modelChange: boolean; externalInputAdoption?: boolean; leaderPolicy?: LeaderPolicyState };
+}
+export interface LeaderPolicyState {
+  configured: boolean; hookObserved: boolean; runtimeConfirmed: boolean; maxConcurrent: number;
+  limitSemantics: "native_spawn_limit"; resumedAgentsCounted: false; automaticQueue: false;
 }
 export interface HostBinding {
   generation: string;

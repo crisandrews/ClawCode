@@ -61,6 +61,14 @@ export interface AgentConfig {
     tokenEnv?: string;
     /** Observe sanitized native hooks after the Channels probe binds a session. */
     observeHooks?: boolean;
+    /** Keep the main session conversational; native workers retain ordinary capabilities. */
+    leaderPolicy?: {
+      enabled?: boolean;
+      /** Native new-Agent spawn ceiling; overflow errors, no automatic queue. */
+      maxConcurrent?: number;
+      /** Exact bounded tool names additionally allowed through the leader gate. */
+      coordinationTools?: string[];
+    };
   };
   /** HTTP bridge — optional local HTTP server for webhooks, status, and API access */
   http?: {

@@ -45,3 +45,21 @@ controls are unsupported by this bridge; normal host permissions still apply.
 `;
 
 // Adoption and host replacement deliberately remain owner HTTP operations.
+
+export const LIVE_LEADER_POLICY_INSTRUCTIONS = `
+The operator enabled the conversational leader policy. Keep the main session
+available for dialogue: publish live_work before delegation, delegate operational
+work through native background/fork Agent, and return to the conversation. Workers
+retain their normal tools and permissions. Do not use foreground Agent, agent
+teams, blocking TaskOutput, Bash, file edits, or slow MCP operations in this leader.
+Use TaskOutput(block:false) only for a bounded check; do not poll in a loop.
+The configured concurrency value is a native NEW-SPAWN limit, not a complete
+running-worker limit. SendMessage can resume a stopped subagent and that path is
+not counted by the new-spawn admission limit. Avoid using continuation to exceed
+the owner's intended concurrent work. Capacity errors do not create an automatic
+queue: publish the unstarted assignment as queued, explain that it is waiting, and
+return to dialogue. Admission of queued work remains an explicit later leader
+action after capacity is available; do not claim it started or promise a timer.
+The policy hook returns no permission grant. Existing tool permissions, owner
+identity checks and channel scope gates continue to apply to every tool and worker.
+`;

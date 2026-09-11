@@ -26,6 +26,15 @@
     ],
     "PreToolUse": [
       {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/live-leader-pretool.mjs\"",
+            "timeout": 2
+          }
+        ]
+      },
+      {
         "matcher": "CronCreate",
         "hooks": [
           {

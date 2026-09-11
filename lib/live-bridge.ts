@@ -3,7 +3,8 @@ import path from "node:path";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { LiveStore } from "./live-store.ts";
 import { LIVE_TOOLS } from "./live-tools.ts";
-import { LIVE_CAPABILITIES, TERMINAL, type LiveState, type Snapshot, type LiveEvent, type Task, type LiveInput, type LiveCommand, type HostBinding, type ExternalInputProvenance } from "./live-types.ts";
+import { normalizeLeaderPolicy, type LeaderPolicy } from "../hooks/live-leader-policy.mjs";
+import { LIVE_CAPABILITIES, TERMINAL, type LiveState, type Snapshot, type LiveEvent, type Task, type LiveInput, type LiveCommand, type HostBinding, type ExternalInputProvenance, type LeaderPolicyState } from "./live-types.ts";
 export { LIVE_TOOLS, LIVE_INSTRUCTIONS } from "./live-tools.ts";
 
 export interface LiveBridgeOptions {
@@ -11,6 +12,7 @@ export interface LiveBridgeOptions {
   agent: { id: string; name: string };
   deliver: (message: { content: string; meta: Record<string, string> }) => Promise<void>;
   observeHooks?: boolean; eventRetention?: number;
+  leaderPolicy?: LeaderPolicy;
   onHostBinding?: (host: HostBinding) => void;
   listExternalInputCandidates?: () => Array<{ id: string; sourceChannel: "whatsapp"; occurredAt: string; label: string }> | Promise<Array<{ id: string; sourceChannel: "whatsapp"; occurredAt: string; label: string }>>;
   resolveExternalInput?: (candidateId: string) => ExternalInputProvenance | null | Promise<ExternalInputProvenance | null>;
@@ -64,6 +66,7 @@ export class LiveBridge {
   private exitHandler = () => this.store.close();
 
   constructor(private readonly options: LiveBridgeOptions) {
+    normalizeLeaderPolicy(options.leaderPolicy);
     if (typeof options.token !== "string" || options.token.length < 32) throw new Error("LiveBridge requires an environment bearer token of at least 32 characters");
     if (!path.isAbsolute(options.workspace) || !path.isAbsolute(options.dataDir)) throw new Error("LiveBridge requires absolute workspace and dataDir");
     identifier(options.agent.id, "agent.id"); string(options.agent.name, "agent.name", 120);
@@ -126,18 +129,23 @@ export class LiveBridge {
     await new Promise<void>(resolve => this.server.close(() => resolve()));
     process.off("exit", this.exitHandler); this.store.close();
   }
+  private leaderPolicyState(): LeaderPolicyState {
+    const policy = normalizeLeaderPolicy(this.options.leaderPolicy);
+    return { configured: policy.enabled, maxConcurrent: policy.maxConcurrent, hookObserved: false, runtimeConfirmed: false, limitSemantics: "native_spawn_limit", resumedAgentsCounted: false, automaticQueue: false };
+  }
   capabilities() {
     return {
       protocolVersion: 1,
       agent: { ...this.options.agent, sessionId: this.sessionId, workspace: this.options.workspace },
       capabilities: { ...LIVE_CAPABILITIES, channelReady: this.ready, inputReceipts: true, hostRecovery: true, taskAliases: true, taskPublications: true, externalInputAdoption: !!this.options.resolveExternalInput && !!this.options.listExternalInputCandidates },
       host: structuredClone(this.state.host),
+      leaderPolicy: this.leaderPolicyState(),
       observations: { hooksEnabled: !!this.options.observeHooks, sessionBound: !!this.sessionId, hooksSeen: [...this.hooksSeen] },
       semantics: { cancel: "request_to_leader", steer: "request_to_leader", delivery: "channel_next_turn", uncertainDelivery: "never_automatically_retried" },
     };
   }
   private stateSnapshot(state: LiveState): Snapshot {
-    return structuredClone({ conversation: state.conversation, tasks: Object.values(state.tasks), approvals: [], inputs: Object.values(state.inputs), commands: Object.values(state.commands), host: state.host, taskAliases: state.taskAliases, sources: Object.values(state.externalInputs ?? {}).map(({ sourceInputId, sourceChannel, adoptedAt }) => ({ sourceInputId, sourceChannel, adoptedAt })) });
+    return structuredClone({ conversation: { ...state.conversation, capabilities: { ...state.conversation.capabilities, leaderPolicy: this.leaderPolicyState() } }, tasks: Object.values(state.tasks), approvals: [], inputs: Object.values(state.inputs), commands: Object.values(state.commands), host: state.host, taskAliases: state.taskAliases, sources: Object.values(state.externalInputs ?? {}).map(({ sourceInputId, sourceChannel, adoptedAt }) => ({ sourceInputId, sourceChannel, adoptedAt })) });
   }
   snapshot(): Snapshot { return this.stateSnapshot(this.state); }
   private deriveStatus(state: LiveState): void {
