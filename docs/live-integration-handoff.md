@@ -23,7 +23,16 @@ npm run build:hook
 npm test
 ```
 
-Use the PR diff to review `lib/live-*`, `lib/host-session.ts`, `lib/service-generator.ts`, the opt-in configuration and native hooks. Review the existing scope gate regression separately from the new conversational restriction. ClaudeLive vendors the shared bridge and pure policy helper; changed relative imports are the only intended source differences.
+Use the PR diff to review `lib/live-*`, `lib/host-session.ts`, `lib/service-generator.ts`, the opt-in configuration and native hooks. Review the existing scope gate regression separately from the new conversational restriction. ClaudeLive vendors these modules with local imports, plus application-specific extensions for principal tool activity and its CLI channel handshake. The wire protocol remains LiveBridge v1; the copies are not identical. Both now distinguish publication from audio playback and suppress a second spoken answer for `input.completed`. See ClaudeLive's [upstream provenance](https://github.com/crisandrews/ClaudeLive/blob/main/src/server/bridge/README.md) for the pinned revision and remaining local differences.
+
+CI runs both `npm test` and `npm run test:live` on Ubuntu and macOS. To exercise the current ClaudeLive adapter against this actual ClawCode checkout, use a ClaudeLive checkout containing the cross-repository contract fixture:
+
+```sh
+cd /path/to/ClaudeLive
+CLAUDE_LIVE_TEST_CLAWCODE_ROOT=/path/to/ClawCode-review ./node_modules/.bin/tsx --test tests/bridge-integration.test.ts
+```
+
+The fixture uses temporary stores, synthetic native hooks and loopback listeners on available ports. It does not launch the ClawCode MCP server or touch an installed Cloudy workspace.
 
 The tests use isolated workspaces, synthetic native events and generated launcher processes. They do not send WhatsApp, enable a daily service, or certify human voice interaction. ClaudeLive additionally validates the managed native callback against a real isolated Claude process; that is evidence for the managed mode, not the Cloudy Channels pilot.
 
@@ -51,6 +60,31 @@ Supply the bridge credential through the named environment variable; never commi
 
 Connect ClaudeLive to that host's loopback bridge using its credential. Readiness requires both the leader's probe ACK and the corresponding native hook. A public policy setting describes configuration; `hookObserved:false` or `runtimeConfirmed:false` must not be presented as tested runtime enforcement. The reported `tools` and `directToolsAllowed` fields describe the effective policy. `host_native` preserves the normal permission path for current and future installed tools. Only the optional strict mode needs reviewed `coordinationTools` exceptions; these are not wildcard permission grants.
 
+### One Cloudy session, two input channels
+
+The native session loads its existing WhatsApp channel and ClawCode's Live channel together. For the standard plugin names, preserve these entries in its launch arguments:
+
+```sh
+CLAUDE_CODE_FORK_SUBAGENT=1 CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=6 \
+  claude --dangerously-load-development-channels plugin:whatsapp@claude-whatsapp \
+  --dangerously-load-development-channels plugin:agent@clawcode
+```
+
+This manual example matches the policy limit of 6 above. Preserve the existing session selection, other channel flags, authentication and permission options when adapting it to a test host; do not launch a second owner of the same daily workspace. Bare MCP registrations use `server:<registered-name>` instead of the corresponding plugin entry. The development bypass applies to each listed entry, and native consent and organization policy still apply. Channels queue inputs into the same session and can group them while the leader is busy; they do not create simultaneous foreground turns. [Channels reference](https://code.claude.com/docs/en/channels-reference#notification-format).
+
+`channels_detect` can generate both channel flags when Live is already opted in. `service_plan` preserves flags provided in `extraArgs`; enabling `liveBridge` does not automatically add the Live channel to an existing service. Include both entries when regenerating that service, together with its existing arguments:
+
+```json
+{
+  "extraArgs": [
+    "--dangerously-load-development-channels", "plugin:whatsapp@claude-whatsapp",
+    "--dangerously-load-development-channels", "plugin:agent@clawcode"
+  ]
+}
+```
+
+Launch the ClaudeLive web through its [standalone setup](https://github.com/crisandrews/ClaudeLive#readme), then select the external-agent mode and configure `http://127.0.0.1:18791` plus the backend credential. ClawCode owns this bridge. Alternatively, the ClaudeLive plugin can launch the web with `connect_session:false`; that setting avoids attaching its separate native-session bridge on port 18792. Do not enable an additional `plugin:claude-live@claude-live` input channel to give the same Cloudy a second Live bridge. A web created by the ClaudeLive plugin follows that CLI's lifetime; a standalone web has its own process lifetime. Disconnecting the voice attachment itself does not stop Cloudy or its tasks.
+
 ## Acceptance in the real host
 
 1. An owner sends a WhatsApp task that runs long enough to overlap another turn. It receives its ordinary WhatsApp reply.
@@ -66,6 +100,7 @@ Connect ClaudeLive to that host's loopback bridge using its credential. Readines
 - **Native admission queue:** Claude rejects spawns at capacity. This PR does not implement durable automatic admission of those pending jobs. `SendMessage` can resume completed subagents outside the native spawn cap; user commands and separate runtime features also have exceptions. It is not a universal resource quota. [Native concurrency semantics](https://code.claude.com/docs/en/sub-agents#concurrent-subagent-limit).
 - **Response destinations:** Live publications have attributable sources and `live_emit` sends only to Live. There is not yet a universal runtime rule across all WhatsApp and voice tools enforcing each turn's response destination. Sharing a WhatsApp source also needs separate controls for context sharing versus voice notifications.
 - **Immediate voice status:** task snapshots are available independently of a model turn, but a natural-language status question still goes to the leader. A trusted voice status path that does not wait for it remains to be implemented.
+- **Native task reconciliation:** the board contains work explicitly published with `live_work` or observed through this bridge's native hooks. It does not enumerate agents that started before binding, and terminal cards are not reopened by late hooks. The leader must republish verified existing/resumed work with its stable native identity. Main-session tool activity is not yet projected by ClawCode's collector; it must not become an invented delegated task.
 - **Source-bound memory:** WhatsApp envelope TTL remains 60 seconds. Retrieve permitted context in the originating turn and preserve source attribution for delegated work; delayed jobs must not borrow a newer owner token or bypass an expired-token refusal. Host-native tool access does not widen scoped memory.
 - **Runtime verification:** command hooks can fail open if they cannot start or time out; conflicting managed/project environment settings also need validation in the target host. This policy is an execution workflow, not an OS sandbox or an absolute latency guarantee. Direct host tools may still take time; the preference to delegate slow operations is not a new hard runtime timeout. [Hook behavior](https://code.claude.com/docs/en/hooks).
 - **Pilot and remaining integrations:** human interruptions, the real WhatsApp-to-voice continuation, ClawCode usage snapshots, native remote approval relaying and Claude Desktop compatibility remain unverified or unimplemented as documented in [live-bridge.md](live-bridge.md).
