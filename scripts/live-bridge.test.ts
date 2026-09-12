@@ -344,12 +344,45 @@ test("WhatsApp provenance is owner adopted and proactive results need an authori
   valid = true; assert.equal((await f.request("/sources/adopt", "POST", adopt)).status, 200);
   f.bridge.callTool("live_work", work);
   const result = { id: "proactive", type: "leader.reply", taskId: "background", destination: "live", text: "The background task finished." };
-  f.bridge.callTool("live_emit", result); f.bridge.callTool("live_emit", result);
+  const receipt: any = f.bridge.callTool("live_emit", result);
+  assert.deepEqual(receipt.delivery, { stage: "published_to_bridge", voicePlayback: "unconfirmed" });
+  const repeated: any = f.bridge.callTool("live_emit", result);
+  assert.equal(repeated.duplicate, true); assert.equal(repeated.published, true);
+  assert.deepEqual(repeated.delivery, receipt.delivery);
   assert.equal(f.bridge.snapshot().inputs!.length, 0, "No fake voice input is created for a background result");
   assert.equal(f.bridge.snapshot().conversation.messages.filter(message => message.id === "proactive").length, 1);
   assert.equal(f.bridge.snapshot().conversation.messages.at(-1)!.sourceChannel, "whatsapp");
   await f.restart(); await f.ready();
   assert.equal(f.bridge.snapshot().sources![0].sourceInputId, "verified-dispatch");
+});
+
+test("publication receipts never claim playback and completion bookkeeping stays silent across reconnect", async t => {
+  const f = await fixture(t); const a = await f.attach(); await f.ready();
+  await f.request(`/attachments/${a.attachmentId}/inputs`, "POST", { id: "question", revision: 1, origin: "voice", text: "What did you find?" });
+  await turn(); f.bridge.callTool("live_ack", { inputId: "question", revision: 1 });
+  // No SSE client or audio provider exists: publication can succeed independently.
+  const answer = { id: "answer", inputId: "question", revision: 1, type: "leader.reply", text: "Here is the finding." };
+  const completion = { id: "finished", inputId: "question", revision: 1, type: "input.completed", text: "This turn is finished." };
+  for (const publication of [answer, completion]) {
+    const receipt: any = f.bridge.callTool("live_emit", publication);
+    assert.equal(receipt.published, true);
+    assert.deepEqual(receipt.delivery, { stage: "published_to_bridge", voicePlayback: "unconfirmed" });
+    const duplicate: any = f.bridge.callTool("live_emit", publication);
+    assert.equal(duplicate.duplicate, true); assert.equal(duplicate.published, true);
+    assert.deepEqual(duplicate.delivery, receipt.delivery);
+  }
+  const state = f.bridge.snapshot();
+  assert.equal(state.inputs!.find(input => input.id === "question")!.status, "completed");
+  assert.equal(state.conversation.messages.find(message => message.id === "answer")!.voiceEligible, undefined);
+  assert.equal(state.conversation.messages.find(message => message.id === "finished")!.voiceEligible, false);
+  assert.equal(state.conversation.messages.filter(message => message.role === "assistant").length, 2);
+  await f.restart(); await f.ready();
+  const attachment = await f.attach();
+  assert.equal(attachment.snapshot.conversation.messages.find((message: any) => message.id === "finished").voiceEligible, false);
+  const recovered: any = f.bridge.callTool("live_emit", answer);
+  assert.equal(recovered.duplicate, true); assert.equal(recovered.published, true);
+  assert.deepEqual(recovered.delivery, { stage: "published_to_bridge", voicePlayback: "unconfirmed" });
+  assert.equal(f.bridge.snapshot().conversation.messages.filter(message => message.id === "answer").length, 1);
 });
 
 test("model is observed from sanitized native hooks, never inferred from configuration", async t => {

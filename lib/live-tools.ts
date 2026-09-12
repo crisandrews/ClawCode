@@ -6,7 +6,7 @@ function tool(name: string, description: string, properties: Record<string, unkn
 export const LIVE_TOOLS = [
   tool("live_status", "Inspect this leader's LiveBridge readiness and public work snapshot. Never returns credentials or the channel probe.", {}),
   tool("live_ack", "Acknowledge an input/command ID and exact revision received from Channels, or echo its startup probe. ACK means attended, never completed. Do not guess IDs or acknowledge on behalf of another agent.", { inputId: str, commandId: str, revision: num, probe: str }),
-  tool("live_emit", "Publish an explicitly attributed public reply/progress to Live only. id is an idempotency key. Requires an acknowledged inputId and revision for replies/progress; command results require commandId. For a proactive update use taskId and destination=live; the task must have an acknowledged Live source or an owner-adopted WhatsApp source. This never sends WhatsApp messages.", {
+  tool("live_emit", "Publish an explicitly attributed public reply/progress to the Live bridge only. Success confirms storage/publication, never that the browser played audio or the user heard it; voice may be paused. id is an idempotency key. Requires an acknowledged inputId and revision for replies/progress; command results require commandId. For a proactive update use taskId and destination=live; the task must have an acknowledged Live source or an owner-adopted WhatsApp source. This never sends WhatsApp messages.", {
     id: str, inputId: str, revision: num, commandId: str, taskId: str, destination: { type: "string", enum: ["live"] },
     type: { type: "string", enum: ["leader.reply", "leader.progress", "leader.needs_input", "input.completed", "input.failed", "command.completed", "command.rejected"] }, text: str,
   }, ["id", "type", "text"]),
@@ -23,6 +23,10 @@ LiveBridge is enabled for this existing Claude Code session. YOU remain the lead
 keep your identity, memory, permissions and normal asynchronous delegation. Do not
 start a second coordinator, restart yourself, or create another WhatsApp owner.
 Channels inputs are queued for a turn; notification transmission is not receipt.
+Never say 'I answered by voice' merely because live_emit succeeded. It confirms
+publication to the bridge, not audio playback; the owner may have paused the call.
+Say the response is published in Live when describing delivery. Use leader.reply
+for the answer and input.completed only to close its receipt, not as a second answer.
 For a live_probe notification, echo its probe via live_ack. Never obtain the probe
 from other tools/files or invent it. For each live input/command, call live_ack with
 the exact ID/revision before acting. Several inputs may arrive in one turn: preserve

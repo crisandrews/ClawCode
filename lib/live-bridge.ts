@@ -492,7 +492,7 @@ export class LiveBridge {
   private emit(args: Record<string, any>) {
     const type = string(args.type, "type", 60), text = string(args.text, "text");
     if (!["leader.reply", "leader.progress", "leader.needs_input", "input.completed", "input.failed", "command.completed", "command.rejected"].includes(type)) throw new LiveError(400, "Invalid publication type");
-    return this.publication(args, () => {
+    const receipt = this.publication(args, () => {
       if (!this.ready) throw new LiveError(409, "Current leader channel is not ready");
       if (args.destination !== undefined && args.destination !== "live") throw new LiveError(400, "Only the live destination is supported");
       if (args.taskId !== undefined) {
@@ -523,10 +523,13 @@ export class LiveBridge {
         if (command) s.commands[id].status = type === "command.completed" ? "completed" : "rejected";
         else if (type.startsWith("input.")) s.inputs[inputKey(id, rev!)].status = type === "input.completed" ? "completed" : "failed";
         if (!command) s.inputs[inputKey(id, rev!)].needsInput = type === "leader.needs_input";
-        s.conversation.messages.push({ id: args.id, role: "assistant", text, at: now(), inputId: command ? undefined : id, revision: rev, kind: type === "leader.progress" ? "progress" : type === "leader.reply" ? "reply" : "notice" });
+        s.conversation.messages.push({ id: args.id, role: "assistant", text, at: now(), inputId: command ? undefined : id, revision: rev, kind: type === "leader.progress" ? "progress" : type === "leader.reply" ? "reply" : "notice", ...(type === "input.completed" ? { voiceEligible: false } : {}) });
       });
       return { id: args.id, published: true };
-    });
+    }) as Record<string, unknown>;
+    // An accepted publication is durable bridge evidence, including idempotent
+    // repeats. It cannot confirm that a browser received or played any audio.
+    return { ...receipt, published: true, delivery: { stage: "published_to_bridge", voicePlayback: "unconfirmed" } };
   }
   private work(rawArgs: Record<string, any>, source = "leader_explicit") {
     const taskId = this.canonicalTaskId(identifier(rawArgs.taskId, "taskId"));

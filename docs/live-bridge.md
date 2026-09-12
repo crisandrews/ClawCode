@@ -149,6 +149,15 @@ specific revision; it does not mean the requested task finished. Transport state
 is recorded before dispatch. An interrupted or failed write is uncertain and is
 never automatically replayed after restart.
 
+`live_emit` success means the public message was stored and published to the
+bridge. Its receipt reports `delivery.stage: "published_to_bridge"` and
+`delivery.voicePlayback: "unconfirmed"`, including idempotent repeats and proactive
+task results. It does not prove that a browser is connected, audio played, or the
+owner heard the response. Use `leader.reply` for the answer; `input.completed`
+only closes the input receipt and carries `voiceEligible:false` so a compatible
+voice client does not speak that bookkeeping as a second answer. The completion
+remains in the public snapshot and does not finish any delegated tasks.
+
 All attachments share **one logical owner conversation** per workspace store.
 Reattach with its conversationId to recover the same public messages and tasks.
 Attachment IDs are connection handles, not user identities or security boundaries.

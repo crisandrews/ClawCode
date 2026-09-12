@@ -18,6 +18,7 @@ export interface Approval { id: string; taskId: string; toolName: string; input:
 export interface ConversationMessage {
   id: string; role: "user" | "assistant" | "system"; text: string; at: string;
   inputId?: string; revision?: number; kind?: "reply" | "progress" | "notice";
+  voiceEligible?: boolean;
   taskId?: string; sourceChannel?: "voice" | "web" | "whatsapp"; sourceInputId?: string; destination?: "live";
 }
 export interface ConversationState {
