@@ -24,6 +24,7 @@ export interface ConversationMessage {
 export interface ConversationState {
   id: string; name: string; owner: "external"; sessionId?: string; workspace: string;
   status: "offline" | "starting" | "ready" | "working" | "waiting_permission" | "error";
+  activity?: { phase: "thinking" | "tool"; at: string; toolName?: string };
   model?: string; messages: ConversationMessage[]; queuedInputs: number;
   capabilities: { tasks: boolean; steer: boolean; cancel: boolean; approvals: boolean; modelChange: boolean; externalInputAdoption?: boolean; leaderPolicy?: LeaderPolicyState };
 }

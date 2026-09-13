@@ -63,6 +63,7 @@ export class LiveBridge {
   private sessionId?: string;
   private probeAt = 0;
   private hooksSeen = new Set<string>();
+  private mainTools = new Map<string, { phase: "tool"; at: string; toolName?: string }>();
   private exitHandler = () => this.store.close();
 
   constructor(private readonly options: LiveBridgeOptions) {
@@ -108,6 +109,8 @@ export class LiveBridge {
       this.state.attachments = {};
       delete this.state.conversation.sessionId;
       delete this.state.conversation.model;
+      delete this.state.conversation.activity;
+      this.mainTools.clear();
       for (const task of Object.values(this.state.tasks)) if (!TERMINAL.has(task.status)) { task.stale = true; task.controls = { steer: false, cancel: false, resume: false }; }
       this.store.save(this.state);
       await new Promise<void>((resolve, reject) => { this.server.once("error", reject); this.server.listen(this.options.port ?? 18791, "127.0.0.1", () => { this.server.off("error", reject); resolve(); }); });
@@ -117,10 +120,15 @@ export class LiveBridge {
     } catch (error) { this.store.close(); throw error; }
   }
   get port(): number { const a = this.server.address(); return a && typeof a === "object" ? a.port : this.options.port ?? 18791; }
+  /** Receipt evidence for the local MCP handshake; never disclose its nonce. */
+  get channelHandshakeState() {
+    return { running: this.running, acknowledged: this.probeAcknowledged, channelReady: this.ready, bindingStatus: this.state?.host?.bindingStatus };
+  }
   async close(): Promise<void> {
     if (!this.running) return;
     this.ready = false;
-    try { this.change("connection.closed", { channelReady: false }, s => { s.conversation.status = "offline"; }); }
+    this.mainTools.clear();
+    try { this.change("connection.closed", { channelReady: false }, s => { s.conversation.status = "offline"; delete s.conversation.activity; }); }
     catch { /* Disk failure must not keep the listener or writer lease alive. */ }
     this.running = false;
     for (const client of this.clients.keys()) client.end();
@@ -155,11 +163,11 @@ export class LiveBridge {
     const tasks = Object.values(state.tasks);
     const waiting = tasks.some(task => task.status === "waiting_permission") || inputs.some(input => input.status === "acknowledged" && input.needsInput);
     const openCommand = Object.values(state.commands).some(command => ["queued", "delivery_uncertain", "transport_written", "acknowledged"].includes(command.status));
-    state.conversation.status = waiting ? "waiting_permission" : openInput || openCommand || tasks.some(task => !TERMINAL.has(task.status)) ? "working" : "ready";
+    state.conversation.status = waiting ? "waiting_permission" : openInput || openCommand || state.conversation.activity || tasks.some(task => !TERMINAL.has(task.status)) ? "working" : "ready";
   }
   /** Call only after the MCP client initialized; a transport write is NOT readiness. */
   async probeChannel(): Promise<void> {
-    if (!this.running || this.ready || Date.now() - this.probeAt < 1000) return;
+    if (!this.running || this.probeAcknowledged || Date.now() - this.probeAt < 1000) return;
     this.probeAt = Date.now();
     try {
       await this.options.deliver({
@@ -628,19 +636,46 @@ export class LiveBridge {
     this.hooksSeen.add(event);
     if (event === "SessionEnd") {
       this.ready = false; this.probeAcknowledged = false;
-      this.change("connection.host_ended", { sessionId: session, channelReady: false }, s => { s.conversation.status = "offline"; s.host!.bindingStatus = "awaiting_session"; s.host!.reason = "Native host session ended"; for (const task of Object.values(s.tasks)) if (!TERMINAL.has(task.status)) { task.stale = true; task.controls = { steer: false, cancel: false, resume: false }; } }); this.publishHostBinding(); return;
+      this.mainTools.clear();
+      this.change("connection.host_ended", { sessionId: session, channelReady: false }, s => { s.conversation.status = "offline"; delete s.conversation.activity; s.host!.bindingStatus = "awaiting_session"; s.host!.reason = "Native host session ended"; for (const task of Object.values(s.tasks)) if (!TERMINAL.has(task.status)) { task.stale = true; task.controls = { steer: false, cancel: false, resume: false }; } }); this.publishHostBinding(); return;
     }
-    if (event === "Stop") { this.change("leader.turn_ended", { source: "hook", tasksMayContinue: true }, () => {}); return; }
+    if (event === "Stop") {
+      if (raw.agentId) return;
+      this.mainTools.clear();
+      this.change("leader.turn_ended", { source: "hook", tasksMayContinue: true }, state => { delete state.conversation.activity; }); return;
+    }
     if (!this.ready) return;
-    if (!raw.agentId) return; // Main-session tool activity has no unambiguous work attribution.
+    if (!raw.agentId) {
+      // Principal activity belongs to the conversation, not an invented work item.
+      // Only a matched tool completion may clear it; parallel tools stay visible.
+      if (!["PreToolUse", "PostToolUse", "PostToolUseFailure"].includes(event) || !raw.toolUseId) return;
+      const toolUseId = identifier(raw.toolUseId, "toolUseId");
+      if (event === "PreToolUse") {
+        if (this.mainTools.has(toolUseId) || this.mainTools.size >= 500) return;
+        this.mainTools.set(toolUseId, { phase: "tool", at: now(), ...(raw.toolName ? { toolName: identifier(raw.toolName, "toolName") } : {}) });
+      } else if (!this.mainTools.delete(toolUseId)) return;
+      const activity = [...this.mainTools.values()].at(-1) ?? { phase: "thinking" as const, at: now() };
+      this.change("leader.activity", { source: "native_hook" }, state => { state.conversation.activity = activity; });
+      return;
+    }
     const nativeId = identifier(raw.agentId, "agentId");
+    const hookId = `hook:${identifier(raw.id, "hook.id")}`;
+    if (own(this.state.publications, hookId)) return;
     const existing = Object.values(this.state.tasks).find(t => t.nativeId === nativeId);
-    if (!existing && event !== "SubagentStart") return;
+    // Start may precede attachment/verification or be missed by its hook process.
+    // A current worker requesting an identified tool is positive activity evidence;
+    // an unknown Stop or tool completion cannot prove that work is still active.
+    const observedLate = !existing && event === "PreToolUse" && raw.toolUseId !== undefined;
+    if (!existing && event !== "SubagentStart" && !observedLate) return;
+    if (observedLate) identifier(raw.toolUseId, "toolUseId");
     const taskId = existing?.id ?? `agent:${session}:${nativeId}`;
-    const progress = event === "SubagentStart" ? "Native agent started or resumed" : event === "SubagentStop" ? "Native agent response ended; awaiting leader outcome" : event === "PreToolUse" ? "Native agent is using a tool" : event === "PostToolUseFailure" ? "Native agent tool reported failure" : "Native agent finished a tool call";
+    const progress = observedLate ? "Native agent requested a tool; its start was not observed" : event === "SubagentStart" ? "Native agent started or resumed" : event === "SubagentStop" ? "Native agent response ended; awaiting leader outcome" : event === "PreToolUse" ? "Native agent requested a tool" : event === "PostToolUseFailure" ? "Native agent tool reported failure" : "Native agent finished a tool call";
     // A terminal task is never resurrected just because its final hook arrived late.
     if (existing && TERMINAL.has(existing.status)) return;
-    this.work({ id: `hook:${identifier(raw.id, "hook.id")}`, taskId, conversationId: this.state.conversation.id, nativeId,
-      title: existing?.title ?? "Native background agent", progress, status: "running" }, "native_hook");
+    const agentType = typeof raw.agentType === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,179}$/.test(raw.agentType) ? raw.agentType : undefined;
+    const genericTitle = !existing || (existing.publicationSource === "native_hook" && ["Native agent", "Native background agent"].includes(existing.title));
+    const title = agentType && genericTitle ? `Native agent · ${agentType}` : existing?.title ?? "Native agent";
+    this.work({ id: hookId, taskId, conversationId: this.state.conversation.id, nativeId,
+      title, progress, status: "running" }, "native_hook");
   }
 }

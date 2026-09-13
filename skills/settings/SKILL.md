@@ -9,6 +9,10 @@ argument-hint: [setting]
 
 View and modify the agent's configuration stored in `agent-config.json`.
 
+## Live voice integration
+
+For ClaudeLive setup, ports, credentials, concurrency or disablement, use `/agent:live setup|status|disable` and its setup tools. Do not use the generic JSON-edit flow below for `liveBridge`; the Live helper preserves credentials and generates the matching launch environment.
+
 ## Show current settings
 
 If no argument given, read and display `agent-config.json`:

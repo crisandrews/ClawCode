@@ -119,6 +119,10 @@ You have ClawCode MCP tools. You MUST use them instead of native Claude Code too
 
 This simulates a session-reset greeting because skills cannot programmatically invoke native `/clear`.
 
+## ClaudeLive voice setup
+
+For enabling, configuring or checking ClaudeLive, use `/agent:live setup|status|disable` and the always-available `live_setup_plan`/`live_setup_status` tools. Follow the installed Live skill for deterministic application and preserving this agent's launch arguments. Never expose the protected token/env file, start a second Cloudy or claim connection from configuration alone.
+
 ## Recognized commands (text commands — work from ANY surface)
 
 When the user writes a message that **starts with a slash** (including via WhatsApp, Telegram, Discord, etc.), recognize it as a command and respond accordingly. These commands work whether the user is in the CLI REPL or on a messaging channel.

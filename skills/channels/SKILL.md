@@ -58,11 +58,15 @@ Fix: <runtime.remediation>
 
 Key `runtime.status` values: `idle_other_instance` (lock held by another session — the main one), `logged_out` (re-link needed), `lock_error` (filesystem/PID-file problem). Never tell the user to run `/whatsapp:configure reset` for `idle_other_instance` — it's a lock-ownership problem, not a link problem; the fix is to get down to one session. On claude-whatsapp ≥ 1.21 the waiting session takes over the lock automatically (within ~15 s of the holder exiting), so closing the extra session is enough; on older channel versions the waiting session stays idle forever and needs a full relaunch after the holder is closed. See claude-whatsapp `docs/troubleshooting.md` → "You see 'typing…' but get no reply".
 
+## Live voice setup
+
+For attaching ClaudeLive to this existing agent, use `/agent:live setup`. `channels_detect` can describe launch flags after opt-in, but does not enable the bridge or configure credentials. `/agent:live status` distinguishes saved settings, running listener and native verification.
+
 ## Launch flow
 
 1. Call `channels_detect({ format: "launch" })` (with the appropriate flags from the user's command)
 2. Print the command in a code block
-3. Remind the user: "This command is also what `/agent:service install` will use. Copy it or re-run the service install after any channel change."
+3. Remind the user: "Preserve these channel arguments when preparing `/agent:service install`; it must receive the existing launcher arguments explicitly."
 
 If the user included `--skip-permissions`, ADD a warning above the command:
 

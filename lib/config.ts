@@ -57,8 +57,14 @@ export interface AgentConfig {
     enabled?: boolean;
     /** Fixed loopback binding; no public bind option. Default: 18791. */
     port?: number;
+    /** ClaudeLive web port for the managed setup; separate from the bridge listener. */
+    webPort?: number;
     /** Environment variable name, never a credential value. */
     tokenEnv?: string;
+    /** Protected local credential file created by /agent:live setup; overrides tokenEnv. */
+    tokenFile?: string;
+    /** Exact installed native channel registration; default plugin:agent@clawcode. */
+    channelTarget?: string;
     /** Observe sanitized native hooks after the Channels probe binds a session. */
     observeHooks?: boolean;
     /** Keep the main session conversational; native workers retain ordinary capabilities. */

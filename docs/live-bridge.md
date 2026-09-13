@@ -1,5 +1,7 @@
 # LiveBridge: voice attached to the existing leader
 
+For guided installation without manual JSON/token edits, use `/agent:live setup`; see [the setup contract](live-setup.md).
+
 ## Optional conversational leader policy
 
 Add this nested setting to the existing opt-in `liveBridge` block:
@@ -107,8 +109,8 @@ Merge this block into the existing configuration; preserve the other settings.
 Set `CLAWCODE_LIVE_TOKEN` to a randomly generated secret of at least 32 characters
 in the environment that launches Claude Code. Configure the same value in the
 local voice application's backend, never its browser code. The configuration
-contains only the environment variable's name. The agent_config tool refuses
-changes to the entire `liveBridge` subtree; a host restart applies operator edits.
+contains only the environment variable's name. Guided installations instead use a protected workspace `tokenFile`; both the server and hooks use the same credential reader. The agent_config tool refuses
+changes to the entire `liveBridge` subtree; the trusted `/agent:live` helper applies reviewed changes and a host restart activates them.
 
 ClawCode's installed plugin name is `agent` in marketplace `clawcode`. Launch the
 chosen session with this custom channel explicitly enabled:
@@ -214,6 +216,14 @@ an available native control and publish the real task outcome with live_work;
 unsupported native operations can be reported with command.rejected. No process
 is killed by the bridge. Session model changes are observed only when the corresponding native hook arrives; this is not per-response fallback-model telemetry. Remote approvals and model changes are unsupported and
 advertised false; use the normal host controls. No model name is guessed.
+
+## Native activity and handshake recovery
+
+Verified main-session tool hooks publish `conversation.activity` (phase, timestamp and optional tool name), independent of task cards. Concurrent tools remain visible until their matching completions; Stop/SessionEnd clears principal activity without completing background work. No tool arguments, results, raw transcripts or private reasoning are published.
+
+A worker whose start hook was missed can be recovered from a verified PreToolUse carrying its native agent ID and tool-use ID. An unknown completion cannot create a task, and a terminal card cannot be revived by a late hook. Optional agent type improves a generic title while retaining explicit leader titles and native task aliases.
+
+MCP initialization sends a receipt probe with three bounded retries (1.5, 5 and 15 seconds). Receipt ACK stops retries even while native-hook verification or owner recovery is pending. `live_status` exposes diagnostics without the probe nonce; no retry resends user inputs or tasks.
 
 ## HTTP v1 contract
 
