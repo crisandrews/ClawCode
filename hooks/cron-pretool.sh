@@ -45,7 +45,7 @@ TOOL_NAME=$(printf '%s' "$PAYLOAD" | jq -r '.tool_name // empty' 2>/dev/null)
 # registry's crons through CronCreate. Those calls re-use stored crons
 # and must not be gated.
 if [[ -f "$RECONCILING_MARKER" ]]; then
-  marker_mtime=$(stat -f %m "$RECONCILING_MARKER" 2>/dev/null || stat -c %Y "$RECONCILING_MARKER" 2>/dev/null || echo 0)
+  marker_mtime=$(stat -c %Y "$RECONCILING_MARKER" 2>/dev/null || stat -f %m "$RECONCILING_MARKER" 2>/dev/null || echo 0)
   now=$(date +%s)
   age=$((now - marker_mtime))
   if [[ $age -ge 0 && $age -lt $MAX_RECONCILE_AGE_SEC ]]; then

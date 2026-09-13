@@ -55,7 +55,7 @@ _refresh_reconciling_if_fresh() {
   local marker="$MEMORY_DIR/.reconciling"
   [[ -f "$marker" ]] || return 0
   local marker_mtime now_s age
-  marker_mtime=$(stat -f %m "$marker" 2>/dev/null || stat -c %Y "$marker" 2>/dev/null || echo 0)
+  marker_mtime=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker" 2>/dev/null || echo 0)
   now_s=$(date +%s)
   age=$((now_s - marker_mtime))
   if [[ $age -ge 0 && $age -lt 600 ]]; then
