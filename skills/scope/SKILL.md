@@ -13,6 +13,12 @@ This is an OPTIONAL feature — see `docs/channel-scope-compat.md`. Enforcement 
 
 Talk to the user in the language they've been using on this turn — never default to a hard-coded language.
 
+## Codex runtime path
+
+If `CLAWCODE_RUNTIME=codex` or the runtime is OpenAI Codex, do not enable Claude channel-scope adapters or create Claude scope trust files. This flow depends on Claude Code messaging plugin envelopes, especially `claude-whatsapp` request envelopes and Claude Code PreToolUse hooks.
+
+For Codex, read-only `agent_config(action='get')` is fine if the user only wants to inspect raw config, but do not create trust files, enable enforcement, or run the Claude channel wizard. WebChat sessions are handled through the ClawCode HTTP bridge and do not use the Claude channel-scope envelope contract.
+
 ## When to use
 
 - After installing claude-whatsapp + pairing it: `/agent:scope status` confirms the adapter sees `access.json`.

@@ -12,6 +12,30 @@ All writes to the registry go through one script: `bash ${CLAUDE_PLUGIN_ROOT}/sk
 
 **`CronCreate` / `CronList` / `CronDelete` are deferred tools** — call `ToolSearch(query="select:CronList,CronCreate,CronDelete")` once per session before invoking them. The parameter name is `cron`, not `schedule`. Always pass `durable: true` (forward-compat for when the upstream flag is fixed).
 
+## Codex runtime path
+
+If `CLAWCODE_RUNTIME=codex` or the runtime is OpenAI Codex, do not call `ToolSearch`, `CronCreate`, `CronList`, or `CronDelete`. Codex uses the local registry plus the ClawCode Codex cron runner installed by `/agent:service install`.
+
+Codex flows:
+
+- **LIST**: run `bash "$CLAWCODE_PLUGIN_ROOT/skills/crons/writeback.sh" seed-defaults`, then render `memory/crons.json`. Status is registry-based: active entries fire when the Codex runner service/timer is installed. Do not run `prune-expired` under Codex before rendering; one-shot entries are tombstoned by the runner only after successful execution.
+- **ADD**: run `bash "$CLAWCODE_PLUGIN_ROOT/bin/cron-from.sh" ...` first. Then upsert directly:
+  ```bash
+  KEY="codex-$(date +%s)-$$"
+  bash "$CLAWCODE_PLUGIN_ROOT/skills/crons/writeback.sh" upsert \
+    --key "$KEY" \
+    --source ad-hoc \
+    --cron "<helper .cron>" \
+    --prompt "<action to fire>" \
+    --recurring "<helper .recurring>" \
+    --target-epoch "<helper .epoch when non-null>"
+  ```
+  Omit `--target-epoch` when the helper returns `null`. Tell the user the reminder is registered; if `/agent:service install` has not been installed for Codex yet, tell them to install it so reminders fire automatically.
+- **DELETE**: `writeback.sh tombstone --key <key>`.
+- **PAUSE**: `writeback.sh pause --key <key>`.
+- **RESUME**: `writeback.sh resume --key <key>`.
+- **RECONCILE**: `seed-defaults`. There is no Claude harness to audit under Codex; the runner reads the registry directly every minute and tombstones one-shot entries after successful execution.
+
 ---
 
 ## ⛔ FORBIDDEN — read before touching anything

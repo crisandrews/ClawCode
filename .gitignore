@@ -22,6 +22,10 @@ memory/.scoped/
 memory/.crons-lock/
 memory/.reconciling
 memory/.cron-last-stamp
+memory/.codex-cron-runner-state.json
+memory/.codex-cron-runner.lock/
+**/memory/.codex-cron-runner-state.json
+**/memory/.codex-cron-runner.lock/
 memory/crons-errors.jsonl
 memory/crons-pending.jsonl
 memory/crons.json.corrupt-*

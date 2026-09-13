@@ -14,12 +14,26 @@
  * Run: `npx tsx tests/scope-runtime.test.ts`
  */
 
+import path from "node:path";
 import {
   detectScopeRuntime,
   isChannelDerivedPath,
   applyPreventivePromoteGuard,
   type ScopeRuntimeState,
 } from "../lib/scope/runtime.ts";
+import {
+  detectRuntime,
+  pluginManifestPaths,
+  projectSkillsDir,
+  resolvePluginRoot,
+  resolveWorkspaceRoot,
+  runtimeInfo,
+} from "../lib/runtime.ts";
+import { scopeDir } from "../lib/skill-manager.ts";
+import {
+  cronMatchesDate,
+  dueEntries,
+} from "../bin/clawcode-codex-cron-runner.mjs";
 
 const results: Array<{ name: string; pass: boolean; msg?: string }> = [];
 
@@ -190,6 +204,91 @@ check("guard handles missing entry.path defensively", () => {
   // Both kept: undefined path can't be channel-derived (and is also a
   // non-channel candidate by virtue of not matching extra:).
   assert(kept.length === 2, `expected 2 kept on undefined path, got ${kept.length}`);
+});
+
+// ---------------------------------------------------------------------------
+// ClawCode host runtime detection — Claude Code vs Codex
+// ---------------------------------------------------------------------------
+
+check("detectRuntime honors explicit override", () => {
+  assert(detectRuntime({ CLAWCODE_RUNTIME: "codex" } as NodeJS.ProcessEnv) === "codex", "codex override failed");
+  assert(
+    detectRuntime({ CLAWCODE_RUNTIME: "claude", CODEX_HOME: "/tmp/codex" } as NodeJS.ProcessEnv) === "claude",
+    "claude override failed"
+  );
+});
+
+check("detectRuntime falls back to CODEX_HOME", () => {
+  assert(detectRuntime({ CODEX_HOME: "/tmp/codex" } as NodeJS.ProcessEnv) === "codex", "CODEX_HOME did not select codex");
+  assert(detectRuntime({} as NodeJS.ProcessEnv) === "claude", "empty env should default to claude");
+});
+
+check("resolvePluginRoot prefers ClawCode env before Claude env", () => {
+  const root = resolvePluginRoot({
+    CLAWCODE_PLUGIN_ROOT: "/tmp/claw",
+    CLAUDE_PLUGIN_ROOT: "/tmp/claude",
+  } as NodeJS.ProcessEnv, "/tmp/cwd");
+  assert(root === path.resolve("/tmp/claw"), `wrong plugin root: ${root}`);
+});
+
+check("resolveWorkspaceRoot prefers explicit Codex workspace", () => {
+  const root = resolveWorkspaceRoot("/tmp/plugin", {
+    CODEX_PROJECT_DIR: "/tmp/project",
+    OLDPWD: "/tmp/old",
+  } as NodeJS.ProcessEnv, "/tmp/plugin");
+  assert(root === path.resolve("/tmp/project"), `wrong workspace: ${root}`);
+});
+
+check("resolveWorkspaceRoot uses OLDPWD when cwd is plugin root", () => {
+  const root = resolveWorkspaceRoot("/tmp/plugin", {
+    OLDPWD: "/tmp/workspace",
+  } as NodeJS.ProcessEnv, "/tmp/plugin");
+  assert(root === path.resolve("/tmp/workspace"), `wrong workspace: ${root}`);
+});
+
+check("runtimeInfo uses Codex paths", () => {
+  const info = runtimeInfo("codex", { CODEX_HOME: "/tmp/codex-home" } as NodeJS.ProcessEnv);
+  assert(info.projectSkillsDirName === ".codex", "wrong project skills dir name");
+  assert(info.userSkillsDir === path.join("/tmp/codex-home", "skills"), "wrong user skills dir");
+  assert(info.reloadInstruction.includes("Restart Codex"), "reload instruction should mention Codex");
+});
+
+check("scopeDir is runtime aware", () => {
+  assert(scopeDir("/tmp/work", "project", "codex") === path.join("/tmp/work", ".codex", "skills"), "wrong codex project scope");
+  assert(scopeDir("/tmp/work", "project", "claude") === path.join("/tmp/work", ".claude", "skills"), "wrong claude project scope");
+});
+
+check("projectSkillsDir and manifest order are runtime aware", () => {
+  assert(projectSkillsDir("/tmp/work", "codex") === path.join("/tmp/work", ".codex", "skills"), "wrong codex project skills path");
+  const manifests = pluginManifestPaths("/tmp/plugin", "codex");
+  assert(manifests[0].endsWith(path.join(".codex-plugin", "plugin.json")), "codex manifest should be first");
+  assert(manifests[1].endsWith(path.join(".claude-plugin", "plugin.json")), "claude manifest should be fallback");
+});
+
+check("Codex cron runner matches generated cron expressions", () => {
+  const date = new Date(2026, 0, 5, 9, 30, 0);
+  assert(cronMatchesDate("30 9 * * *", date), "daily cron should match");
+  assert(cronMatchesDate("*/15 * * * *", date), "step cron should match");
+  assert(cronMatchesDate("30 9 * * 1", date), "weekly cron should match Monday");
+  assert(!cronMatchesDate("31 9 * * *", date), "wrong minute should not match");
+});
+
+check("Codex cron runner identifies due registry entries", () => {
+  const now = new Date(2026, 0, 5, 9, 30, 0);
+  const registry = {
+    entries: [
+      { key: "daily", cron: "30 9 * * *", prompt: "daily", recurring: true, paused: false, tombstone: null },
+      { key: "paused", cron: "30 9 * * *", prompt: "paused", recurring: true, paused: true, tombstone: null },
+      { key: "done", cron: "30 9 * * *", prompt: "done", recurring: true, paused: false, tombstone: null },
+      { key: "oneshot", cron: "0 0 1 1 *", prompt: "one", recurring: false, targetEpoch: 1, paused: false, tombstone: null },
+    ],
+  };
+  const state = { fired: { done: Math.floor(now.getTime() / 60000) } };
+  const due = dueEntries(registry, state, now).map((e: { key: string }) => e.key);
+  assert(due.includes("daily"), "daily entry should be due");
+  assert(due.includes("oneshot"), "expired one-shot should be due once");
+  assert(!due.includes("paused"), "paused entry should not be due");
+  assert(!due.includes("done"), "already-fired minute should not be due");
 });
 
 // ---------------------------------------------------------------------------

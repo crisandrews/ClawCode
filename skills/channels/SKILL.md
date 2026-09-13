@@ -11,6 +11,14 @@ Diagnose messaging channel plugins and give the user the exact command to load t
 
 This is a CORE feature. See `docs/channels.md` for details.
 
+## Codex runtime path
+
+If `CLAWCODE_RUNTIME=codex` or the runtime is OpenAI Codex, do not present Claude launch commands as usable. Call `channels_detect` normally: under Codex it reports ClawCode-native surfaces such as WebChat, webhooks, and voice, and marks Claude Code channel plugins as Claude-only.
+
+For `launch`, print the tool response verbatim. Codex does not use Claude Code `--channels` or `--dangerously-load-development-channels` flags.
+
+For normal Codex use, guide the user to enable the HTTP bridge (`http.enabled=true`) for WebChat/webhooks, then reconnect MCP. Use `/agent:service install` only for the Codex reminder/dream runner, not for Claude channel plugin launch flags.
+
 ## Dispatch
 
 | User says | Action |

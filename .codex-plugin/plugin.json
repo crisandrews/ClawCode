@@ -1,0 +1,46 @@
+{
+  "name": "clawcode",
+  "version": "1.7.6-codex.0",
+  "description": "Persistent local agent layer for Codex: workspace memory, identity files, reminders, voice, WebChat, and MCP tools.",
+  "author": {
+    "name": "Juan Cristobal Andrews",
+    "url": "https://github.com/crisandrews"
+  },
+  "homepage": "https://github.com/crisandrews/ClawCode",
+  "repository": "https://github.com/crisandrews/ClawCode",
+  "license": "MIT",
+  "keywords": [
+    "agent",
+    "personality",
+    "memory",
+    "codex",
+    "mcp",
+    "clawcode"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "ClawCode for Codex",
+    "shortDescription": "Persistent agent memory and identity for Codex",
+    "longDescription": "Codex-compatible packaging for ClawCode. The MCP memory, identity, reminder registry, Codex service runner, voice, WebChat, doctor, and skill surfaces can run under Codex. Claude Code channel plugins and Claude launch flags are reported as Claude-only instead of being advertised as Codex features.",
+    "developerName": "Juan Cristobal Andrews",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/crisandrews/ClawCode",
+    "privacyPolicyURL": "https://github.com/crisandrews/ClawCode/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/crisandrews/ClawCode/blob/main/LICENSE",
+    "composerIcon": "./assets/clawcode.png",
+    "logo": "./assets/clawcode.png",
+    "defaultPrompt": [
+      "Create a persistent Codex agent in this workspace",
+      "Search this agent's memory",
+      "Run ClawCode doctor for this workspace"
+    ],
+    "brandColor": "#3B82F6",
+    "screenshots": []
+  }
+}
