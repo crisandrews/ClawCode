@@ -27,3 +27,4 @@ jobs:
       # Shell entrypoints must at least parse on both platforms.
       - run: bash -n hooks/*.sh skills/crons/writeback.sh bin/cron-from.sh
       - run: npm test
+      - run: npm run test:live

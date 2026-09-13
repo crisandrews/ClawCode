@@ -383,6 +383,7 @@ check("wrapper preflight trips on synthetic log spam", () => {
   const flagPath = path.join(tmpDir, "flag");
   const wrapperPath = path.join(tmpDir, "wrapper.sh");
   const fakeClaudePath = path.join(tmpDir, "fake-claude.sh");
+  const configDir = path.join(tmpDir, "claude-config");
 
   // Build a wrapper targeting our synthetic log.
   const wrapper = generateResumeWrapper({
@@ -390,6 +391,7 @@ check("wrapper preflight trips on synthetic log spam", () => {
     workspace: tmpDir,
     logPath,
     forceFreshFlagPath: flagPath,
+    claudeConfigDir: configDir,
   });
   fs.writeFileSync(wrapperPath, wrapper, { mode: 0o755 });
 
@@ -413,11 +415,11 @@ fi
   // Need the sessions dir to exist + contain a recent jsonl, otherwise the
   // earlier "no prior session jsonl" check fires and we can't isolate the
   // log-preflight branch.
-  const sessionsDir = path.join(tmpDir, ".claude", "projects", "-" + tmpDir.replace(/^\/+/, "").replace(/\//g, "-"));
+  const sessionsDir = path.join(configDir, "projects", tmpDir.replace(/[^a-zA-Z0-9]/g, "-"));
   fs.mkdirSync(sessionsDir, { recursive: true });
   fs.writeFileSync(path.join(sessionsDir, "fake.jsonl"), "{}\n");
 
-  const run = spawnSync("bash", [wrapperPath], { encoding: "utf-8" });
+  const run = spawnSync("bash", [wrapperPath], { encoding: "utf-8", env: { ...process.env, CLAUDE_CONFIG_DIR: configDir } });
   assert(run.status === 0, `wrapper exited non-zero: ${run.stderr}`);
   assert(run.stdout.includes("FRESH_START"), `expected fresh start under spam; got: ${run.stdout}`);
   assert(

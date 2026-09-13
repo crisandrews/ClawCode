@@ -37,7 +37,7 @@ Parse the action and call `service_plan` with it.
 ## Install flow
 
 1. Find the `claude` binary: `Bash(which claude)`. Trim output. If empty, abort with: *"Can't find `claude` in PATH. Install Claude Code or point me at it manually."*
-2. Call `service_plan({ action: "install", claudeBin: <path> })`
+2. Inspect the existing service launcher (if any) and preserve its exact channel, session and other arguments. Call `channels_detect` as supporting evidence; do not replace an existing launcher with a guessed command. If Live is configured, run `live_setup_status` and follow `/agent:live` for any setup changes first. Call `service_plan({ action: "install", claudeBin: <path>, extraArgs: <existing arguments> })`. The plan adds ClawCode's Live channel when opted in and the wrapper supplies the managed web environment; it does not add or authorize WhatsApp or permission flags on behalf of the operator.
 3. If the plan has `error` (unsupported OS), print the error and stop.
 4. **Show the user the warning** (see Safety section). Ask explicitly: *"This will install a background service that runs with --dangerously-skip-permissions. Confirm? [y/N]"*
 5. If the user says no, stop with a neutral acknowledgement.
@@ -83,7 +83,7 @@ Parse the action and call `service_plan` with it.
 
 - **Never install the service without the safety confirmation.** If the user insists without reading the warning, say you need them to explicitly confirm the flag.
 - Never run `launchctl` or `systemctl` commands that aren't in the plan returned by `service_plan` — the tool is the source of truth.
-- Never modify the plist / unit file after creation from an imagined config. If the user wants to add channel flags, re-run `/agent:service install` with the updated flags (future: expose an `extraArgs` UX).
+- Never modify the plist / unit file after creation from an imagined config. If the user wants to add channel flags, re-run `/agent:service install` with the existing and updated flags supplied as `extraArgs`. Preserve its other options and explicit service consent.
 
 ## References
 

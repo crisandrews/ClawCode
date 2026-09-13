@@ -1,4 +1,4 @@
-/* scope-exec-gate-bundle@e43a73d82e4fb81a29971b18ba789d99c835f00a12ccb1e2eaa7f0b0df167167 */
+/* scope-exec-gate-bundle@a9e2df29203616e59f6180642b0a37b9e16e8feb61122b2d8c1d04bf762d44b5 */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -48,6 +48,7 @@ function loadConfig(pluginRoot) {
     const raw = import_fs.default.readFileSync(configPath, "utf-8");
     const parsed = JSON.parse(raw);
     return {
+      liveBridge: parsed.liveBridge ? { ...parsed.liveBridge } : void 0,
       http: parsed.http ? { ...parsed.http } : void 0,
       voice: parsed.voice ? { ...parsed.voice } : void 0,
       memoryContext: parsed.memoryContext ? { ...parsed.memoryContext } : void 0,
@@ -1286,7 +1287,8 @@ function releaseLock(lockDir) {
 // lib/scope/exec-gate.ts
 var EXEC_GATE_HOOK_VERSION = 1;
 var EXEC_GATE_DEFAULT_LOOKBACK_MS = 6e4;
-var HARD_DENY_TOOLS_UNDER_ARMED = /* @__PURE__ */ new Set(["Bash", "Task"]);
+var HARD_DENY_TOOLS_UNDER_ARMED = /* @__PURE__ */ new Set(["Bash", "Task", "Agent"]);
+var PRIVATE_LIVE_MCP_TOOL = /^mcp__.+__live_(?:status|ack|emit|work)$/;
 var DEFAULT_DENYLIST_TOOLS = [
   "Bash",
   "Write",
@@ -1400,7 +1402,7 @@ function resolve(input) {
   if (effectiveHits.length === 0) {
     return { decision: "allow" };
   }
-  const inHardDeny = HARD_DENY_TOOLS_UNDER_ARMED.has(input.toolName);
+  const inHardDeny = HARD_DENY_TOOLS_UNDER_ARMED.has(input.toolName) || PRIVATE_LIVE_MCP_TOOL.test(input.toolName);
   function wouldBlockUnder(h) {
     if (inHardDeny) return true;
     if (h.armed.execGate.policy === "denylist") {

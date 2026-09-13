@@ -1,5 +1,5 @@
 {
-  "description": "Agent lifecycle hooks — identity injection, cron reconcile, PostToolUse cron capture, memory flush, session summary.",
+  "description": "Agent lifecycle hooks \u2014 identity injection, cron reconcile, PostToolUse cron capture, memory flush, session summary.",
   "hooks": {
     "SessionStart": [
       {
@@ -13,9 +13,27 @@
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scope-trust-legacy-warn.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/live-observe.mjs\"",
+            "timeout": 2
+          }
+        ]
       }
     ],
     "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/live-leader-pretool.mjs\"",
+            "timeout": 2
+          }
+        ]
+      },
       {
         "matcher": "CronCreate",
         "hooks": [
@@ -26,11 +44,20 @@
         ]
       },
       {
-        "matcher": "Bash|Edit|Write|NotebookEdit|MultiEdit|Task|mcp__.*",
+        "matcher": "Bash|Edit|Write|NotebookEdit|MultiEdit|Task|Agent|mcp__.*",
         "hooks": [
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/exec-gate-pretool.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/live-observe.mjs\"",
+            "timeout": 2
           }
         ]
       }
@@ -44,6 +71,15 @@
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/cron-posttool.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/live-observe.mjs\"",
+            "timeout": 2
+          }
+        ]
       }
     ],
     "PreCompact": [
@@ -51,7 +87,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '[clawcode] Context nearing compaction. Save important information from this conversation to memory/'$(date +%Y-%m-%d)'.md — APPEND only, do not overwrite existing entries. If nothing to save, skip.'"
+            "command": "echo '[clawcode] Context nearing compaction. Save important information from this conversation to memory/'$(date +%Y-%m-%d)'.md \u2014 APPEND only, do not overwrite existing entries. If nothing to save, skip.'"
           }
         ]
       }
@@ -64,6 +100,15 @@
             "command": "echo '[clawcode] Session ending. If this was a significant conversation, write a brief summary to memory/'$(date +%Y-%m-%d)'.md before closing. Include: what was discussed, decisions made, open items.'"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/live-observe.mjs\"",
+            "timeout": 2
+          }
+        ]
       }
     ],
     "SessionEnd": [
@@ -72,6 +117,59 @@
           {
             "type": "command",
             "command": "DIR=\"${CLAUDE_PROJECT_DIR:-$PWD}\"; mkdir -p \"$DIR/memory/.dreams\" 2>/dev/null; echo '{\"type\":\"session.end\",\"ts\":\"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'\"}' >> \"$DIR/memory/.dreams/events.jsonl\" 2>/dev/null; exit 0"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/live-observe.mjs\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/live-observe.mjs\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/live-observe.mjs\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/live-observe.mjs\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostModelSwitch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/live-observe.mjs\"",
+            "timeout": 2
           }
         ]
       }

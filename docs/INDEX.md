@@ -10,6 +10,7 @@ Master index of every capability. The agent reads this first when it needs to re
 | Active memory (turn-start reflex) | [memory-context.md](memory-context.md) | — | `memory_context` |
 | Dreaming | [dreaming.md](dreaming.md) | `dream` tool | `dream` |
 | Agent status | _(retro-doc pending)_ | `/agent:status`, `/status` | `agent_status` |
+| Live setup | [live-setup.md](live-setup.md) | `/agent:live setup\|status\|disable` | `live_setup_plan`, `live_setup_status` (available while disabled) |
 | Agent config | _(retro-doc pending)_ | `/agent:settings` | `agent_config` |
 | Doctor | [doctor.md](doctor.md) | `/agent:doctor [--fix]` | `agent_doctor` |
 | Config hot-reload | [config-reload.md](config-reload.md) | — (automatic) | — |
@@ -25,12 +26,17 @@ Master index of every capability. The agent reads this first when it needs to re
 | Feature | Doc | Config key | Default | Notes |
 |---|---|---|---|---|
 | HTTP bridge | [http-bridge.md](http-bridge.md) | `http.enabled` | `false` | Local HTTP server for status, webhooks, skills |
+| LiveBridge | [live-bridge.md](live-bridge.md) | `liveBridge.enabled` | `false` | Existing leader voice channel, durable receipts and public task progress; loopback bearer required |
 | Webhooks | [webhooks.md](webhooks.md) | `http.enabled` | `false` | External systems POST events to the agent (CI/CD, Cloudflare, IoT) |
 | WebChat | [webchat.md](webchat.md) | `http.enabled` | `false` | Browser chat UI served by the HTTP bridge |
 | Always-on service | [service.md](service.md) | — (installed via skill) | not installed | Run agent as launchd / systemd service 24/7 |
 | Watchdog | [watchdog.md](watchdog.md) | — (installed via recipe) | not installed | External probe every 5 min + restart on failure; opt-in via `recipes/watchdog/` |
 | Voice (TTS + STT) | [voice.md](voice.md) | `voice.enabled` | `false` | Speak text, transcribe audio — backends: sag, elevenlabs, openai-tts, say, whisper |
 | QMD backend | [qmd.md](qmd.md) | `memory.backend: "qmd"` | builtin | External semantic search via qmd |
+
+## Release verification
+
+[Live integration 1.8.0 with ClaudeLive 0.8.2](live-verification.md) records isolated test results, reproduction commands and the outstanding native WhatsApp-to-voice pilot.
 
 ## Rules for agents
 

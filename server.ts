@@ -1,4 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { createWhatsappLiveSources } from "./lib/scope/live-source.ts";
+import { resolveWhatsappLiveChannelDir } from "./lib/scope/runtime.ts";
+import { saveVerifiedHostSession } from "./lib/host-session.ts";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
@@ -21,6 +24,11 @@ import {
 } from "./lib/doctor.ts";
 import { DreamEngine } from "./lib/dreaming.ts";
 import { HttpBridge, HTTP_DEFAULTS } from "./lib/http-bridge.ts";
+import { LiveBridge, LIVE_TOOLS, LIVE_INSTRUCTIONS } from "./lib/live-bridge.ts";
+import { buildLiveLeaderPolicyInstructions } from "./lib/live-tools.ts";
+import { normalizeHostLeaderPolicy } from "./hooks/live-leader-policy.mjs";
+import { ChannelHandshake } from "./lib/live-handshake.mjs";
+import { createLiveSetupPlan, getLiveSetupStatus, readLiveToken } from "./lib/live-setup.ts";
 import { getMemoryContext } from "./lib/memory-context.ts";
 import {
   buildLaunchCommand,
@@ -34,7 +42,7 @@ import {
   list as skillList,
   remove as skillRemove,
 } from "./lib/skill-manager.ts";
-import { buildPlan as buildServicePlan } from "./lib/service-generator.ts";
+import { buildPlan as buildServicePlan, withLiveChannel } from "./lib/service-generator.ts";
 import {
   discoverCommands,
   formatCommandsCompact,
@@ -514,6 +522,15 @@ function _loadBootstrapFilesInner(): string {
   sections.push("For long-term curated memory, update memory/MEMORY.md.");
   sections.push("");
 
+  sections.push("## Live voice setup\n");
+  sections.push("For 'enable ClaudeLive', 'connect voice', configuration or connection troubleshooting, use /agent:live setup|status|disable and live_setup_plan/live_setup_status. These discovery tools work even while Live is disabled. Read the installed skills/live/SKILL.md before applying its generated commands. The plan is read-only; only the owner-authorized helper applies reviewed changes. Never improvise JSON edits, expose credentials, start a second Cloudy, or change WhatsApp/permissions to enable voice. Apply configuration, plugin installation and actual native channel verification are different states.\n");
+  if (liveBridge) {
+    sections.push("## Live conversation and background work\n");
+    sections.push("A voice interface is attached to this same leader. For independent work that may take time, use native Agent with run_in_background when the host supports it, publish its public task state, and stay available for the next input. Never claim background execution before a native task exists; do not create a second coordinator.");
+    sections.push("Voice stop/disconnect ends audio only. Keep delegated work alive and publish meaningful outcomes through Live, including after the user's initial turn has ended. The task retains the source input and revision that created it; an unrelated later message does not change its destination or authority.");
+    sections.push("WhatsApp-to-Live source adoption requires an explicit authenticated browser-owner action. An envelope proves the source dispatch, not the identity of the current MCP caller. Never use a remembered owner envelope to authorize another turn. Live source adoption does not unlock WhatsApp memory scope, send WhatsApp messages, or import history. If scope refuses memory, explain the limitation and preserve the refusal.\n");
+  }
+
   // -- Session summary
   sections.push("## Session Summary\n");
   sections.push(
@@ -739,6 +756,8 @@ const MCP_TOOL_DIRECTORY: Array<{ name: string; description: string }> = [
   { name: "memory_context", description: "Active-memory turn-start reflex — digest relevant context." },
   { name: "agent_doctor", description: "Run diagnostics and optional auto-fixes." },
   { name: "channels_detect", description: "Inspect messaging channel plugins and build the launch command." },
+  { name: "live_setup_plan", description: "Prepare Live voice setup or disablement without changing files; available before Live is enabled." },
+  { name: "live_setup_status", description: "Check Live setup, listener and native channel verification without exposing credentials." },
   { name: "service_plan", description: "Plan install/uninstall/status/logs for the always-on service." },
   { name: "list_commands", description: "Discover installed skills and MCP tools." },
   { name: "voice_speak", description: "Generate a voice audio file from text (TTS)." },
@@ -809,12 +828,39 @@ function buildWatchdogPing(): WatchdogPingResponse {
 // MCP Server
 // ---------------------------------------------------------------------------
 
-const instructions = loadBootstrapFiles();
+let liveBridge: LiveBridge | null = null;
+if (config.liveBridge?.enabled === true) {
+  try {
+    const token = readLiveToken(WORKSPACE, config.liveBridge);
+    const whatsappLiveSources = createWhatsappLiveSources({ workspace: WORKSPACE, channelDirectory: () => resolveWhatsappLiveChannelDir(getLiveConfig(), WORKSPACE) });
+    liveBridge = new LiveBridge({
+      workspace: path.resolve(WORKSPACE), dataDir: path.join(path.resolve(WORKSPACE), ".clawcode-live"),
+      token: token ?? "", port: config.liveBridge.port ?? 18791,
+      leaderPolicy: normalizeHostLeaderPolicy(config.liveBridge.leaderPolicy),
+      agent: { id: "clawcode", name: "ClawCode" }, observeHooks: config.liveBridge.observeHooks === true,
+      onHostBinding: host => saveVerifiedHostSession(WORKSPACE, host),
+      listExternalInputCandidates: whatsappLiveSources.list,
+      resolveExternalInput: whatsappLiveSources.resolve,
+      deliver: async message => {
+        await server.notification({ method: "notifications/claude/channel", params: message });
+      },
+    });
+    await liveBridge.start();
+  } catch {
+    // Keep existing ClawCode behavior available, without leaking credential values.
+    console.error("[clawcode] LiveBridge unavailable: verify local opt-in config, credential file/environment, port and .clawcode-live/owner.lock; use /agent:live status. No bridge was enabled.");
+    liveBridge = null;
+  }
+}
+const liveHandshake = liveBridge ? new ChannelHandshake({ probe: () => liveBridge!.probeChannel(), getState: () => liveBridge!.channelHandshakeState }) : undefined;
+const liveSetupRuntime = () => ({ listenerActive: Boolean(liveBridge), channelVerified: Boolean(liveBridge?.channelHandshakeState.channelReady), bridgePort: liveBridge?.port, activeConfig: config.liveBridge });
+const instructions = loadBootstrapFiles() + (liveBridge ? LIVE_INSTRUCTIONS + buildLiveLeaderPolicyInstructions(normalizeHostLeaderPolicy(config.liveBridge?.leaderPolicy)) : "");
+if (liveBridge) MCP_TOOL_DIRECTORY.push(...LIVE_TOOLS.map(({ name, description }) => ({ name, description })));
 
 const server = new Server(
   { name: "clawcode", version: "1.0.0" },
   {
-    capabilities: { tools: {}, logging: {} },
+    capabilities: { tools: {}, logging: {}, ...(liveBridge ? { experimental: { "claude/channel": {} } } : {}) },
     instructions,
   }
 );
@@ -822,6 +868,28 @@ const server = new Server(
 // -- Tools list
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
+    ...(liveBridge ? LIVE_TOOLS : []),
+    {
+      name: "live_setup_plan",
+      description: "Plan ClaudeLive voice setup, reconfiguration or disablement for this workspace. Read-only; never changes files, credentials, plugins or services. Available even when Live is disabled. Follow /agent:live for owner-authorized application and restart. Never place credentials in arguments.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          enabled: { type: "boolean", description: "Enable (default true), or prepare disablement while preserving work and credentials." },
+          bridgePort: { type: "integer", minimum: 1024, maximum: 65535 },
+          webPort: { type: "integer", minimum: 1024, maximum: 65535 },
+          maxConcurrent: { type: "integer", minimum: 1, maximum: 100 },
+          extraArgs: { type: "array", items: { type: "string" }, maxItems: 100, description: "The current launcher's existing Claude arguments. Preserve session/channel/Chrome/permission options. No credentials. Omit if unknown; inspect the launcher before application." },
+          liveChannelTarget: { type: "string", pattern: "^(plugin:[A-Za-z0-9._-]+@[A-Za-z0-9._-]+|server:[A-Za-z0-9._-]+)$" },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "live_setup_status",
+      description: "Inspect Live configuration, protected credential availability, port listeners and verified native channel separately. Read-only, no probes or replays. A listening port alone never means Cloudy is connected.",
+      inputSchema: { type: "object" as const, properties: {}, additionalProperties: false },
+    },
     {
       name: "memory_search",
       description:
@@ -988,6 +1056,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           skipPermissions: {
             type: "boolean",
             description: "Append --dangerously-skip-permissions to the launch command (default: false — user must opt in)",
+          },
+          liveChannelTarget: {
+            type: "string",
+            pattern: "^(plugin:[A-Za-z0-9._-]+@[A-Za-z0-9._-]+|server:[A-Za-z0-9._-]+)$",
+            description: "Optional actual installed Live channel target, e.g. plugin:agent@clawcode or server:clawcode. Included only when liveBridge.enabled is already true; never enables Live or changes permissions.",
           },
         },
       },
@@ -1241,6 +1314,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   const params = (args || {}) as Record<string, any>;
 
+  if (name === "live_setup_plan" || name === "live_setup_status") {
+    try {
+      const result = name === "live_setup_plan"
+        ? await createLiveSetupPlan(WORKSPACE, params, liveSetupRuntime())
+        : { ...await getLiveSetupStatus(WORKSPACE, liveSetupRuntime()), handshake: liveHandshake?.diagnostics };
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return { content: [{ type: "text", text: error instanceof Error ? error.message : "Live setup check failed" }], isError: true };
+    }
+  }
+  if (liveBridge && LIVE_TOOLS.some(tool => tool.name === name)) {
+    try {
+      const result = liveBridge.callTool(name, params);
+      const output = name === "live_status" ? { ...(result as object), handshake: liveHandshake?.diagnostics } : result;
+      return { content: [{ type: "text", text: JSON.stringify(output) }] };
+    } catch (error) {
+      return { content: [{ type: "text", text: error instanceof Error ? error.message : "LiveBridge tool failed" }], isError: true };
+    } finally { liveHandshake?.synchronize(); }
+  }
+
   if (name === "memory_search") {
     const query = String(params.query || "");
     const maxResults = Number(params.maxResults) || 6;
@@ -1484,6 +1577,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           isError: true,
         };
       }
+      if (key === "liveBridge" || key.startsWith("liveBridge.")) {
+        return { content: [{ type: "text", text: "Live listener and credential changes require the guided /agent:live setup flow. Use live_setup_plan to review changes; the trusted skill applies them under ordinary owner and tool permissions. Do not bypass this through agent_config." }], isError: true };
+      }
       if (cls === "privileged") {
         // Codex 6th-pass HIGH F-6-1: this key (e.g. `voice.outputDir`)
         // becomes a trusted write root downstream, so flipping it from
@@ -1679,6 +1775,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "channels_detect") {
     const format = String(params.format || "table");
     const channels = detectChannels();
+    const liveLaunchTarget = getLiveConfig().liveBridge?.enabled === true ? String(params.liveChannelTarget || "plugin:agent@clawcode") : undefined;
 
     if (format === "json") {
       return {
@@ -1690,6 +1787,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const cmd = buildLaunchCommand(channels, {
         includeInstalledOnly: Boolean(params.includeInstalledOnly),
         skipPermissions: Boolean(params.skipPermissions),
+        liveChannelTarget: liveLaunchTarget,
       });
       return { content: [{ type: "text", text: cmd }] };
     }
@@ -1698,12 +1796,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const cmd = buildLaunchCommand(channels, {
       includeInstalledOnly: Boolean(params.includeInstalledOnly),
       skipPermissions: Boolean(params.skipPermissions),
+      liveChannelTarget: liveLaunchTarget,
     });
     return {
       content: [
         {
           type: "text",
-          text: `📡 Messaging channels\n\n${table}\n\n--- Launch command ---\n\n${cmd}`,
+          text: `📡 Messaging channels\n\n${table}\n\nLive: ${liveLaunchTarget ? `opted in (${liveLaunchTarget}); ${liveBridge?.capabilities().capabilities.channelReady ? "channel probe acknowledged" : "channel readiness unconfirmed"}. Use the same Claude session and preserve its WhatsApp flags. Source adoption requires browser owner selection; no history import or memory-scope unlock.` : "disabled"}\n\n--- Launch command ---\n\n${cmd}`,
         },
       ],
     };
@@ -1724,9 +1823,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
     const claudeBin = String(params.claudeBin || "claude");
-    const extraArgs = Array.isArray(params.extraArgs)
+    let extraArgs = Array.isArray(params.extraArgs)
       ? params.extraArgs.map(String)
       : undefined;
+    // A service plan describes the next launch, which may follow setup changes
+    // still waiting for this MCP to restart. Never confuse it with live state.
+    const plannedLive = loadConfig(WORKSPACE).liveBridge;
+    if (action === "install" && plannedLive?.enabled === true) {
+      try { extraArgs = withLiveChannel(extraArgs ?? [], plannedLive.channelTarget); }
+      catch (error) { return { content: [{ type: "text", text: error instanceof Error ? error.message : "Invalid Live launch arguments" }], isError: true }; }
+    }
     const logPath = params.logPath ? String(params.logPath) : undefined;
     const resumeOnRestart =
       typeof params.resumeOnRestart === "boolean" ? params.resumeOnRestart : undefined;
@@ -1740,6 +1846,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       logPath,
       resumeOnRestart,
       selfHeal,
+      leaderPolicy: plannedLive?.enabled === true ? normalizeHostLeaderPolicy(plannedLive.leaderPolicy) : undefined,
     });
 
     return {
@@ -2115,6 +2222,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // ---------------------------------------------------------------------------
 
 const transport = new StdioServerTransport();
+server.oninitialized = () => { liveHandshake?.start(); };
+server.onerror = () => { liveHandshake?.stop("error"); };
+server.onclose = () => { liveHandshake?.stop(); void liveBridge?.close(); };
 await server.connect(transport);
 
 // Watch agent-config.json — non-critical changes apply live; critical changes
@@ -2129,7 +2239,9 @@ startConfigWatcher(WORKSPACE, async (changes: CriticalChange[]) => {
         logger: "clawcode.config",
         data: {
           source: "live-config",
-          message: `Config change to ${keys} requires /mcp to apply. Other changes (if any) applied live.`,
+          message: changes.some(c => c.key === "liveBridge" || c.key.startsWith("liveBridge."))
+            ? "Live setup changed. Use /agent:live status for the exact restart and channel requirements; configuration alone does not connect voice. Other changes (if any) applied live."
+            : `Config change to ${keys} requires /mcp to apply. Other changes (if any) applied live.`,
           changes,
         },
       },

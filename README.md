@@ -199,6 +199,21 @@ Every browser tab gets its own `sessionId` (UUID v4, persisted in `localStorage`
 
 Full details: [`docs/webchat.md`](docs/webchat.md) · [`docs/http-bridge.md`](docs/http-bridge.md)
 
+### LiveBridge (optional)
+
+Attach a local voice application to the existing ClawCode leader through Channels,
+with durable input receipts, attributed replies and a live task board. The leader
+keeps its normal delegation; the bridge creates no workers or WhatsApp connection.
+Use `/agent:live setup` or ask “Enable ClaudeLive for this agent”. Cloudy prepares
+and applies the configuration with a protected local credential and a combined
+launch command preserving existing channels. A new CLI launch is still needed
+to load Channels flags. `/agent:live status` distinguishes configuration from
+an actually verified connection; `/agent:live disable` preserves work and history. Steer/cancel are requests to the leader; native outcomes remain explicit.
+
+Guided setup: [`docs/live-setup.md`](docs/live-setup.md). This optional integration pairs ClawCode 1.8.0 with ClaudeLive 0.8.2+ and requires Node.js 24+ for the web. The generated launch environment is specific to the agent workspace; it does not overwrite global ClaudeLive plugin options. Wire contract: [`docs/live-bridge.md`](docs/live-bridge.md). Isolated test results and remaining pilot work: [`docs/live-verification.md`](docs/live-verification.md).
+
+LiveBridge also records the verified native session, exposes delivery recovery, merges native task cards, and supports owner-adopted WhatsApp task publications. It remains opt-in and requires a native probe hook as well as the leader ACK. See the [continuity limits](docs/live-bridge.md#whatsapp-continuity-and-remaining-limits) before using it with a daily agent.
+
 ### [Messaging channels](#messaging-channels)
 
 Reach your agent from WhatsApp, Telegram, Discord, iMessage, or Slack. Each messaging plugin is an independent MCP server — no conflicts with ClawCode.
@@ -363,7 +378,7 @@ agent_config(action='get')
 agent_config(action='set', key='memory.backend', value='qmd')
 ```
 
-Non-critical settings apply live. Critical settings need `/mcp` — the agent tells you which.
+Non-critical settings apply live. Critical settings need `/mcp` — the agent tells you which. Live setup additionally requires a new Claude process when its channel flags or launch environment change; use `/agent:live status` for its exact state and restart requirements.
 
 Full details: [`docs/config-reload.md`](docs/config-reload.md)
 

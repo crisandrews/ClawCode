@@ -2,7 +2,7 @@
   "name": "agent",
   "displayName": "ClawCode",
   "description": "Turn Claude Code into a persistent agent — memory, personality, voice, messaging, and more.",
-  "version": "1.7.6",
+  "version": "1.8.0",
   "author": {
     "name": "Juan Cristobal Andrews",
     "url": "https://github.com/crisandrews"

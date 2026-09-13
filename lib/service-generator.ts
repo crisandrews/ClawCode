@@ -13,10 +13,34 @@
 
 import os from "os";
 import path from "path";
+import { fileURLToPath } from "node:url";
+import { normalizeHostLeaderPolicy, type LeaderPolicy } from "../hooks/live-leader-policy.mjs";
+import { hostResumeProbe } from "./host-session.ts";
 
 export type Platform = "darwin" | "linux" | "unsupported";
 
 export type ServiceAction = "install" | "status" | "uninstall" | "logs";
+
+/** Add only the opted-in Live channel, preserving the operator's exact argv. */
+export function withLiveChannel(args: string[], target = "plugin:agent@clawcode"): string[] {
+  if (!/^(?:plugin:[A-Za-z0-9._-]+@[A-Za-z0-9._-]+|server:[A-Za-z0-9._-]+)$/.test(target)) throw new Error("Invalid Live channel target");
+  if (target === "plugin:claude-live@claude-live") throw new Error("Cloudy already owns LiveBridge; select the ClawCode channel registration");
+  const terminatorIndex = args.indexOf("--");
+  const optionEnd = terminatorIndex === -1 ? args.length : terminatorIndex;
+  let channelValues = false, found = false;
+  // Everything after the terminator is positional text, never a channel option.
+  for (const arg of args.slice(0, optionEnd)) {
+    if (arg === "--channels" || arg === "--dangerously-load-development-channels") { channelValues = true; continue; }
+    const inline = /^--(?:channels|dangerously-load-development-channels)=(.*)$/.exec(arg);
+    if (inline || channelValues && !arg.startsWith("-")) {
+      const values = (inline?.[1] ?? arg).split(",");
+      if (values.includes("plugin:claude-live@claude-live")) throw new Error("Cloudy already owns LiveBridge; remove the separate ClaudeLive host channel through /agent:live setup");
+      if (values.includes(target)) found = true;
+    }
+    if (arg.startsWith("-")) channelValues = false;
+  }
+  return found ? [...args] : [...args.slice(0, optionEnd), "--dangerously-load-development-channels", target, ...args.slice(optionEnd)];
+}
 
 export interface ServiceOptions {
   /** Absolute workspace path (agent's directory). */
@@ -29,6 +53,10 @@ export interface ServiceOptions {
   platform?: Platform;
   /** Extra args appended after `--dangerously-skip-permissions`. */
   extraArgs?: string[];
+  /** Explicit Claude config directory; otherwise CLAUDE_CONFIG_DIR or ~/.claude. */
+  claudeConfigDir?: string;
+  /** Used to generate the policy startup wrapper even when resume is disabled. */
+  leaderPolicy?: LeaderPolicy;
   /**
    * Emit a wrapper script so the service runs `claude --continue` and
    * preserves conversation history across restarts. Default: true.
@@ -254,6 +282,9 @@ export function generateResumeWrapper(opts: {
   claudeBin: string;
   workspace: string;
   extraArgs?: string[];
+  claudeConfigDir?: string;
+  resumeOnRestart?: boolean;
+  leaderPolicy?: LeaderPolicy;
   /** Absolute path to the service log, scanned by the log pre-flight. */
   logPath: string;
   /** Absolute path to the force-fresh flag the heal sidecar writes. */
@@ -264,12 +295,34 @@ export function generateResumeWrapper(opts: {
   const quotedArgs = args
     .map((a) => `'${a.replace(/'/g, `'\\''`)}'`)
     .join(" ");
-  const sessionsDir = path.join(
-    opts.workspace,
-    ".claude",
-    "projects",
-    "-" + opts.workspace.replace(/^\/+/, "").replace(/\//g, "-")
-  );
+  const configRoot = opts.claudeConfigDir || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+  if (!path.isAbsolute(configRoot)) throw new Error("Claude config directory must be absolute");
+  const projectKey = opts.workspace.replace(/[^a-zA-Z0-9]/g, "-");
+  const probeProgram = `process.stdout.write((${hostResumeProbe.toString()})(process.argv[1], process.argv[2]));`;
+  const policyModule = fileURLToPath(new URL("../hooks/live-leader-policy.mjs", import.meta.url));
+  const policyProgram = `import fs from 'node:fs'; import path from 'node:path'; import { pathToFileURL } from 'node:url'; import { spawnSync } from 'node:child_process';
+try {
+  let config; try { config = JSON.parse(fs.readFileSync(path.join(process.argv[1], 'agent-config.json'), 'utf8')); } catch (e) { if (process.argv[4] !== '1' && process.env.CLAWCODE_LIVE_LEADER_POLICY !== '1') process.exit(0); throw e; }
+  if (config.liveBridge?.enabled !== true || config.liveBridge.leaderPolicy === undefined) process.exit(0);
+  const { normalizeHostLeaderPolicy, leaderEnvironment, supportsLeaderRuntime } = await import(pathToFileURL(process.argv[2]).href);
+  const policy = normalizeHostLeaderPolicy(config.liveBridge.leaderPolicy);
+  if (!policy.enabled) process.exit(0);
+  const env = leaderEnvironment(policy, process.env);
+  const runtime = spawnSync(process.argv[3], ['--version'], { encoding: 'utf8', timeout: 5000, maxBuffer: 65536, env });
+  if (runtime.status !== 0 || !supportsLeaderRuntime(runtime.stdout)) throw new Error('Claude Code 2.1.232 or later is required');
+  process.stdout.write(env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS);
+} catch { process.stderr.write('resume-wrapper: leader policy requires valid configuration, background tasks and Claude Code 2.1.232+\\n'); process.exit(78); }`;
+  const webProgram = `const fs = require('node:fs'), path = require('node:path');
+try {
+  const workspace = fs.realpathSync(process.argv[1]);
+  // Legacy services never opted into managed web settings. The separate policy
+  // check below retains its stricter behavior for a configured Live policy.
+  let config; try { config = JSON.parse(fs.readFileSync(path.join(workspace, 'agent-config.json'), 'utf8')); } catch { process.exit(0); }
+  if (config.liveBridge?.enabled !== true || !config.liveBridge.tokenFile) process.exit(0);
+  const live = config.liveBridge;
+  if (live.tokenFile !== path.join(workspace, '.clawcode-live', 'bridge.token') || !Number.isInteger(live.webPort) || live.webPort < 1024 || live.webPort > 65535 || live.webPort === live.port) throw new Error();
+  process.stdout.write(String(live.webPort));
+} catch (error) { if (error.code === 'ENOENT') process.exit(0); process.stderr.write('resume-wrapper: invalid managed Live web configuration\\n'); process.exit(78); }`;
 
   return `#!/bin/bash
 # ClawCode service ExecStart wrapper — generated by lib/service-generator.ts.
@@ -285,7 +338,28 @@ export function generateResumeWrapper(opts: {
 set -u
 
 CLAUDE_BIN=${shellQuote(opts.claudeBin)}
-SESSIONS_DIR=${shellQuote(sessionsDir)}
+# Canonical process values keep per-workspace Live settings independent of
+# Claude Code's globally stored plugin options. Never source or print secrets.
+live_web_port=$(${shellQuote(process.execPath)} --input-type=commonjs -e ${shellQuote(webProgram)} ${shellQuote(opts.workspace)}) || exit 78
+if [ -n "$live_web_port" ]; then
+    unset CLAUDE_LIVE_BRIDGE_URL CLAUDE_LIVE_BRIDGE_TOKEN CLAUDE_LIVE_DEFAULT_MODE
+    export CLAUDE_LIVE_HOST_BRIDGE=0
+    export CLAUDE_LIVE_PORT="$live_web_port"
+    export CLAUDE_LIVE_ENV_FILE=${shellQuote(path.join(opts.workspace, ".clawcode-live", "claude-live.env"))}
+fi
+# Read only the workspace's opt-in policy. Output is one validated integer,
+# never shell source or credential values; no eval and no permission override.
+live_leader_limit=$(${shellQuote(process.execPath)} --input-type=module -e ${shellQuote(policyProgram)} ${shellQuote(opts.workspace)} ${shellQuote(policyModule)} "$CLAUDE_BIN" ${normalizeHostLeaderPolicy(opts.leaderPolicy).enabled ? "1" : "0"}) || exit 78
+if [ -n "$live_leader_limit" ]; then
+    export CLAUDE_CODE_FORK_SUBAGENT=1
+    export CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS="$live_leader_limit"
+    export CLAWCODE_LIVE_LEADER_POLICY=1
+fi
+CLAUDE_CONFIG_ROOT=${shellQuote(configRoot)}
+if [ -n "\${CLAUDE_CONFIG_DIR:-}" ]; then CLAUDE_CONFIG_ROOT="$CLAUDE_CONFIG_DIR"; fi
+export CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_ROOT"
+${opts.resumeOnRestart === false ? `# Operator disabled automatic resume; retain policy setup and ordinary arguments.\nexec "$CLAUDE_BIN" ${quotedArgs}` : "# Continue/resume selection follows."}
+SESSIONS_DIR="$CLAUDE_CONFIG_ROOT/projects/${projectKey}"
 LOG_PATH=${shellQuote(opts.logPath)}
 FORCE_FRESH_FLAG=${shellQuote(opts.forceFreshFlagPath)}
 RESUME_STALE_DAYS=7
@@ -294,11 +368,26 @@ HEAL_THRESHOLD=${HEAL_THRESHOLD}
 HEAL_LOG_TAIL_LINES=${HEAL_LOG_TAIL_LINES}
 
 continue_flag="--continue"
+resume_id=""
 skip_reason=""
+
+# A verified Live host is resumed by its exact native ID. Never select another
+# recent terminal session or start a second copy while its MCP owner is alive.
+host_target=$(${shellQuote(process.execPath)} --input-type=commonjs -e ${shellQuote(probeProgram)} ${shellQuote(opts.workspace)} "$SESSIONS_DIR")
+case "$host_target" in
+    resume:*) resume_id="\${host_target#resume:}"; continue_flag="--resume" ;;
+    legacy) ;;
+    *) printf 'resume-wrapper: refusing startup (%s)\\n' "$host_target" >&2; exit 78 ;;
+esac
+
+# Explicit CLI resume flags conflict with automatic selection; preserve the
+# operator's arguments only when there is no pinned host to accidentally fork.
+${(opts.extraArgs ?? []).some(arg => ["--resume", "--continue", "-r", "-c", "--session-id", "--fork-session"].includes(arg) || arg.startsWith("--resume=") || arg.startsWith("--session-id=")) ? 'if [ -n "$resume_id" ]; then printf \'resume-wrapper: explicit session flags conflict with pinned Live host\\n\' >&2; exit 78; fi\ncontinue_flag=""' : '# No explicit session override.'}
 
 # 1. Force-fresh flag from heal sidecar → start fresh, clear flag first so a
 # failed start doesn't leave the flag armed and cause perpetual fresh starts.
 if [ -f "$FORCE_FRESH_FLAG" ]; then
+    if [ -n "$resume_id" ]; then printf 'resume-wrapper: pinned Live host requires explicit recovery; refusing automatic fresh session\\n' >&2; exit 78; fi
     rm -f "$FORCE_FRESH_FLAG" 2>/dev/null || true
     continue_flag=""
     skip_reason="force-fresh flag present"
@@ -312,11 +401,12 @@ fi
 
 # 3. Prior session older than RESUME_STALE_DAYS → start fresh.
 if [ -n "$continue_flag" ]; then
-    latest=$(ls -t "$SESSIONS_DIR"/*.jsonl 2>/dev/null | head -1)
+    if [ -n "$resume_id" ]; then latest="$SESSIONS_DIR/$resume_id.jsonl"; else latest=$(ls -t "$SESSIONS_DIR"/*.jsonl 2>/dev/null | head -1); fi
     if [ -n "$latest" ]; then
         mtime=$(stat -c %Y "$latest" 2>/dev/null || stat -f %m "$latest" 2>/dev/null || echo 0)
         age_days=$(( ( $(date +%s) - mtime ) / 86400 ))
         if [ "$age_days" -gt "$RESUME_STALE_DAYS" ]; then
+            if [ -n "$resume_id" ]; then printf 'resume-wrapper: pinned Live host is stale; explicit recovery required\\n' >&2; exit 78; fi
             continue_flag=""
             skip_reason="last session >$RESUME_STALE_DAYS days old"
         fi
@@ -333,6 +423,7 @@ if [ -n "$continue_flag" ] && [ -r "$LOG_PATH" ]; then
         grep -Ec "$HEAL_PATTERN" 2>/dev/null || true)
     [ -z "$recent" ] && recent=0
     if [ "$recent" -ge "$HEAL_THRESHOLD" ]; then
+        if [ -n "$resume_id" ]; then printf 'resume-wrapper: pinned Live host needs recovery; refusing to replace its conversation\\n' >&2; exit 78; fi
         continue_flag=""
         skip_reason="log shows $recent error lines in last $HEAL_LOG_TAIL_LINES (stale resume)"
     fi
@@ -345,6 +436,7 @@ if [ -n "$skip_reason" ]; then
 fi
 
 # shellcheck disable=SC2086
+if [ -n "$resume_id" ]; then exec "$CLAUDE_BIN" --resume "$resume_id" ${quotedArgs}; fi
 exec "$CLAUDE_BIN" $continue_flag ${quotedArgs}
 `;
 }
@@ -760,7 +852,7 @@ export function buildPlan(action: ServiceAction, opts: ServiceOptions): ServiceP
 
     const flagPath = forceFreshFlagPath(slug);
 
-    if (resumeOnRestart) {
+    if (resumeOnRestart || normalizeHostLeaderPolicy(opts.leaderPolicy).enabled) {
       const wrapperPath = resumeWrapperPath(slug);
       extraFiles.push({
         path: wrapperPath,
@@ -768,6 +860,9 @@ export function buildPlan(action: ServiceAction, opts: ServiceOptions): ServiceP
           claudeBin: opts.claudeBin,
           workspace: opts.workspace,
           extraArgs: opts.extraArgs,
+          claudeConfigDir: opts.claudeConfigDir,
+          resumeOnRestart,
+          leaderPolicy: opts.leaderPolicy,
           logPath,
           forceFreshFlagPath: flagPath,
         }),

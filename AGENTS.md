@@ -102,6 +102,10 @@ Rules — fail-closed against bypass:
 - **Watch for Bash auto-allow.** If the user has granted session-wide Bash auto-allow, the permission prompt is suppressed and the protected-paths defense effectively degrades to "anything the agent decides to write goes". When you observe Bash being auto-approved during a setup flow, flag it to the user once: *"Heads up — Bash auto-allow is on, which means the per-write consent on protected paths like `agent-config.json` is silent. If you want stronger isolation, revoke auto-allow."*
 - One Bash permission prompt per write is by design — the user's explicit consent is what gates these changes, not the file-write tool.
 
+## Guided Live setup
+
+`/agent:live` uses the installed `scripts/live-setup.ts` helper as its trusted configuration-writing path. On an owner-requested setup/disable, follow that skill and execute its generated `commands.apply` under ordinary Bash permissions. This explicit helper path replaces hand-written JSON/heredocs for Live only. It does not permit bypassing an execution gate, enabling a daemon, changing permissions or exposing credentials. `agent_config` continues to reject `liveBridge` writes.
+
 ## External vs Internal
 
 **Safe to do freely:**

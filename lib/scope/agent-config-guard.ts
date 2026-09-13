@@ -67,6 +67,8 @@ const MAX_SEGMENT_CHARS = 64;
  * for non-scope keys whose value is a path/filesystem-trust signal.
  */
 export const PRIVILEGED_PATH_KEYS = new Set([
+  // Listener/authentication configuration requires an operator restart.
+  "liveBridge",
   "voice.outputDir",
   "voice.config.outputDir",
   "memory.extraPaths",

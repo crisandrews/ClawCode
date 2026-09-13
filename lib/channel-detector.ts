@@ -533,6 +533,9 @@ export interface LaunchCommandOptions {
   includeInstalledOnly?: boolean;
   /** Append --dangerously-skip-permissions. Default: false. */
   skipPermissions?: boolean;
+  /** Include Live only when explicitly opted in. Target reflects installation
+   * identity (e.g. plugin:agent@clawcode or server:clawcode), never a new daemon. */
+  liveChannelTarget?: string;
 }
 
 export function buildLaunchCommand(
@@ -560,6 +563,10 @@ export function buildLaunchCommand(
 
   for (const c of dev) {
     parts.push(`--dangerously-load-development-channels ${c.pluginId}`);
+  }
+  if (opts.liveChannelTarget !== undefined) {
+    if (!/^(?:plugin:[A-Za-z0-9._-]+@[A-Za-z0-9._-]+|server:[A-Za-z0-9._-]+)$/.test(opts.liveChannelTarget)) throw new Error("Invalid Live channel target");
+    if (!dev.some(c => c.pluginId === opts.liveChannelTarget)) parts.push(`--dangerously-load-development-channels ${opts.liveChannelTarget}`);
   }
   if (official.length > 0) {
     parts.push(`--channels ${official.map((c) => c.pluginId).join(",")}`);

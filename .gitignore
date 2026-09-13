@@ -1,4 +1,5 @@
 node_modules/
+.clawcode-live/
 package-lock.json
 .claude/
 dev-tests/
