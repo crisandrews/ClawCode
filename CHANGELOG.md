@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixes
+
+- Docs/live: use generic ClawCode agent wording in setup guides, templates, tool descriptions and user-facing setup messages so instructions apply to any agent rather than assuming a personal assistant name.
+
 ## [1.8.0] — 2026-09-13
 
 ### Changes

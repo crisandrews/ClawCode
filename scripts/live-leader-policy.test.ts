@@ -19,7 +19,7 @@ const payload = (tool_name: string, tool_input: Record<string, unknown> = {}, ex
 const denied = (value: any) => value.hookSpecificOutput?.permissionDecision === "deny";
 const hook = fileURLToPath(new URL("../hooks/live-leader-pretool.mjs", import.meta.url));
 
-test("host default preserves Cloudy capabilities while generic consumers retain strict delegation", () => {
+test("host default preserves ClawCode agent capabilities while generic consumers retain strict delegation", () => {
   const host = normalizeHostLeaderPolicy(policy);
   assert.equal(host.tools, "host_native"); assert.equal(normalizeLeaderPolicy(policy).tools, "delegate_operations");
   assert.equal(normalizeHostLeaderPolicy({ ...policy, tools: "delegate_operations" }).tools, "delegate_operations");

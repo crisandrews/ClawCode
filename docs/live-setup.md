@@ -4,15 +4,15 @@ Available in ClawCode 1.8.0 from [PR #38](https://github.com/crisandrews/ClawCod
 
 ## From the agent's conversation
 
-Tell Cloudy **“Enable ClaudeLive for this agent and keep WhatsApp”**, or run:
+Tell your ClawCode agent **“Enable ClaudeLive for this agent and keep WhatsApp”**, or run:
 
 ```text
 /agent:live setup
 ```
 
-Cloudy checks the workspace and current launcher, prepares a plan, and applies the requested configuration under its ordinary tool permissions. It installs the ClaudeLive web plugin locally and provides the complete restart command. No hand-written JSON or copied bridge token is needed. If the existing launch arguments cannot be determined, it asks for that command to preserve the session, channels, Chrome and permissions accurately.
+Your ClawCode agent checks the workspace and current launcher, prepares a plan, and applies the requested configuration under its ordinary tool permissions. It installs the ClaudeLive web plugin locally and provides the complete restart command. No hand-written JSON or copied bridge token is needed. If the existing launch arguments cannot be determined, it asks for that command to preserve the session, channels, Chrome and permissions accurately.
 
-Exit the current interactive Claude process, then use the generated command in the same directory. The owner must perform this restart: native Channels flags and background-subagent environment belong to the Claude process itself. Loading an MCP or `/reload-plugins` cannot add missing startup flags. Do not run the new command while another process still owns the same Cloudy.
+Exit the current interactive Claude process, then use the generated command in the same directory. The owner must perform this restart: native Channels flags and background-subagent environment belong to the Claude process itself. Loading an MCP or `/reload-plugins` cannot add missing startup flags. Do not run the new command while another process still owns the same ClawCode agent session.
 
 After restart:
 
@@ -55,7 +55,7 @@ The shared plain-Node credential reader is used by both the MCP server and nativ
 
 Claude Code stores plugin options globally even when installation scope is local. Consequently the guided installer does **not** write `--config` values. Its restart command supplies `CLAUDE_LIVE_HOST_BRIDGE=0`, `CLAUDE_LIVE_PORT` and this workspace's canonical `CLAUDE_LIVE_ENV_FILE` path, which take precedence over shared plugin options. It removes `CLAUDE_LIVE_BRIDGE_URL`, `CLAUDE_LIVE_BRIDGE_TOKEN` and `CLAUDE_LIVE_DEFAULT_MODE` from the new process environment so the protected file is authoritative. Use the complete generated command, including these unset operations; copying only its trailing `claude` arguments loses that workspace isolation. No credential is present in the command or tool response.
 
-Give each simultaneous agent separate workspaces, web ports and bridge ports. The setup never terminates another port owner. The ClaudeLive plugin creates a web process owned by its CLI; ending voice alone preserves Cloudy's tasks, while exiting that CLI closes its owned web.
+Give each simultaneous agent separate workspaces, web ports and bridge ports. The setup never terminates another port owner. The ClaudeLive plugin creates a web process owned by its CLI; ending voice alone preserves the agent's tasks, while exiting that CLI closes its owned web.
 
 ## Existing services
 

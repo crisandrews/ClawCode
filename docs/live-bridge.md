@@ -41,7 +41,7 @@ send, and does not depend on HTTP or a model call. Workers identified by native
 `agent_id` also retain their ordinary checks. Guests can use only what the existing
 execution gate already permits; a guest Agent denial remains a denial.
 
-Cloudy should do short conversational work and retrieve relevant memory directly,
+The ClawCode agent should do short conversational work and retrieve relevant memory directly,
 then delegate operations that may take time. This preserves the host's behavior;
 it does **not** guarantee low latency for every direct tool. Reading source-bound
 memory first also avoids making every recall wait for worker capacity. WhatsApp
@@ -52,7 +52,7 @@ The optional stricter mode is `tools:"delegate_operations"`. It delegates main
 operational calls, file tools, skill invocations and unknown MCP tools. It retains
 only bounded native coordination, the four exact ClawCode Live tools, and the two
 existing WhatsApp reply/react names. `coordinationTools` can add reviewed exact
-names, never wildcards. That mode changes Cloudy's ordinary behavior and is not
+names, never wildcards. That mode changes the agent's ordinary behavior and is not
 required to attach voice. Generic shared-helper consumers retain this strict
 default for backwards compatibility; ClawCode's hook, server and service launcher
 all use the explicit host normalizer. Set `tools` explicitly to override either
@@ -60,7 +60,7 @@ adapter's default.
 
 The concurrency value is a **native new-spawn admission limit**. At capacity,
 Claude rejects a new Agent call; it does not automatically queue the job.
-Cloudy should publish the unstarted assignment as `queued`, return to dialogue,
+The ClawCode agent should publish the unstarted assignment as `queued`, return to dialogue,
 and explicitly admit it later when capacity is available. `SendMessage` can
 resume a stopped subagent without going through that new-spawn limit, so the
 setting is not a hard ceiling over every active/resumed agent. Team and other
@@ -124,7 +124,7 @@ Custom Channels currently require the development flag and its consent dialog;
 organization channel policy still applies. For a bare MCP registration, the
 corresponding form is `server:<registered-server-name>`. These are documented in
 [Anthropic's Channels reference](https://code.claude.com/docs/en/channels-reference#test-during-the-research-preview).
-Do not point a daily Cloudy service at an experimental checkout implicitly.
+Do not point an existing ClawCode service at an experimental checkout implicitly.
 
 The server binds only `127.0.0.1`. Every endpoint requires
 `Authorization: Bearer <secret>` and a local Host header. Browser Origin headers
@@ -338,7 +338,7 @@ this change.
 
 Source adoption is an owner HTTP operation, not a model MCP tool. Candidates use the existing private request-envelope contract and explicit ownerJids; envelopes expire after 60 seconds. Each selection rechecks ownership, expiry and revocation. The public reference is an opaque hash, without token, sender, chat ID or message text. It identifies a dispatch, not an imported conversation. Adoption never widens memory scope or grants authority to send WhatsApp messages. A Live turn can still encounter the existing conservative guest execution window; Agent now receives the same deny as Task. This patch does not remove that restriction.
 
-Use live_work with sourceChannel and sourceInputId. After a source input has completed, live_emit can publish a proactive leader.reply or leader.progress using taskId and destination:live. That result is attributed to the task's authorized source; no synthetic voice input is created. Cloudy still decides what public result belongs in Live.
+Use live_work with sourceChannel and sourceInputId. After a source input has completed, live_emit can publish a proactive leader.reply or leader.progress using taskId and destination:live. That result is attributed to the task's authorized source; no synthetic voice input is created. The ClawCode agent still decides what public result belongs in Live.
 
 The service wrapper now resolves sessions under CLAUDE_CONFIG_DIR (or ~/.claude). When Live has recorded a verified native host, it resumes that exact ID and refuses an already-running writer, missing transcript, incompatible override, or automatic fresh-session healing. Unpinned legacy services keep their existing continuation policy. No generated service is installed or restarted by this patch. Existing permission flags are preserved.
 

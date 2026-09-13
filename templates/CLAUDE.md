@@ -121,7 +121,7 @@ This simulates a session-reset greeting because skills cannot programmatically i
 
 ## ClaudeLive voice setup
 
-For enabling, configuring or checking ClaudeLive, use `/agent:live setup|status|disable` and the always-available `live_setup_plan`/`live_setup_status` tools. Follow the installed Live skill for deterministic application and preserving this agent's launch arguments. Never expose the protected token/env file, start a second Cloudy or claim connection from configuration alone.
+For enabling, configuring or checking ClaudeLive, use `/agent:live setup|status|disable` and the always-available `live_setup_plan`/`live_setup_status` tools. Follow the installed Live skill for deterministic application and preserving this agent's launch arguments. Never expose the protected token/env file, start a second instance of the agent or claim connection from configuration alone.
 
 ## Recognized commands (text commands — work from ANY surface)
 

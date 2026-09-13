@@ -1,6 +1,6 @@
 # Integrating Live voice and the conversational leader
 
-Review and integration handoff for [PR #38](https://github.com/crisandrews/ClawCode/pull/38). The PR targets `main`; its branch is `feat/live-voice-bridge`. The conversational policy builds on native continuity commit `11362a596f0619b176088bc436d5b9e7b0341f75` in that same PR. No daily Cloudy installation has been changed or restarted.
+Review and integration handoff for [PR #38](https://github.com/crisandrews/ClawCode/pull/38). The PR targets `main`; its branch is `feat/live-voice-bridge`. The conversational policy builds on native continuity commit `11362a596f0619b176088bc436d5b9e7b0341f75` in that same PR. No existing ClawCode installation has been changed or restarted.
 
 ## What this PR changes
 
@@ -8,7 +8,7 @@ ClawCode remains the sole owner of the existing Claude session. LiveBridge adds 
 
 The optional `liveBridge.leaderPolicy` adds native background-delegation guards. In ClawCode its default `tools:"host_native"` preserves the principal's existing memory tools, skills, native tools, installed MCPs and messaging interfaces. Short work stays in the principal; slow work is preferably delegated to native background subagents. Agent background settings and nonblocking TaskOutput are checked without replacing ordinary tool permissions. The guard returns a deny decision or `{}`; it never approves a tool, widens memory scope, or removes the existing guest execution gate. Workers are identified by native `agent_id` and retain their normal capabilities and checks.
 
-`tools:"delegate_operations"` remains an explicit strict option for a deliberately restricted principal. Generic ClaudeLive-managed helper consumers retain that strict default. ClawCode resolves its host default consistently in the hook, server and generated service launcher; attaching voice does not require reducing Cloudy to a coordination-only tool list.
+`tools:"delegate_operations"` remains an explicit strict option for a deliberately restricted principal. Generic ClaudeLive-managed helper consumers retain that strict default. ClawCode resolves its host default consistently in the hook, server and generated service launcher; attaching voice does not require reducing the agent to a coordination-only tool list.
 
 The generated launcher requires Claude Code 2.1.232 or later for this policy and sets `CLAUDE_CODE_FORK_SUBAGENT=1` and `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`. Conflicting background-disabled configuration is rejected before launch. New installs and existing services with the option absent keep their prior behavior.
 
@@ -32,13 +32,13 @@ cd /path/to/ClaudeLive
 CLAUDE_LIVE_TEST_CLAWCODE_ROOT=/path/to/ClawCode-review ./node_modules/.bin/tsx --test tests/bridge-integration.test.ts
 ```
 
-The fixture uses temporary stores, synthetic native hooks and loopback listeners on available ports. It does not launch the ClawCode MCP server or touch an installed Cloudy workspace.
+The fixture uses temporary stores, synthetic native hooks and loopback listeners on available ports. It does not launch the ClawCode MCP server or touch an installed ClawCode workspace.
 
 The tests use isolated workspaces, synthetic native events and generated launcher processes. They do not send WhatsApp, enable a daily service, or certify human voice interaction. The [ClawCode 1.8.0 / ClaudeLive 0.8.2 verification record](live-verification.md) separates the real MCP/HTTP/collector tests from the outstanding human Channels pilot.
 
 ## Activation after review
 
-The recommended path is now `/agent:live setup` or “Enable ClaudeLive for this agent”. Cloudy can plan and apply setup, install the web plugin locally and return the exact restart command. `/agent:live status` verifies saved settings, actual listener ownership and native readiness separately. See [the setup contract](live-setup.md). The manual environment example below remains supported for existing operators.
+The recommended path is now `/agent:live setup` or “Enable ClaudeLive for this agent”. The ClawCode agent can plan and apply setup, install the web plugin locally and return the exact restart command. `/agent:live status` verifies saved settings, actual listener ownership and native readiness separately. See [the setup contract](live-setup.md). The manual environment example below remains supported for existing operators.
 
 
 Start with an isolated test workspace and a supported Claude CLI. Preserve the existing channel, scope, permission and authentication settings. Merge these fields into its configuration rather than replacing the configuration file:
@@ -63,7 +63,9 @@ Supply the bridge credential through the named environment variable; never commi
 
 Connect ClaudeLive to that host's loopback bridge using its credential. Readiness requires both the leader's probe ACK and the corresponding native hook. A public policy setting describes configuration; `hookObserved:false` or `runtimeConfirmed:false` must not be presented as tested runtime enforcement. The reported `tools` and `directToolsAllowed` fields describe the effective policy. `host_native` preserves the normal permission path for current and future installed tools. Only the optional strict mode needs reviewed `coordinationTools` exceptions; these are not wildcard permission grants.
 
-### One Cloudy session, two input channels
+<a id="one-cloudy-session-two-input-channels"></a>
+
+### One ClawCode agent session, two input channels
 
 The native session loads its existing WhatsApp channel and ClawCode's Live channel together. For the standard plugin names, preserve these entries in its launch arguments:
 
@@ -86,7 +88,7 @@ This manual example matches the policy limit of 6 above. Preserve the existing s
 }
 ```
 
-Launch the ClaudeLive web through its [standalone setup](https://github.com/crisandrews/ClaudeLive#readme), then select the external-agent mode and configure `http://127.0.0.1:18791` plus the backend credential. ClawCode owns this bridge. Alternatively, use the complete `/agent:live setup` launch command for the ClaudeLive plugin: it sets `CLAUDE_LIVE_HOST_BRIDGE=0`, the workspace's web port and protected env-file path, and unsets stale bridge URL/token/default-mode variables. Do not write global `connect_session` or other plugin options as a substitute for this workspace-specific environment. Do not enable an additional `plugin:claude-live@claude-live` input channel to give the same Cloudy a second Live bridge. A web created by the ClaudeLive plugin follows that CLI's lifetime; a standalone web has its own process lifetime. Disconnecting the voice attachment itself does not stop Cloudy or its tasks.
+Launch the ClaudeLive web through its [standalone setup](https://github.com/crisandrews/ClaudeLive#readme), then select the external-agent mode and configure `http://127.0.0.1:18791` plus the backend credential. ClawCode owns this bridge. Alternatively, use the complete `/agent:live setup` launch command for the ClaudeLive plugin: it sets `CLAUDE_LIVE_HOST_BRIDGE=0`, the workspace's web port and protected env-file path, and unsets stale bridge URL/token/default-mode variables. Do not write global `connect_session` or other plugin options as a substitute for this workspace-specific environment. Do not enable an additional `plugin:claude-live@claude-live` input channel to give the same ClawCode agent a second Live bridge. A web created by the ClaudeLive plugin follows that CLI's lifetime; a standalone web has its own process lifetime. Disconnecting the voice attachment itself does not stop the agent or its tasks.
 
 ## Acceptance in the real host
 

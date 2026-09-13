@@ -24,7 +24,7 @@ export type ServiceAction = "install" | "status" | "uninstall" | "logs";
 /** Add only the opted-in Live channel, preserving the operator's exact argv. */
 export function withLiveChannel(args: string[], target = "plugin:agent@clawcode"): string[] {
   if (!/^(?:plugin:[A-Za-z0-9._-]+@[A-Za-z0-9._-]+|server:[A-Za-z0-9._-]+)$/.test(target)) throw new Error("Invalid Live channel target");
-  if (target === "plugin:claude-live@claude-live") throw new Error("Cloudy already owns LiveBridge; select the ClawCode channel registration");
+  if (target === "plugin:claude-live@claude-live") throw new Error("The ClawCode agent already owns LiveBridge; select the ClawCode channel registration");
   const terminatorIndex = args.indexOf("--");
   const optionEnd = terminatorIndex === -1 ? args.length : terminatorIndex;
   let channelValues = false, found = false;
@@ -34,7 +34,7 @@ export function withLiveChannel(args: string[], target = "plugin:agent@clawcode"
     const inline = /^--(?:channels|dangerously-load-development-channels)=(.*)$/.exec(arg);
     if (inline || channelValues && !arg.startsWith("-")) {
       const values = (inline?.[1] ?? arg).split(",");
-      if (values.includes("plugin:claude-live@claude-live")) throw new Error("Cloudy already owns LiveBridge; remove the separate ClaudeLive host channel through /agent:live setup");
+      if (values.includes("plugin:claude-live@claude-live")) throw new Error("The ClawCode agent already owns LiveBridge; remove the separate ClaudeLive host channel through /agent:live setup");
       if (values.includes(target)) found = true;
     }
     if (arg.startsWith("-")) channelValues = false;

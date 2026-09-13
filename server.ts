@@ -523,7 +523,7 @@ function _loadBootstrapFilesInner(): string {
   sections.push("");
 
   sections.push("## Live voice setup\n");
-  sections.push("For 'enable ClaudeLive', 'connect voice', configuration or connection troubleshooting, use /agent:live setup|status|disable and live_setup_plan/live_setup_status. These discovery tools work even while Live is disabled. Read the installed skills/live/SKILL.md before applying its generated commands. The plan is read-only; only the owner-authorized helper applies reviewed changes. Never improvise JSON edits, expose credentials, start a second Cloudy, or change WhatsApp/permissions to enable voice. Apply configuration, plugin installation and actual native channel verification are different states.\n");
+  sections.push("For 'enable ClaudeLive', 'connect voice', configuration or connection troubleshooting, use /agent:live setup|status|disable and live_setup_plan/live_setup_status. These discovery tools work even while Live is disabled. Read the installed skills/live/SKILL.md before applying its generated commands. The plan is read-only; only the owner-authorized helper applies reviewed changes. Never improvise JSON edits, expose credentials, start a second instance of the agent, or change WhatsApp/permissions to enable voice. Apply configuration, plugin installation and actual native channel verification are different states.\n");
   if (liveBridge) {
     sections.push("## Live conversation and background work\n");
     sections.push("A voice interface is attached to this same leader. For independent work that may take time, use native Agent with run_in_background when the host supports it, publish its public task state, and stay available for the next input. Never claim background execution before a native task exists; do not create a second coordinator.");
@@ -887,7 +887,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "live_setup_status",
-      description: "Inspect Live configuration, protected credential availability, port listeners and verified native channel separately. Read-only, no probes or replays. A listening port alone never means Cloudy is connected.",
+      description: "Inspect Live configuration, protected credential availability, port listeners and verified native channel separately. Read-only, no probes or replays. A listening port alone never means the ClawCode agent is connected.",
       inputSchema: { type: "object" as const, properties: {}, additionalProperties: false },
     },
     {

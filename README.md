@@ -204,7 +204,7 @@ Full details: [`docs/webchat.md`](docs/webchat.md) · [`docs/http-bridge.md`](do
 Attach a local voice application to the existing ClawCode leader through Channels,
 with durable input receipts, attributed replies and a live task board. The leader
 keeps its normal delegation; the bridge creates no workers or WhatsApp connection.
-Use `/agent:live setup` or ask “Enable ClaudeLive for this agent”. Cloudy prepares
+Use `/agent:live setup` or ask “Enable ClaudeLive for this agent”. Your ClawCode agent prepares
 and applies the configuration with a protected local credential and a combined
 launch command preserving existing channels. A new CLI launch is still needed
 to load Channels flags. `/agent:live status` distinguishes configuration from

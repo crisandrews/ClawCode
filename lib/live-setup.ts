@@ -228,7 +228,7 @@ export async function createLiveSetupPlan(workspace: string, options: LiveSetupO
   if (preflight.webListener !== "not_listening") warnings.push("Web port availability does not verify ownership. Check the existing ClaudeLive instance before launching or changing its port.");
   if (preflight.bridgeListener === "listening") warnings.push("The bridge listener was not authenticated by setup; saved configuration does not change an already running host.");
   if (options.extraArgs === undefined) warnings.push("Existing launch arguments were not supplied. Preserve the current session, permissions and channel arguments before relaunching; this is not a complete restart command.");
-  if (bridge.leaderPolicy?.tools === "delegate_operations") warnings.push("Setup changes the leader tool policy to host_native so Cloudy retains its existing native tools and scope guards.");
+  if (bridge.leaderPolicy?.tools === "delegate_operations") warnings.push("Setup changes the leader tool policy to host_native so the ClawCode agent retains its existing native tools and scope guards.");
   const applyArgs = [path.join(toolRoot, "node_modules", ".bin", "tsx"), path.join(toolRoot, "scripts", "live-setup.ts"), "apply", "--workspace", canonical,
     "--expected-fingerprint", id, "--enabled", String(normalized.enabled), "--bridge-port", String(normalized.bridgePort), "--web-port", String(normalized.webPort), "--max-concurrent", String(normalized.maxConcurrent), "--live-channel-target", normalized.liveChannelTarget,
     ...(normalized.extraArgs === undefined ? [] : ["--", ...normalized.extraArgs])];

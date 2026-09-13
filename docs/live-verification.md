@@ -1,6 +1,6 @@
 # Live integration verification — ClawCode 1.8.0
 
-Verified locally on September 13, 2026 for the changes in [PR #38](https://github.com/crisandrews/ClawCode/pull/38), paired with **ClaudeLive 0.8.2** (`ecaf4b9`). These results cover the integrated implementation and the review corrections below, using Node.js 24.19.0 on macOS. Local validation, publication, CI and activation of an installed agent are separate steps; this record does not claim that the daily Cloudy service was updated or restarted.
+Verified locally on September 13, 2026 for the changes in [PR #38](https://github.com/crisandrews/ClawCode/pull/38), paired with **ClaudeLive 0.8.2** (`ecaf4b9`). These results cover the integrated implementation and the review corrections below, using Node.js 24.19.0 on macOS. Local validation, publication, CI and activation of an installed agent are separate steps; this record does not claim that an existing ClawCode service was updated or restarted.
 
 ## Confirmed results
 
@@ -57,7 +57,7 @@ Without that environment variable, the cross-repository test uses ClaudeLive's b
 
 ## Boundaries of this validation
 
-- Real MCP processes, native collector subprocesses, setup files, HTTP/SSE and web initialization were exercised. The native session IDs, probe acknowledgements and channel events were synthetic. No human Claude Channels session, WhatsApp exchange or microphone/playback pilot was performed in these checks; no daily Cloudy restart was performed.
+- Real MCP processes, native collector subprocesses, setup files, HTTP/SSE and web initialization were exercised. The native session IDs, probe acknowledgements and channel events were synthetic. No human Claude Channels session, WhatsApp exchange or microphone/playback pilot was performed in these checks; no existing ClawCode service restart was performed.
 - Setup is an owner-requested operation through the trusted skill's deterministic helper and ordinary tool permissions. The skill specifies the write mechanism; it does not grant itself authorization. Applying config, installing a plugin, restarting the owner process and verifying its native channel are distinct states.
 - Generated launch commands preserve the original argument vector. Workspace-specific environment values and explicit unset operations avoid changing global plugin settings or inheriting another agent's bridge credential. A process listening on a port is not evidence that it owns the selected native session.
 - Normal setup failures roll back the files created by that attempt. An abrupt crash between multiple file writes can leave an incomplete setup requiring review; no crash-atomic multi-file transaction is claimed. Existing work and uncertain delivery records are retained.
