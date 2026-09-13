@@ -63,8 +63,6 @@ Supply the bridge credential through the named environment variable; never commi
 
 Connect ClaudeLive to that host's loopback bridge using its credential. Readiness requires both the leader's probe ACK and the corresponding native hook. A public policy setting describes configuration; `hookObserved:false` or `runtimeConfirmed:false` must not be presented as tested runtime enforcement. The reported `tools` and `directToolsAllowed` fields describe the effective policy. `host_native` preserves the normal permission path for current and future installed tools. Only the optional strict mode needs reviewed `coordinationTools` exceptions; these are not wildcard permission grants.
 
-<a id="one-cloudy-session-two-input-channels"></a>
-
 ### One ClawCode agent session, two input channels
 
 The native session loads its existing WhatsApp channel and ClawCode's Live channel together. For the standard plugin names, preserve these entries in its launch arguments:

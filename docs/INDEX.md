@@ -46,6 +46,7 @@ Master index of every capability. The agent reads this first when it needs to re
 
 ## Rules for contributors
 
+- Follow [source-repository publication boundaries](PUBLICATION.md); personal agent data and raw operational investigations do not belong in the product repository.
 - Every feature change must update its doc in the **same commit** as the code.
 - New features add an entry here before merging.
 - Removed features delete their doc and remove the entry here.
