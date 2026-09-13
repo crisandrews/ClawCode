@@ -1,6 +1,6 @@
 # Live integration verification — ClawCode 1.8.0
 
-Verified locally on September 13, 2026 for the changes in [PR #38](https://github.com/crisandrews/ClawCode/pull/38), paired with **ClaudeLive 0.8.2** (`ecaf4b9`). These results cover the release candidate and the review corrections below, using Node.js 24.19.0 on macOS. Local validation, publication, CI and activation of an installed agent are separate steps; this record does not claim that the daily Cloudy service was updated or restarted.
+Verified locally on September 13, 2026 for the changes in [PR #38](https://github.com/crisandrews/ClawCode/pull/38), paired with **ClaudeLive 0.8.2** (`ecaf4b9`). These results cover the integrated implementation and the review corrections below, using Node.js 24.19.0 on macOS. Local validation, publication, CI and activation of an installed agent are separate steps; this record does not claim that the daily Cloudy service was updated or restarted.
 
 ## Confirmed results
 
@@ -10,6 +10,7 @@ Verified locally on September 13, 2026 for the changes in [PR #38](https://githu
 | `npm test` | **184/184 passed** | Existing service, execution-scope and trust regressions, including the new private Live tool guard. |
 | ClaudeLive cross-repository contract | **5/5 passed** | Actual ClawCode bridge and plain-Node collector with ClaudeLive's real external adapter over authenticated loopback HTTP/SSE. |
 | Guided setup integration | **Passed** | Actual setup helper → generated protected environment → ClaudeLive environment loader → bridge → web, with synthetic ACK/native-hook evidence. |
+| Merged-main CI | **Passed on Ubuntu and macOS** | Base and Live suites at merge commit `a5234f273c225f459df15d2c147aa76c5a074c7c`; [GitHub Actions run](https://github.com/crisandrews/ClawCode/actions/runs/34777765341). |
 
 The 83 Live tests include these suites; their counts are **not additional tests**:
 

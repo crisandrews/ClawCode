@@ -2,8 +2,26 @@
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-09-13
+
+### Changes
+
+- Lib/LiveBridge: add an opt-in authenticated loopback HTTP/SSE bridge so ClaudeLive can attach voice to the existing ClawCode leader, preserving its native session, memory and messaging channels. Durable input revisions, delivery receipts and explicit recovery retain uncertain work without automatically replaying it. (#38)
+- Lib/scope/live-source: allow explicit adoption of an owner-verified recent WhatsApp dispatch into the Live conversation without importing chat history, extending authorization expiry or authorizing cross-channel sends. (#38)
+- Skills/live: add `/agent:live setup|status|disable`, read-only setup planning/status tools and a deterministic apply helper with stale-plan checks, private workspace credentials and rollback for normal setup failures. Generated interactive and service commands preserve existing arguments and isolate each workspace's ClaudeLive environment; installation still requires an operator-controlled restart. (#38)
+- Hooks/live-observe: expose sanitized principal activity, native task identity and observed model changes, including concurrent tool activity and recovery of a worker whose start event was missed; commands, tool payloads and credentials stay out of the public activity stream. (#38)
+- Hooks/live-leader-policy: add optional background delegation guards and a configurable native new-spawn limit while `host_native` retains ordinary memory, skills, MCP and messaging permissions. The limit is not a durable queue or a universal cap on resumed agents. (#38)
+- Lib/host-session: record the verified Live host so generated service wrappers with automatic resume select its exact native session ID and refuse startup while its owner is running or when explicit recovery is needed, instead of silently opening a fresh conversation. (#38)
+- Docs/live: document guided setup, source adoption, owner-controlled recovery and compatibility with ClaudeLive 0.8.2 / Node.js 24+. Model-switch observation requires Claude Code 2.1.251+; the 2.1.232 launcher threshold checks delegation only. Verification passed 184 base tests, 83 Live tests and five cross-repository tests; Ubuntu/macOS CI covers base and Live suites. A real human WhatsApp-to-voice pilot remains pending, and publishing a bridge reply does not prove audible playback. (#38)
+- Plugin/manifest: add the explicit display name `ClawCode` so plugin directories preserve the project's capitalization.
+
 ### Fixes
 
+- Lib/scope/exec-gate: extend the existing armed guest hard-deny from legacy `Task` to the current `Agent` tool and private Live MCP tools across registration names, including explicit allowlist/denylist configurations; preserve off, shadow and per-workspace execution-trust behavior. Memory scope remains a separate opt-in. (#38)
+- Lib/live-bridge: reject direct and indirect task-parent cycles before persisting native task alias merges, leaving durable state unchanged when validation fails. (#38)
+- Lib/live-bridge: close the HTTP listener and remove its exit handler if startup publication fails, before releasing the writer lease, so a replacement bridge can reuse the port. (#38)
+- Lib/service-generator: insert Live channel options before a CLI `--` terminator while preserving positional arguments and existing launch options. (#38)
+- Lib/service-generator: resolve native transcripts under the configured Claude directory (`CLAUDE_CONFIG_DIR` or `~/.claude` by default), correcting the previous workspace-local lookup used by service resume. (#38)
 - Hooks/scope-trust-legacy-warn: on GNU/Linux the legacy-trust advisory crashed with `File: unbound variable` at every SessionStart for users with 1.6-era trust files, instead of printing its one-line warning. Root cause: GNU `stat -f` means `--file-system` (not "format" like BSD), so the probe captured a multi-line filesystem block that leaked into bash arithmetic under `set -u`. Both `stat` probes now go GNU-first (`-c`) with BSD fallback (`-f`) and are value-checked before use — the same convention `bin/cron-from.sh` adopted in 1.7.5. macOS behavior unchanged.
 
 ## [1.7.6] — 2026-06-11
