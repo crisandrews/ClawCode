@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { evaluateLeaderTool, leaderEnvironment, normalizeLeaderPolicy, normalizeHostLeaderPolicy, supportsLeaderRuntime } from "../hooks/live-leader-policy.mjs";
 import { generateResumeWrapper, buildPlan } from "../lib/service-generator.ts";
 import { LiveBridge } from "../lib/live-bridge.ts";
-import { resolve, DEFAULT_ALLOWLIST_TOOLS } from "../lib/scope/exec-gate.ts";
+import { resolve, DEFAULT_ALLOWLIST_TOOLS, DEFAULT_DENYLIST_TOOLS } from "../lib/scope/exec-gate.ts";
 import { buildLiveLeaderPolicyInstructions, LIVE_LEADER_POLICY_INSTRUCTIONS } from "../lib/live-tools.ts";
 import { EnvelopeReader } from "../lib/scope/envelope.ts";
 
@@ -73,6 +73,25 @@ test("guest channel replies retain the existing gate path while guest Agent rema
   assert.deepEqual(evaluateLeaderTool(payload("Write", { file_path: "/tmp/ordinary-fixture" }), normalizeHostLeaderPolicy(policy), env), {});
   assert.equal(ordinaryGate("Write").decision, "block", "Host passthrough does not permit a guest write");
   assert.equal(denied(evaluateLeaderTool(payload("mcp__whatsapp__reply_anything"), policy, env)), true);
+});
+
+test("Live owner tools stay denied to guests after leader coordination passthrough", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "leader-live-guest-")); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const channel = path.join(root, "whatsapp"), envelopes = path.join(channel, ".request-envelopes");
+  fs.mkdirSync(envelopes, { recursive: true, mode: 0o700 });
+  const token = randomBytes(32).toString("base64url"), now = Date.now();
+  fs.writeFileSync(path.join(envelopes, `${token}.json`), JSON.stringify({ version: 1, token, senderId: "guest@s.whatsapp.net", chatId: "guest@s.whatsapp.net", ts: now, expiresAt: now + 60000 }), { mode: 0o600 });
+  const host = normalizeHostLeaderPolicy(policy);
+  for (const namespace of ["clawcode", "plugin_agent_clawcode", "custom_alias"]) {
+    for (const name of ["live_status", "live_ack", "live_emit", "live_work"]) {
+      const toolName = `mcp__${namespace}__${name}`;
+      for (const attribution of [{}, { agent_id: "native-worker" }]) {
+        assert.deepEqual(evaluateLeaderTool(payload(toolName, {}, attribution), host, env), {}, "Coordination passthrough is not permission");
+        const result = resolve({ toolName, toolInput: {}, pluginRoot: root, workspaceRoot: root, memoryDir: path.join(root, "memory"), armed: [{ channel: "whatsapp", channelDir: channel, ownerJids: ["owner@s.whatsapp.net"], execGate: { mode: "enforce", policy: "denylist", tools: [...DEFAULT_DENYLIST_TOOLS], lookbackMs: 60000 } }], now, effects: { isOwnerTrusted: () => false, legacyGlobalTrustExists: () => false, recordShadow: () => {} } });
+        assert.equal(result.decision, "block", `${toolName}: owner Live state must stay protected from the guest turn`);
+      }
+    }
+  }
 });
 
 test("host named native subagents are allowed without ambiguous teammate launches; delegation guards stay active", () => {

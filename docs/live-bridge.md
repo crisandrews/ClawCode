@@ -174,6 +174,17 @@ history, guest envelope or transcript is automatically imported. Incoming Live
 messages do not grant permission to send an answer to another channel. Existing
 scope and execution gates continue to apply; this bridge does not bypass them.
 
+The four Live MCP tools expose the owner's conversation to the shared native
+session. On a shared WhatsApp host, enable the existing execution gate in
+`enforce` mode: while its non-owner dispatch window is armed, it denies
+`live_status`, `live_ack`, `live_emit` and `live_work` under every MCP registration
+name, even with a custom tool list, unless the operator has explicitly granted
+execution trust for that workspace. With no guest window or an unarmed gate,
+calls retain their ordinary permission path. The conservative dispatch window can temporarily
+deny Live calls after a guest message; wait for the gate to clear rather than
+borrowing an owner envelope. Memory scope alone filters indexed channel content;
+it does not enable this separate execution gate or isolate the shared session.
+
 ## Public progress and task board
 
 The leader gets four tools:
@@ -193,7 +204,7 @@ reusing an ID with changed content is rejected. Two or more task cards can progr
 independently while another input is queued. Actual parallelism remains the host's
 native delegation capability, permissions and resource limits.
 
-The hook collector sends event/session/agent IDs, a model identifier from SessionStart/PostModelSwitch when present, and the readiness probe on its own live_ack PostToolUse. It never reads transcript_path, assistant
+The hook collector sends event/session/agent IDs, a model identifier from SessionStart/PostModelSwitch when present, and the readiness probe on its own live_ack PostToolUse. Model-switch observation requires Claude Code 2.1.251+; the 2.1.232 delegation baseline alone does not certify that hook. It never reads transcript_path, assistant
 messages, tool arguments/results, files, shell commands or WhatsApp content. That
 probe hook binds the authenticated host session_id. Before binding, or for another
 session, native observations are ignored. Current-session SubagentStart creates

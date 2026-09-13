@@ -27,9 +27,10 @@
  *      that channel → allow (user explicitly out-of-band-trusted this
  *      machine for execution of channel-triggered turns).
  *
- *   6. Otherwise: apply per-channel policy. Bash is hard-denied
- *      regardless of `tool_input.command`. Other tools: denylist or
- *      allowlist over `tool_name`. Shadow mode logs but doesn't block.
+ *   6. Otherwise: apply per-channel policy. Shell execution, subagent
+ *      launches and private Live state tools are hard-denied regardless
+ *      of input contents. Other tools: denylist or allowlist over
+ *      `tool_name`. Shadow mode logs but doesn't block.
  *
  * This file is pure-function: the hook script (Phase 7 Step 2) is the
  * only place that touches stdin/stdout/exit-codes. Keeping the resolver
@@ -75,6 +76,13 @@ export const EXEC_GATE_DEFAULT_LOOKBACK_MS = 60_000;
  *     the bypass unconditionally (Codex Step 2 pre-impl C: don't
  *     defer this to tier3 manual testing). */
 export const HARD_DENY_TOOLS_UNDER_ARMED = new Set(["Bash", "Task", "Agent"]);
+
+// Live coordination tools expose or mutate the owner's conversation. Their MCP
+// server namespace can be renamed or plugin-prefixed, so protect the exact tool
+// suffix across registrations. This check only runs after the existing mode,
+// non-owner-window and workspace execution-trust checks; it grants no identity
+// from tool arguments and does not change the separate memory-scope opt-in.
+const PRIVATE_LIVE_MCP_TOOL = /^mcp__.+__live_(?:status|ack|emit|work)$/;
 
 /** Default destructive tools blocked by `denylist` policy when armed +
  *  non-owner-in-window. User can override via `execGate.tools`. */
@@ -366,7 +374,8 @@ export function resolve(input: ResolverInput): ResolverDecision {
   //         block this tool call. Within shadow: pick the FIRST hit
   //         whose policy would would-block. If neither mode blocks
   //         this specific tool, allow.
-  const inHardDeny = HARD_DENY_TOOLS_UNDER_ARMED.has(input.toolName);
+  const inHardDeny = HARD_DENY_TOOLS_UNDER_ARMED.has(input.toolName)
+    || PRIVATE_LIVE_MCP_TOOL.test(input.toolName);
 
   function wouldBlockUnder(h: NonOwnerHit): boolean {
     if (inHardDeny) return true;

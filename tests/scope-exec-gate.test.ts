@@ -639,6 +639,65 @@ check("F0b Agent hard-deny matches legacy Task for both policies and hook regist
   } finally { fs.rmSync(cd, { recursive: true, force: true }); }
 });
 
+check("F0c private Live MCP tools deny guests across namespaces and explicit allowlists", () => {
+  const cd = mkChannelDir(), ws = fakeWorkspace();
+  try {
+    writeEnvelope(cd, freshTok(), { senderId: NON_OWNER_JID });
+    const ownerToken = freshTok();
+    writeEnvelope(cd, ownerToken, { senderId: OWNER_JID });
+    withTrustDir(() => {
+      const hooks = JSON.parse(fs.readFileSync(new URL("../hooks/hooks.json", import.meta.url), "utf8"));
+      const gate = hooks.hooks.PreToolUse.find((entry: any) => entry.hooks.some((hook: any) => hook.command.includes("exec-gate-pretool")));
+      for (const namespace of ["clawcode", "plugin_agent_clawcode", "custom-host", "nested__alias"]) {
+        for (const name of ["live_status", "live_ack", "live_emit", "live_work"]) {
+          const tool = `mcp__${namespace}__${name}`;
+          assert(new RegExp(`^(?:${gate.matcher})$`).test(tool), `${tool}: must invoke the execution gate`);
+          for (const policy of ["denylist", "allowlist"] as const) {
+            const armed = armedWA(cd, { policy, tools: policy === "allowlist" ? [tool] : [...DEFAULT_DENYLIST_TOOLS] });
+            // A remembered owner token or model-supplied owner flag cannot
+            // override the current guest window, including in a worker turn.
+            const result = resolve(baseInput(tool, { requestEnvelopeToken: ownerToken, is_owner: true, agent_id: "worker" }, [armed], ws));
+            assert(result.decision === "block", `${policy}: ${tool} must protect owner Live state; got ${result.decision}`);
+          }
+        }
+      }
+      for (const tool of ["mcp__clawcode__live_setup_plan", "mcp__alias__live_setup_status", "mcp__alias__live_status_extra", "mcp__alias__not_live_work", "live_status"]) {
+        assert(resolve(baseInput(tool, {}, [armedWA(cd)], ws)).decision === "allow", `${tool}: unrelated tools must retain their existing policy`);
+      }
+    });
+  } finally {
+    fs.rmSync(cd, { recursive: true, force: true });
+    fs.rmSync(path.dirname(ws.workspaceRoot), { recursive: true, force: true });
+  }
+});
+
+check("F0d private Live guard preserves execution opt-in, shadow, owner and workspace exec trust", () => {
+  const cd = mkChannelDir(), ws = fakeWorkspace(), other = fakeWorkspace();
+  const tool = "mcp__plugin_agent_clawcode__live_status";
+  try {
+    writeEnvelope(cd, freshTok(), { senderId: NON_OWNER_JID });
+    withTrustDir(() => {
+      assert(resolve(baseInput(tool, {}, [], ws)).decision === "allow", "No execution opt-in must remain allowed");
+      assert(resolve(baseInput(tool, {}, [armedWA(cd, { mode: "off" })], ws)).decision === "allow", "Execution mode off must remain allowed");
+      assert(resolve(baseInput(tool, {}, [armedWA(cd, {}, [NON_OWNER_JID])], ws)).decision === "allow", "Owner-only traffic must remain allowed");
+      const shadow: ShadowEvent[] = [];
+      const observed = resolve({ ...baseInput(tool, {}, [armedWA(cd, { mode: "shadow" })], ws), effects: { recordShadow: event => shadow.push(event) } });
+      assert(observed.decision === "shadow" && shadow.length === 1 && shadow[0].toolName === tool, "Shadow must log without blocking Live");
+      const unavailable = { ...armedWA(cd), unresolved: true };
+      assert(resolve(baseInput(tool, {}, [unavailable], ws)).decision === "block", "Unresolvable enforced governance must remain closed");
+      plantTrustFile(ws.workspaceRoot, "whatsapp", "owner");
+      plantTrustFile(other.workspaceRoot, "whatsapp", "exec");
+      assert(resolve(baseInput(tool, {}, [armedWA(cd)], ws)).decision === "block", "Read-owner trust and another workspace's exec trust cannot unlock Live");
+      plantTrustFile(ws.workspaceRoot, "whatsapp", "exec");
+      assert(resolve(baseInput(tool, {}, [armedWA(cd)], ws)).decision === "allow", "Existing explicit workspace execution trust must remain effective");
+    });
+  } finally {
+    fs.rmSync(cd, { recursive: true, force: true });
+    fs.rmSync(path.dirname(ws.workspaceRoot), { recursive: true, force: true });
+    fs.rmSync(path.dirname(other.workspaceRoot), { recursive: true, force: true });
+  }
+});
+
 check("F1 Bash hard-deny under armed + non-owner regardless of command content", () => {
   const cd = mkChannelDir();
   writeEnvelope(cd, freshTok(), { senderId: NON_OWNER_JID });

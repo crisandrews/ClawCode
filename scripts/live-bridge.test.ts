@@ -233,6 +233,39 @@ test("exclusive writer and stale process-lock recovery preserve durable state", 
   assert.equal(fs.existsSync(path.join(dir, "owner.lock")), false);
 });
 
+test("failed startup publication releases its listener, exit handler and writer lease", async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "clawcode-live-start-failure-"));
+  const options = { workspace: directory, dataDir: path.join(directory, "live"), token, port: 0,
+    agent: { id: "fixture", name: "Fixture leader" }, deliver: async () => {} };
+  const bridge = new LiveBridge(options);
+  const exitListeners = process.listenerCount("exit");
+  const save = LiveStore.prototype.save;
+  let writes = 0, failedPort = 0;
+  const saveMock = t.mock.method(LiveStore.prototype, "save", function (state) {
+    if (++writes === 2) {
+      failedPort = bridge.port;
+      throw new Error("Fixture startup publication could not be persisted");
+    }
+    return save.call(this, state);
+  });
+  let replacement: LiveBridge | undefined;
+  t.after(async () => {
+    saveMock.mock.restore();
+    await bridge.close(); await replacement?.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  await assert.rejects(bridge.start(), /startup publication could not be persisted/);
+  saveMock.mock.restore();
+  assert.ok(failedPort > 0, "the injected failure follows a successful listen");
+  assert.equal(bridge.channelHandshakeState.running, false);
+  assert.equal(process.listenerCount("exit"), exitListeners);
+  assert.equal(fs.existsSync(path.join(options.dataDir, "owner.lock")), false);
+  replacement = new LiveBridge({ ...options, port: failedPort });
+  await replacement.start();
+  assert.equal(replacement.port, failedPort, "the failed listener's port is reusable");
+  assert.equal(replacement.snapshot().conversation.id, bridge.snapshot().conversation.id);
+});
+
 test("configuration stays opt-in and cannot be self-enabled through agent_config", async t => {
   const f = await fixture(t);
   assert.equal(loadConfig(f.directory).liveBridge, undefined);
@@ -325,6 +358,39 @@ test("native task card merges into the declared task and preserves child links a
   f.bridge.observeHook({ id: "tool", event: "PostToolUse", sessionId: "host-session", agentId: "native-child" });
   assert.equal(f.bridge.snapshot().tasks.length, 2);
   await f.restart(); assert.equal(f.bridge.snapshot().taskAliases![alias], "logical");
+});
+
+test("native task merge rejects its merged alias as an explicit parent", async t => {
+  const f = await fixture(t); const a = await f.attach(); await f.ready();
+  f.bridge.observeHook({ id: "native-parent", event: "SubagentStart", sessionId: "host-session", agentId: "parent-worker" });
+  const alias = f.bridge.snapshot().tasks.find(task => task.nativeId === "parent-worker")!.id;
+  const before = f.bridge.snapshot();
+  const durableBefore = fs.readFileSync(path.join(f.directory, "live/state.json"), "utf8");
+  assert.throws(() => f.bridge.callTool("live_work", { id: "invalid-direct-merge", taskId: "logical",
+    conversationId: a.conversationId, nativeId: "parent-worker", parentTaskId: alias, progress: "Progress",
+  }), /parent cycle/);
+  assert.deepEqual(f.bridge.snapshot(), before);
+  assert.equal(fs.readFileSync(path.join(f.directory, "live/state.json"), "utf8"), durableBefore);
+});
+
+test("native task merge rejects an indirect parent cycle without changing durable state", async t => {
+  const f = await fixture(t); const a = await f.attach(); await f.ready();
+  const work = (args: Record<string, unknown>) => f.bridge.callTool("live_work", {
+    conversationId: a.conversationId, progress: "Progress", ...args,
+  });
+  f.bridge.observeHook({ id: "native-ancestor", event: "SubagentStart", sessionId: "host-session", agentId: "ancestor-worker" });
+  const alias = f.bridge.snapshot().tasks.find(task => task.nativeId === "ancestor-worker")!.id;
+  work({ id: "child", taskId: "child", parentTaskId: alias });
+  work({ id: "descendant", taskId: "logical", parentTaskId: "child" });
+  const before = f.bridge.snapshot();
+  const durableBefore = fs.readFileSync(path.join(f.directory, "live/state.json"), "utf8");
+  for (const explicitParent of [false, true]) {
+    assert.throws(() => work({ id: `invalid-merge-${explicitParent}`, taskId: "logical", nativeId: "ancestor-worker",
+      ...(explicitParent ? { parentTaskId: "child" } : {}),
+    }), /parent cycle/);
+    assert.deepEqual(f.bridge.snapshot(), before);
+    assert.equal(fs.readFileSync(path.join(f.directory, "live/state.json"), "utf8"), durableBefore);
+  }
 });
 
 test("WhatsApp provenance is owner adopted and proactive results need an authorized task", async t => {

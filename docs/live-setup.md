@@ -23,7 +23,7 @@ After restart:
 
 The web opens in **Connect agent** automatically for a fresh ClaudeLive workspace. Previously saved selections remain authoritative; choose Connect agent once if this workspace was already using another mode. Existing work and uncertain deliveries are not replayed automatically. Start the microphone only after the native channel is verified.
 
-An OpenAI API key is still required for GPT-Live. Use the protected OpenAI field in `/plugin configure claude-live@claude-live` or your existing environment/secret manager; never send it as a chat message. Node.js 24+ is required for ClaudeLive, and Claude Code 2.1.232+ for the background delegation policy.
+An OpenAI API key is still required for GPT-Live. Use the protected OpenAI field in `/plugin configure claude-live@claude-live` or your existing environment/secret manager; never send it as a chat message. Node.js 24+ is required for ClaudeLive. Use Claude Code 2.1.251+ to include model-switch observation; the launcher's 2.1.232 minimum checks the background delegation policy only. See the [PostModelSwitch requirement](https://code.claude.com/docs/en/hooks#postmodelswitch).
 
 ## Setup contract
 

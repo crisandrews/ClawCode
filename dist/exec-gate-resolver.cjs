@@ -1,4 +1,4 @@
-/* scope-exec-gate-bundle@cb27c84f5c3fc600b63c28c060b50ad160a437d2826a328afd5522afff96c56f */
+/* scope-exec-gate-bundle@a9e2df29203616e59f6180642b0a37b9e16e8feb61122b2d8c1d04bf762d44b5 */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -1288,6 +1288,7 @@ function releaseLock(lockDir) {
 var EXEC_GATE_HOOK_VERSION = 1;
 var EXEC_GATE_DEFAULT_LOOKBACK_MS = 6e4;
 var HARD_DENY_TOOLS_UNDER_ARMED = /* @__PURE__ */ new Set(["Bash", "Task", "Agent"]);
+var PRIVATE_LIVE_MCP_TOOL = /^mcp__.+__live_(?:status|ack|emit|work)$/;
 var DEFAULT_DENYLIST_TOOLS = [
   "Bash",
   "Write",
@@ -1401,7 +1402,7 @@ function resolve(input) {
   if (effectiveHits.length === 0) {
     return { decision: "allow" };
   }
-  const inHardDeny = HARD_DENY_TOOLS_UNDER_ARMED.has(input.toolName);
+  const inHardDeny = HARD_DENY_TOOLS_UNDER_ARMED.has(input.toolName) || PRIVATE_LIVE_MCP_TOOL.test(input.toolName);
   function wouldBlockUnder(h) {
     if (inHardDeny) return true;
     if (h.armed.execGate.policy === "denylist") {

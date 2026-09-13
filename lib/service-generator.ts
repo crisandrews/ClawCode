@@ -25,8 +25,11 @@ export type ServiceAction = "install" | "status" | "uninstall" | "logs";
 export function withLiveChannel(args: string[], target = "plugin:agent@clawcode"): string[] {
   if (!/^(?:plugin:[A-Za-z0-9._-]+@[A-Za-z0-9._-]+|server:[A-Za-z0-9._-]+)$/.test(target)) throw new Error("Invalid Live channel target");
   if (target === "plugin:claude-live@claude-live") throw new Error("Cloudy already owns LiveBridge; select the ClawCode channel registration");
+  const terminatorIndex = args.indexOf("--");
+  const optionEnd = terminatorIndex === -1 ? args.length : terminatorIndex;
   let channelValues = false, found = false;
-  for (const arg of args) {
+  // Everything after the terminator is positional text, never a channel option.
+  for (const arg of args.slice(0, optionEnd)) {
     if (arg === "--channels" || arg === "--dangerously-load-development-channels") { channelValues = true; continue; }
     const inline = /^--(?:channels|dangerously-load-development-channels)=(.*)$/.exec(arg);
     if (inline || channelValues && !arg.startsWith("-")) {
@@ -36,7 +39,7 @@ export function withLiveChannel(args: string[], target = "plugin:agent@clawcode"
     }
     if (arg.startsWith("-")) channelValues = false;
   }
-  return found ? [...args] : [...args, "--dangerously-load-development-channels", target];
+  return found ? [...args] : [...args.slice(0, optionEnd), "--dangerously-load-development-channels", target, ...args.slice(optionEnd)];
 }
 
 export interface ServiceOptions {

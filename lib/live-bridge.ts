@@ -117,7 +117,15 @@ export class LiveBridge {
       this.running = true;
       process.once("exit", this.exitHandler);
       this.change("connection.started", { channelReady: false }, () => {});
-    } catch (error) { this.store.close(); throw error; }
+    } catch (error) {
+      // Publication can fail after listen succeeds. Release the socket before
+      // the lease so a failed startup cannot leave an untracked HTTP writer.
+      this.ready = false; this.running = false;
+      process.off("exit", this.exitHandler);
+      this.server.closeAllConnections();
+      await new Promise<void>(resolve => this.server.close(() => resolve()));
+      this.store.close(); throw error;
+    }
   }
   get port(): number { const a = this.server.address(); return a && typeof a === "object" ? a.port : this.options.port ?? 18791; }
   /** Receipt evidence for the local MCP handshake; never disclose its nonce. */
@@ -549,9 +557,6 @@ export class LiveBridge {
     for (const key of ["parentTaskId", "nativeId", "executionId", "sourceInputId"]) if (args[key] !== undefined) identifier(args[key], key);
     for (const key of ["title", "prompt", "result", "error", "model"]) if (args[key] !== undefined) string(args[key], key, key === "title" ? 300 : 16000);
     if (args.parentTaskId && (args.parentTaskId === taskId || !own(this.state.tasks, args.parentTaskId))) throw new LiveError(409, "Unknown or self parent task");
-    let ancestor = args.parentTaskId;
-    const ancestry = new Set<string>([taskId]);
-    while (ancestor) { if (ancestry.has(ancestor)) throw new LiveError(409, "Task parent cycle"); ancestry.add(ancestor); ancestor = this.state.tasks[ancestor]?.parentTaskId; }
     const previous = this.state.tasks[taskId];
     const mapped = args.nativeId && Object.values(this.state.tasks).find(task => task.nativeId === args.nativeId && task.id !== taskId);
     if (mapped && (args.parentTaskId === mapped.id || previous?.parentTaskId === mapped.id)) throw new LiveError(409, "Task merge would create a parent cycle");
@@ -596,6 +601,11 @@ export class LiveBridge {
         task.sessionId = this.sessionId; task.controls = { steer: !TERMINAL.has(task.status), cancel: !TERMINAL.has(task.status), resume: false };
         task.history.push({ id: args.id, at: now(), kind: task.status === "failed" ? "error" : TERMINAL.has(task.status) ? "result" : "progress", text: progress }); task.history = task.history.slice(-100);
         state.tasks[taskId] = task;
+        // Validate the resulting draft: merging a native ancestor rewrites its
+        // children's parents even when this call omitted parentTaskId.
+        let ancestor = task.parentTaskId;
+        const ancestry = new Set<string>([taskId]);
+        while (ancestor) { if (ancestry.has(ancestor)) throw new LiveError(409, "Task parent cycle"); ancestry.add(ancestor); ancestor = state.tasks[ancestor]?.parentTaskId; }
       });
       return { id: args.id, taskId, published: true };
     });

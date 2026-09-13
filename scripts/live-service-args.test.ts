@@ -21,6 +21,39 @@ test("Live service plans retain existing channels, session and permission argume
   assert.throws(() => withLiveChannel([], "plugin:claude-live@claude-live"), /already owns/);
 });
 
+test("Live channel options precede the CLI terminator and preserve all positional text", () => {
+  const target = "plugin:agent@clawcode";
+  const prefix = ["--resume", "native-id", "--chrome"];
+  for (const positional of [
+    [],
+    ["continue this task"],
+    ["--channels", target],
+    [`--dangerously-load-development-channels=${target}`],
+    ["--channels=plugin:claude-live@claude-live", "--dangerously-load-development-channels", "plugin:claude-live@claude-live"],
+  ]) {
+    const args = [...prefix, "--", ...positional];
+    const original = [...args];
+    const expected = [...prefix, "--dangerously-load-development-channels", target, "--", ...positional];
+    assert.deepEqual(withLiveChannel(args), expected);
+    assert.deepEqual(args, original, "the supplied argument vector must remain unchanged");
+    assert.deepEqual(withLiveChannel(expected), expected);
+  }
+  assert.deepEqual(withLiveChannel(["--", "prompt"]), ["--dangerously-load-development-channels", target, "--", "prompt"]);
+});
+
+test("Live channel detection stops at the CLI terminator even when a channel is already present", () => {
+  const target = "server:clawcode";
+  for (const channelArgs of [
+    ["--channels", target],
+    [`--channels=${target}`],
+    ["--dangerously-load-development-channels", "plugin:whatsapp@claude-whatsapp", target],
+  ]) {
+    const args = [...channelArgs, "--", "--channels", "plugin:claude-live@claude-live"];
+    assert.deepEqual(withLiveChannel(args, target), args);
+  }
+  assert.throws(() => withLiveChannel(["--channels", "plugin:claude-live@claude-live", "--", "prompt"]), /already owns/);
+});
+
 test("managed service web settings override global plugin options without exporting credential values", () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "live-service-env-")));
   try {
