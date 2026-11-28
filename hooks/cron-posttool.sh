@@ -39,7 +39,7 @@ esac
 
 # --- Recursion guard: suppress capture during SessionStart reconcile. ---
 if [[ -f "$RECONCILING_MARKER" ]]; then
-  marker_mtime=$(stat -f %m "$RECONCILING_MARKER" 2>/dev/null || stat -c %Y "$RECONCILING_MARKER" 2>/dev/null || echo 0)
+  marker_mtime=$(stat -c %Y "$RECONCILING_MARKER" 2>/dev/null || stat -f %m "$RECONCILING_MARKER" 2>/dev/null || echo 0)
   now=$(date +%s)
   age=$((now - marker_mtime))
   if [[ $age -ge 0 && $age -lt $MAX_MARKER_AGE_SEC ]]; then
